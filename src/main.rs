@@ -18,7 +18,10 @@ mod backtest;
 mod charts;
 mod commands;
 mod daemon;
+mod derivatives;
 mod display;
+mod funds;
+mod greeks;
 mod insights;
 mod intraday;
 mod longterm;
@@ -240,13 +243,6 @@ enum Commands {
         period: String,
     },
 
-    /// Expected moves and strike ideas from volatility
-    Options {
-        symbol: String,
-        #[arg(short, long, default_value = "1mo", value_parser = PERIODS)]
-        period: String,
-    },
-
     // ── Market ──
     /// Top gainers and losers today
     Movers,
@@ -283,6 +279,34 @@ enum Commands {
     },
     /// Dividend yield, income projection and DRIP growth
     Dividends { symbol: String },
+
+    // ── Funds & F&O ──
+    /// Mutual funds (AMFI NAVs): search, nav, history, sip, screen, overlap
+    Mf {
+        #[command(subcommand)]
+        action: MfCmd,
+    },
+
+    /// Option chains with greeks, PCR and max pain; `options SYMBOL` shows expected moves
+    #[command(
+        args_conflicts_with_subcommands = true,
+        subcommand_negates_reqs = true,
+        after_help = "Examples:\n  \
+stockwise options chain NIFTY             NSE index options, nearest expiry\n  \
+stockwise options chain AAPL -m us -n 5   US options from Yahoo, 5 strikes each side\n  \
+stockwise options pcr BANKNIFTY           put/call ratio and open-interest walls\n  \
+stockwise options maxpain RELIANCE -e 2026-10-27\n  \
+stockwise options TCS                     expected moves (same as `options moves TCS`)"
+    )]
+    Options {
+        #[command(subcommand)]
+        action: Option<OptionsCmd>,
+        /// Ticker for expected moves (same as `options moves SYMBOL`)
+        #[arg(required = true)]
+        symbol: Option<String>,
+        #[arg(short, long, default_value = "1mo", value_parser = PERIODS)]
+        period: String,
+    },
 
     // ── Strategies & bots ──
     /// Backtest a trading strategy on history
@@ -502,6 +526,165 @@ enum SimCmd {
     },
 }
 
+/// Months for an MF period such as `6mo`, `3y` or `max` (validated here,
+/// converted again in the handler).
+fn mf_period(s: &str) -> Result<String, String> {
+    funds::parse_period(s).map(|_| s.trim().to_lowercase())
+}
+
+fn expiry_date(s: &str) -> Result<chrono::NaiveDate, String> {
+    derivatives::parse_expiry(s).ok_or_else(|| format!("`{s}`: use YYYY-MM-DD, e.g. 2026-10-27"))
+}
+
+#[derive(Subcommand)]
+enum MfCmd {
+    /// Find schemes by name, fund house or category, e.g. `mf search parag flexi direct`
+    Search {
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+        /// Maximum schemes to show
+        #[arg(short = 'n', long, default_value_t = 25)]
+        limit: usize,
+        /// Print JSON instead of a table
+        #[arg(long)]
+        json: bool,
+    },
+    /// Latest NAV from AMFI for one or more scheme codes
+    Nav {
+        /// AMFI scheme codes (from `mf search`)
+        #[arg(required = true, num_args = 1..)]
+        codes: Vec<u32>,
+        /// Print JSON instead of a table
+        #[arg(long)]
+        json: bool,
+    },
+    /// NAV chart, 1M–10Y trailing returns (CAGR from 1Y) and drawdown
+    History {
+        /// AMFI scheme code
+        code: u32,
+        /// Chart period: 6mo, 1y, 3y, 5y, 10y, max, ...
+        #[arg(short, long, default_value = "1y", value_parser = mf_period)]
+        period: String,
+        /// Print JSON (returns and every NAV in the period)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Monthly SIP into a scheme from NAV history, with XIRR
+    Sip {
+        /// AMFI scheme code
+        code: u32,
+        /// Amount invested each month (₹)
+        amount: f64,
+        /// How far back the SIP starts: 1y, 3y, 5y, 10y, max, ...
+        #[arg(short, long, default_value = "5y", value_parser = mf_period)]
+        period: String,
+        /// Print JSON instead of a chart
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rank a category's growth funds by 1Y/3Y/5Y return (bare: list categories)
+    Screen {
+        /// Category words, e.g. `flexi cap`, `elss`, `liquid`, `equity etf`
+        category: Vec<String>,
+        /// Which plans to include
+        #[arg(long, value_enum, ignore_case = true, default_value = "direct")]
+        plan: MfPlan,
+        /// Return horizon to rank by
+        #[arg(short, long, value_enum, default_value = "3y")]
+        sort: MfSort,
+        /// Funds to show
+        #[arg(short = 'n', long, default_value_t = 15)]
+        limit: usize,
+        /// Most funds to fetch history for (one request each, cached 12h)
+        #[arg(long, default_value_t = 100)]
+        max: usize,
+        /// Print JSON instead of a table
+        #[arg(long)]
+        json: bool,
+    },
+    /// Holdings and sector overlap of two funds/ETFs (Yahoo data: mainly US funds)
+    Overlap {
+        /// First fund or ETF ticker, e.g. SPY (with -m us)
+        a: String,
+        /// Second fund or ETF ticker, e.g. QQQ
+        b: String,
+        /// Print JSON instead of a table
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum MfPlan {
+    /// Direct plans (lower expense ratio)
+    Direct,
+    /// Regular plans (sold through distributors)
+    Regular,
+    /// Both
+    All,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum MfSort {
+    #[value(name = "1y")]
+    Y1,
+    #[value(name = "3y")]
+    Y3,
+    #[value(name = "5y")]
+    Y5,
+}
+
+#[derive(Subcommand)]
+enum OptionsCmd {
+    /// Option chain: OI, volume, IV and greeks (NSE for India, Yahoo for -m us)
+    Chain {
+        /// NIFTY, BANKNIFTY, an F&O stock such as RELIANCE, or a US ticker with -m us
+        symbol: String,
+        /// Expiry date (default: nearest)
+        #[arg(short, long, value_parser = expiry_date)]
+        expiry: Option<chrono::NaiveDate>,
+        /// Strikes each side of at-the-money (0 = all)
+        #[arg(short = 'n', long, default_value_t = 10)]
+        strikes: usize,
+        /// Risk-free rate in percent for greeks (default 6.5 India, 4.0 US)
+        #[arg(long)]
+        rate: Option<f64>,
+        /// Dividend yield in percent for greeks
+        #[arg(long, default_value_t = 0.0)]
+        div_yield: f64,
+        /// Print JSON instead of tables
+        #[arg(long)]
+        json: bool,
+    },
+    /// Put/call ratio by open interest and volume, with the biggest OI strikes
+    Pcr {
+        symbol: String,
+        /// Expiry date (default: nearest)
+        #[arg(short, long, value_parser = expiry_date)]
+        expiry: Option<chrono::NaiveDate>,
+        /// Print JSON instead of a table
+        #[arg(long)]
+        json: bool,
+    },
+    /// Max pain: the expiry price at which option buyers collect least
+    #[command(alias = "max-pain")]
+    Maxpain {
+        symbol: String,
+        /// Expiry date (default: nearest)
+        #[arg(short, long, value_parser = expiry_date)]
+        expiry: Option<chrono::NaiveDate>,
+        /// Print JSON instead of a chart
+        #[arg(long)]
+        json: bool,
+    },
+    /// Expected moves and strike ideas from realized volatility
+    Moves {
+        symbol: String,
+        #[arg(short, long, default_value = "1mo", value_parser = PERIODS)]
+        period: String,
+    },
+}
+
 #[derive(Args, Clone, Copy)]
 struct OrderFlags {
     /// Place the order without the interactive confirmation
@@ -673,7 +856,6 @@ const GROUPS: &[(&str, &[&str])] = &[
             "gaps",
             "stoploss",
             "forecast",
-            "options",
         ],
     ),
     (
@@ -697,6 +879,7 @@ const GROUPS: &[(&str, &[&str])] = &[
             "dividends",
         ],
     ),
+    ("Funds & F&O", &["mf", "options"]),
     (
         "Strategies & bots",
         &[
@@ -837,7 +1020,6 @@ async fn main() {
             days,
             period,
         } => commands::cmd_forecast(&symbol, days, &period, m).await,
-        Commands::Options { symbol, period } => commands::cmd_options(&symbol, &period, m).await,
 
         Commands::Movers => commands::cmd_movers(m).await,
         Commands::Sectors => commands::cmd_sectors(m).await,
@@ -857,6 +1039,77 @@ async fn main() {
         Commands::Picks => commands::cmd_picks(m).await,
         Commands::Screen { category } => commands::cmd_screen(&value_name(category), m).await,
         Commands::Dividends { symbol } => commands::cmd_dividends(&symbol, m).await,
+
+        Commands::Mf { action } => match action {
+            MfCmd::Search { query, limit, json } => {
+                commands::cmd_mf_search(&query.join(" "), limit, json).await
+            }
+            MfCmd::Nav { codes, json } => commands::cmd_mf_nav(&codes, json).await,
+            MfCmd::History { code, period, json } => {
+                commands::cmd_mf_history(code, &period, json).await
+            }
+            MfCmd::Sip {
+                code,
+                amount,
+                period,
+                json,
+            } => commands::cmd_mf_sip(code, amount, &period, json).await,
+            MfCmd::Screen {
+                category,
+                plan,
+                sort,
+                limit,
+                max,
+                json,
+            } => {
+                let plan = match plan {
+                    MfPlan::Direct => commands::PlanFilter::Direct,
+                    MfPlan::Regular => commands::PlanFilter::Regular,
+                    MfPlan::All => commands::PlanFilter::All,
+                };
+                let months = match sort {
+                    MfSort::Y1 => 12,
+                    MfSort::Y3 => 36,
+                    MfSort::Y5 => 60,
+                };
+                commands::cmd_mf_screen(&category.join(" "), plan, months, limit, max, json).await
+            }
+            MfCmd::Overlap { a, b, json } => commands::cmd_mf_overlap(&a, &b, m, json).await,
+        },
+        Commands::Options {
+            action,
+            symbol,
+            period,
+        } => match action {
+            Some(OptionsCmd::Chain {
+                symbol,
+                expiry,
+                strikes,
+                rate,
+                div_yield,
+                json,
+            }) => {
+                commands::cmd_options_chain(&symbol, expiry, strikes, rate, div_yield, m, json)
+                    .await
+            }
+            Some(OptionsCmd::Pcr {
+                symbol,
+                expiry,
+                json,
+            }) => commands::cmd_options_pcr(&symbol, expiry, m, json).await,
+            Some(OptionsCmd::Maxpain {
+                symbol,
+                expiry,
+                json,
+            }) => commands::cmd_options_maxpain(&symbol, expiry, m, json).await,
+            Some(OptionsCmd::Moves { symbol, period }) => {
+                commands::cmd_options(&symbol, &period, m).await
+            }
+            None => {
+                let symbol = symbol.expect("clap requires SYMBOL without a subcommand");
+                commands::cmd_options(&symbol, &period, m).await
+            }
+        },
 
         Commands::Backtest {
             symbol,
@@ -1074,6 +1327,8 @@ mod tests {
             vec!["stockwise", "tax", "India"],
             vec!["stockwise", "screen", "Growth"],
             vec!["stockwise", "history", "TCS", "-p", "ytd"],
+            vec!["stockwise", "options", "TCS"],
+            vec!["stockwise", "options", "AAPL", "-p", "3mo", "-m", "us"],
         ] {
             assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
         }
@@ -1084,6 +1339,91 @@ mod tests {
         assert!(Cli::try_parse_from(["stockwise", "portfolio", "ad", "TCS", "1", "1"]).is_err());
         assert!(Cli::try_parse_from(["stockwise", "screen", "growht"]).is_err());
         assert!(Cli::try_parse_from(["stockwise", "trade", "by", "TCS", "1"]).is_err());
+    }
+
+    fn options_cmd(args: &[&str]) -> (Option<OptionsCmd>, Option<String>, String) {
+        let cli = Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+        match cli.command {
+            Commands::Options {
+                action,
+                symbol,
+                period,
+            } => (action, symbol, period),
+            _ => panic!("not the options command"),
+        }
+    }
+
+    #[test]
+    fn options_keeps_the_bare_expected_moves_form() {
+        let (action, symbol, period) = options_cmd(&["stockwise", "options", "TCS", "-p", "3mo"]);
+        assert!(action.is_none());
+        assert_eq!(symbol.as_deref(), Some("TCS"));
+        assert_eq!(period, "3mo");
+
+        let (action, ..) = options_cmd(&["stockwise", "options", "moves", "TCS"]);
+        assert!(matches!(action, Some(OptionsCmd::Moves { symbol, .. }) if symbol == "TCS"));
+
+        let (action, ..) = options_cmd(&[
+            "stockwise",
+            "options",
+            "chain",
+            "NIFTY",
+            "-e",
+            "2026-10-27",
+            "-n",
+            "5",
+        ]);
+        match action {
+            Some(OptionsCmd::Chain {
+                symbol,
+                expiry,
+                strikes,
+                ..
+            }) => {
+                assert_eq!(symbol, "NIFTY");
+                assert_eq!(expiry, chrono::NaiveDate::from_ymd_opt(2026, 10, 27));
+                assert_eq!(strikes, 5);
+            }
+            _ => panic!("expected options chain"),
+        }
+        let (action, ..) = options_cmd(&["stockwise", "options", "max-pain", "NIFTY"]);
+        assert!(matches!(action, Some(OptionsCmd::Maxpain { .. })));
+        let (action, ..) = options_cmd(&["stockwise", "options", "pcr", "AAPL", "--json"]);
+        assert!(matches!(action, Some(OptionsCmd::Pcr { json: true, .. })));
+
+        assert!(Cli::try_parse_from(["stockwise", "options"]).is_err());
+        assert!(
+            Cli::try_parse_from(["stockwise", "options", "chain", "NIFTY", "-e", "27/10"]).is_err()
+        );
+    }
+
+    #[test]
+    fn mf_commands_parse() {
+        for args in [
+            vec!["stockwise", "mf", "search", "parag", "parikh", "flexi"],
+            vec!["stockwise", "mf", "nav", "122639", "120465", "--json"],
+            vec!["stockwise", "mf", "history", "122639", "-p", "3y"],
+            vec!["stockwise", "mf", "sip", "122639", "5000", "-p", "max"],
+            vec!["stockwise", "mf", "screen"],
+            vec![
+                "stockwise",
+                "mf",
+                "screen",
+                "flexi",
+                "cap",
+                "--sort",
+                "5y",
+                "--plan",
+                "all",
+            ],
+            vec!["stockwise", "mf", "overlap", "SPY", "QQQ", "-m", "us"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
+        }
+        assert!(Cli::try_parse_from(["stockwise", "mf", "nav", "abc"]).is_err());
+        assert!(Cli::try_parse_from(["stockwise", "mf", "history", "1", "-p", "3x"]).is_err());
+        assert!(Cli::try_parse_from(["stockwise", "mf", "screen", "--sort", "2y"]).is_err());
+        assert!(Cli::try_parse_from(["stockwise", "mf"]).is_err());
     }
 
     #[test]

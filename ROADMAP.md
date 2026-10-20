@@ -53,7 +53,7 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - 📋 Corporate actions — splits, bonuses, dividends adjust cost basis automatically
 
 **Mutual funds & India specifics**
-- 📋 Mutual funds via AMFI NAVs — `mf search`, `mf nav`, `mf sip` with XIRR
+- ✅ Mutual funds via AMFI NAVs — `mf search`, `mf nav`, `mf history`, `mf sip` with XIRR
 - 📋 NSE holiday calendar and an IST market clock for every time-aware command
 - 📋 GTT / stop-loss orders with the same safety flow
 
@@ -71,9 +71,12 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - 💡 Interactive TUI dashboard (ratatui) — live quotes, positions, P&L, alerts
 - 💡 Portfolio-level and walk-forward backtesting with Indian costs (STT, brokerage, slippage)
 - 💡 Pluggable strategy system for `backtest` and the intraday bot (TOML rules or WASM)
-- 💡 F&O: option chains, greeks, IV, PCR, max pain
+- ✅ F&O: option chains, greeks, IV, PCR, max pain — NSE index options and F&O stocks, US
+  options via Yahoo (`options chain`, `options pcr`, `options maxpain`); BSE options not yet
 - 💡 Crypto and forex as first-class markets (quotes already work: `BTC-USD`, `USDINR=X`)
-- 💡 Mutual-fund / ETF screening and overlap analysis
+- ✅ Mutual-fund / ETF screening and overlap analysis — `mf screen` ranks Indian schemes by
+  category and returns (no expense-ratio data in AMFI's feed); `mf overlap` covers funds with
+  Yahoo holdings data (mainly US ETFs/funds, top 10 holdings)
 - 💡 Mixed-currency portfolios with INR/USD conversion
 - 💡 Data-provider abstraction (official NSE feeds, Alpha Vantage, Polygon) beyond Yahoo
 - 💡 Web/REST mode for remote dashboards; Prometheus metrics for the daemon
