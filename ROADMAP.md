@@ -25,9 +25,11 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 ## 🛠️ Now — distribution, scripting & correctness (0.3.x)
 
 **Install anywhere**
-- 📋 Homebrew tap — `brew install iamsaquib8/tap/stockwise`
-- 📋 Scoop / winget manifests for Windows; AUR package for Arch
-- 📋 Man page (`stockwise.1`) generated from the CLI definition
+- 🛠️ Homebrew tap — `brew install iamsaquib8/tap/stockwise` (formula and release automation
+  ready; waiting for the tap repository)
+- 🛠️ Scoop / winget manifests for Windows; AUR package for Arch (manifests rendered on every
+  release; Scoop installs from the release URL, winget and AUR submissions pending)
+- ✅ Man page (`stockwise.1`) generated from the CLI definition
 
 **Scripting**
 - 📋 `--json` on more commands (`portfolio`, `technical`, `risk`, `backtest`, `screen`)
@@ -75,7 +77,7 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - 💡 Mixed-currency portfolios with INR/USD conversion
 - 💡 Data-provider abstraction (official NSE feeds, Alpha Vantage, Polygon) beyond Yahoo
 - 💡 Web/REST mode for remote dashboards; Prometheus metrics for the daemon
-- 💡 Docker image and Nix flake
+- ✅ Docker image and Nix flake
 - 💡 Hindi localization
 
 ## Non-goals

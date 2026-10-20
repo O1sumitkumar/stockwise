@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `stockwise man` prints the `stockwise.1` man page; `stockwise man --dir DIR`
+  writes it plus one `stockwise-<command>.1` page per command. The pages are
+  generated from the CLI definition and ship in every release archive under
+  `man/`.
+- Docker image `ghcr.io/iamsaquib8/stockwise` for linux/amd64 and linux/arm64,
+  published on every release. It runs as a non-root user and keeps data in the
+  `/data` volume.
+- Nix flake: `nix run github:iamsaquib8/stockwise`, `nix profile install`, and
+  `nix develop` for a dev shell. Installs man pages and shell completions.
+- Package manifests in `packaging/` for Homebrew, Scoop, winget and the AUR
+  (`stockwise-bin`), filled in from each release's checksums by
+  `packaging/render.sh`. Releases push the formula to the
+  `iamsaquib8/homebrew-tap` tap when a `HOMEBREW_TAP_TOKEN` secret is set, and
+  attach `stockwise.json` so `scoop install <release URL>` works.
+
 ## [0.3.0] - 2026-10-21
 
 Usability and safety release. Command-line forms from 0.2 keep working.

@@ -102,6 +102,7 @@ Location: `~/Library/Application Support/stockwise/` (macOS), `~/.local/share/st
 | Crate | Purpose |
 |-------|---------|
 | `clap` | CLI argument parsing (derive macros) |
+| `clap_complete` / `clap_mangen` | Shell completions and man pages generated from the CLI definition |
 | `reqwest` | HTTP client (Yahoo Finance, Angel One, Ollama) |
 | `redis` | Redis caching (optional, falls back to in-memory) |
 | `tokio` | Async runtime |
@@ -110,6 +111,15 @@ Location: `~/Library/Application Support/stockwise/` (macOS), `~/.local/share/st
 | `chrono` | Date handling |
 | `dirs` | Platform-specific data directories |
 | `anyhow` | Error handling |
+
+## Releases and packaging
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the five release
+archives (binary, docs, and `man/*.1` from `stockwise man --dir`), publishes the crate,
+renders the Homebrew, Scoop, winget and AUR manifests in `packaging/` with the release's
+checksums, updates the Homebrew tap when its token is configured, and pushes the
+multi-arch `ghcr.io/iamsaquib8/stockwise` image built from `Dockerfile`. `flake.nix`
+builds the same crate with Nix. See [packaging/README.md](../packaging/README.md).
 
 ## Testing
 

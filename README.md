@@ -66,8 +66,32 @@ curl -fsSL https://raw.githubusercontent.com/iamsaquib8/stockwise/master/install
 ```
 
 Installs to `~/.local/bin` (override with `STOCKWISE_INSTALL=/usr/local/bin`)
-and verifies the release checksum. Windows: download the `.zip` from the
-[latest release](https://github.com/iamsaquib8/stockwise/releases/latest).
+and verifies the release checksum. Every
+[release](https://github.com/iamsaquib8/stockwise/releases/latest) also has
+`.tar.gz` / `.zip` archives with the binary and man pages.
+
+**Package managers**
+
+```bash
+brew install iamsaquib8/tap/stockwise            # Homebrew (after the tap is published)
+yay -S stockwise-bin                             # Arch Linux, AUR (after the package is published)
+nix profile install github:iamsaquib8/stockwise  # Nix flake (try it: nix run github:iamsaquib8/stockwise)
+```
+
+**Windows**
+
+```powershell
+scoop install https://github.com/iamsaquib8/stockwise/releases/latest/download/stockwise.json
+winget install iamsaquib8.StockWise        # after the manifest is accepted into winget-pkgs
+```
+
+**Docker** (linux/amd64 and linux/arm64)
+
+```bash
+docker run --rm -it -v stockwise-data:/data ghcr.io/iamsaquib8/stockwise quote RELIANCE TCS
+```
+
+Portfolio, watchlist and alerts persist in the `stockwise-data` volume.
 
 **With Rust**
 
@@ -81,7 +105,10 @@ Then:
 ```bash
 stockwise doctor                                          # check your setup
 stockwise completions zsh > ~/.zfunc/_stockwise           # optional: tab completion
+stockwise man --dir ~/.local/share/man/man1               # optional: man stockwise
 ```
+
+Homebrew, AUR and Nix install the man pages and completions for you.
 
 ## Tour
 
