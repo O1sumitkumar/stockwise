@@ -14,14 +14,17 @@ src/
     markets.rs       movers, sectors, news, sentiment, screen, picks, earnings, rotation, matrix, surprise, heatmap, sectorcmp, ipo
     strategies.rs    backtest, sip, whatif, intraday, longterm, report
     holdings.rs      portfolio, watch, alert, import, export, wealth, rebalance, harvest, tax, divcal, pcorr
-    sim.rs           paper-trading simulator
+    sim.rs           paper-trading simulator (settle replays intraday bars)
     worker.rs        daemon intraday / longterm loops
+    alerting.rs      alert watch loop, notify status/test
     trade.rs         Angel One orders: instrument resolution, preview, confirmation
   store.rs           Atomic JSON persistence, data directory (STOCKWISE_HOME)
   api.rs             Yahoo Finance client (session, quotes, charts, search, cache, retries)
   angel.rs           Angel One SmartAPI (login, TOTP, exact instrument lookup, orders)
   ai.rs              Ollama integration (prompts, opt-in flag, model checks)
-  daemon.rs          Worker state: market phases, positions, risk manager
+  clock.rs           Exchange clock: IST / US Eastern, NSE + NYSE holidays, session phases
+  daemon.rs          Worker state: positions, risk manager, daemon_state.json, shutdown, retry
+  notify.rs          Notifications: Telegram, Slack, Discord, SMTP email, desktop
   technical.rs       Indicators and statistics (SMA, EMA, RSI, MACD, BB, ATR, VWAP, OBV, VaR, Sharpe, XIRR, ...)
   backtest.rs        Backtesting engine (6 strategies, equity curves)
   intraday.rs        Intraday bot (9 strategies, regime detection, Kelly sizing)
@@ -95,6 +98,8 @@ Location: `~/Library/Application Support/stockwise/` (macOS), `~/.local/share/st
 | `alerts.json` | Price alerts (symbol, condition, target) |
 | `wealth_history.json` | Daily portfolio value snapshots |
 | `sim_history.json` | Paper trading sessions and results |
+| `daemon_state.json` | The intraday daemon's current day (positions, risk), saved every tick |
+| `alert_watch.json` | Which alerts `alert watch` already announced |
 | `angel_config.json` | Angel One API credentials |
 
 ## Dependencies
@@ -110,6 +115,8 @@ Location: `~/Library/Application Support/stockwise/` (macOS), `~/.local/share/st
 | `chrono` | Date handling |
 | `dirs` | Platform-specific data directories |
 | `anyhow` | Error handling |
+| `lettre` | SMTP email notifications (rustls) |
+| `notify-rust` | Desktop notifications (optional `desktop-notify` feature) |
 
 ## Testing
 

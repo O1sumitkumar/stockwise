@@ -4,13 +4,21 @@
 
 ### What exists today
 
-The bots are **on-demand scanners** — you run a command, it scans once, gives suggestions, and exits. No continuous monitoring.
+- **On-demand scanners** (`intraday`, `longterm`): scan once, suggest, exit.
+- **`daemon intraday`**: a paper-only worker on the exchange clock (IST /
+  ET, holidays included) that enters at the open, manages positions every
+  60 seconds, squares off before the close and settles into the simulator
+  history. It survives network errors, saves its state every tick
+  (`daemon_state.json`), resumes after a restart, and squares off on Ctrl+C.
+- **`daemon longterm`**: a one-shot post-market scan.
+- **`alert watch`**: checks price alerts while their market is open.
+- **Notifications** to Telegram, Slack, Discord, email and the desktop for
+  alert triggers and daemon entries, exits, kill switch and end of day.
 
-```
-User runs command → Scan → Score → Display → Exit
-```
+Not built: live order execution from the daemon (Phase 2), the learning loop
+(Phase 4), and scheduling (run the workers from cron/systemd/launchd).
 
-### What should exist
+### Design
 
 Two persistent background workers that run throughout the day:
 
@@ -149,9 +157,11 @@ Ollama (AI insights) ────┘         │                    │
 | Max 1% risk per trade | Kelly sizing capped, stop-loss enforced |
 | Max 30% capital in one stock | Position size limit |
 | Max 5 concurrent positions | Hard limit in trade manager |
-| No new entries after 2 PM | Time-based gate |
+| Total allocation ≤ capital | Plans are shrunk or dropped, best first, until they fit |
+| No new entries after the opening window | Entries only 9:15–9:30; nothing after |
 | Square off by 3:15 PM | Forced exit at market price |
-| No trading on circuit-breaker days | Check if NIFTY moved >3% pre-market |
+| No trading on circuit-breaker days | *Planned:* check if NIFTY moved >3% pre-market |
+| No trading on holidays | Exchange holiday table (`src/clock.rs`) |
 | Daily loss limit (3% of capital) | Kill switch — close all if breached |
 
 ---
@@ -236,14 +246,18 @@ stockwise daemon longterm          # Run longterm daily worker
 stockwise daemon --all             # Run both
 ```
 
-Implementation:
-- Tokio async loop with `tokio::time::interval`
-- Intraday: 60-second tick during market hours (9:00–3:30 IST)
-- Longterm: single run at 4:00 PM, cron-scheduled or manual
-- *Planned:* state persisted to `daemon_state.json` — today open positions live
-  in memory and are written to the simulator history at the 3:30 settle
-- *Planned:* Ctrl+C graceful shutdown that squares off first — today Ctrl+C
-  stops the worker and the day's open paper positions are not recorded
+Implementation (done):
+- Tokio loop; the phase comes from `clock::market_phase(market, now)` — IST
+  for NSE, US Eastern (with daylight saving) for NYSE, holidays closed
+- Intraday: 60-second tick during market hours; one Yahoo session reused,
+  failed ticks retried with bounded backoff (15 s → 5 min), never fatal
+- State persisted to `daemon_state.json` after every tick and resumed on a
+  same-day restart; a day the daemon missed the close of is handed to
+  `sim settle`
+- Ctrl+C / SIGTERM: square off at last prices, settle into the simulator
+  history, save, exit 0
+- Longterm: single run, cron-scheduled or manual
+- Not built: `daemon --all`
 
 ### Phase 2: Trade Execution (planned — not implemented)
 
@@ -265,11 +279,15 @@ Signal Generated ──► Confirmation Check ──► Angel One API
 - Paper mode (default): `stockwise daemon intraday --paper`
 - Requires Angel One configured
 
-### Phase 3: Notifications
+### Phase 3: Notifications (done)
 
-- Terminal bell on trade entry/exit
-- Optional webhook to Telegram/Discord
-- Daily P&L summary email (via sendgrid or local)
+`src/notify.rs` sends to Telegram (bot API), Slack and Discord (incoming
+webhooks), email (SMTP via lettre + rustls) and the desktop (notify-rust,
+behind the `desktop-notify` feature). Channels are configured with
+environment variables; `stockwise notify test` checks them. The daemon sends
+entries, exits (T1, target, stop, square-off), the kill switch and the
+end-of-day summary; `alert watch` sends each trigger once. See
+[bots.md](bots.md#notifications).
 
 ### Phase 4: Learning Loop
 
@@ -284,16 +302,19 @@ After 30+ simulation days:
 
 ---
 
-## File Structure (proposed)
+## File Structure
 
 ```
 src/
-  daemon.rs           Daemon loop, market hours detection, state machine
-  trade_manager.rs    Position tracking, partial exits, trailing stops
-  risk_manager.rs     Daily loss limit, position limits, kill switch
-  scheduler.rs        Cron-like scheduling for longterm worker
-  notifier.rs         Terminal alerts, optional webhook
+  clock.rs            Exchange clock: IST / US Eastern, holiday tables, phases
+  daemon.rs           Positions, risk manager, daemon state + events, shutdown
+  commands/worker.rs  The intraday and long-term loops
+  commands/alerting.rs  `alert watch` and `notify`
+  notify.rs           Telegram, Slack, Discord, email, desktop
+  simulator.rs        Sessions, stats, and the bar replay behind `sim settle`
 ```
+
+Planned: `scheduler.rs` (cron-like scheduling for the long-term worker).
 
 ---
 
@@ -302,7 +323,10 @@ src/
 | Market | Open | Close | Pre-market |
 |--------|------|-------|------------|
 | NSE/BSE | 9:15 AM IST | 3:30 PM IST | 9:00 AM |
-| NYSE/NASDAQ | 9:30 AM ET | 4:00 PM ET | 4:00 AM |
+| NYSE/NASDAQ | 9:30 AM ET | 4:00 PM ET (1:00 PM on early-close days) | 4:00 AM |
+
+Holidays: NSE 2026 (official), 2027 (provisional), NYSE 2026–2028. To add a
+year, see the module docs at the top of `src/clock.rs`.
 
 ---
 
