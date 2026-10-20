@@ -84,28 +84,30 @@ stockwise_upstream_errors_total 1             # fetches that failed after all re
 stockwise_cache_hits_total{layer="redis"} 12
 stockwise_cache_hits_total{layer="memory"} 30
 stockwise_cache_misses_total 57
-stockwise_daemon_up 1
-stockwise_daemon_status_age_seconds 41
-stockwise_daemon_open_positions 3
-stockwise_daemon_day_pnl 412.5
-stockwise_daemon_realized_pnl 120
-stockwise_daemon_unrealized_pnl 292.5
-stockwise_daemon_capital 25000
-stockwise_daemon_kill_switch 0
-stockwise_daemon_settled 0
+stockwise_daemon_up{market="IN"} 1
+stockwise_daemon_up{market="US"} 0
+stockwise_daemon_status_age_seconds{market="IN"} 41
+stockwise_daemon_open_positions{market="IN"} 3
+stockwise_daemon_day_pnl{market="IN"} 412.5
+stockwise_daemon_realized_pnl{market="IN"} 120
+stockwise_daemon_unrealized_pnl{market="IN"} 292.5
+stockwise_daemon_capital{market="IN"} 25000
+stockwise_daemon_kill_switch{market="IN"} 0
+stockwise_daemon_settled{market="IN"} 0
 ```
 
 `route` is the route template (`/api/history/{symbol}`), so label values stay
 bounded; anything that matched no route is `unmatched`, and unusual HTTP
 methods are counted as `OTHER`.
 
-**Daemon metrics.** `stockwise daemon intraday` saves its day state to
-`daemon_state.json` in the data directory after every tick. The server reads
-that file, so run both against the same data directory (`STOCKWISE_HOME`).
-`stockwise_daemon_up` is 1 if the state is less than 45 minutes old (while
-the market is closed the daemon saves at least every 30 minutes). The other
-`stockwise_daemon_*` gauges appear once the daemon has run at least once.
-The daemon paper-trades only.
+**Daemon metrics.** `stockwise daemon intraday` saves its day state in the
+data directory after every tick — `daemon_state.json` for NSE,
+`daemon_state_us.json` for `-m us` — and the server reads both, so run them
+against the same data directory (`STOCKWISE_HOME`). Every daemon gauge has a
+`market` label (`IN` or `US`). `stockwise_daemon_up` is 1 if that market's
+state is less than 45 minutes old (while the market is closed the daemon
+saves at least every 30 minutes); the other `stockwise_daemon_*` gauges appear
+once a daemon has run. The daemon paper-trades only.
 
 ```yaml
 # prometheus.yml
@@ -117,8 +119,8 @@ scrape_configs:
     # authorization: { type: Bearer, credentials: "<STOCKWISE_API_TOKEN>" }
 ```
 
-Example alert: `stockwise_daemon_kill_switch == 1` or `stockwise_daemon_up == 0`
-during market hours.
+Example alert: `stockwise_daemon_kill_switch{market="IN"} == 1`, or
+`stockwise_daemon_up{market="IN"} == 0` during NSE hours.
 
 ## Remote access
 

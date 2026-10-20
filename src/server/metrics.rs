@@ -85,9 +85,9 @@ impl Metrics {
             .observe(elapsed.as_secs_f64());
     }
 
-    /// The full exposition. `daemon` is the intraday daemon's last status,
-    /// if it has ever run against this data directory; `now` is Unix seconds.
-    pub fn render(&self, daemon: Option<&DaemonStatus>, now: i64) -> String {
+    /// The full exposition. `daemons` are the intraday daemons' last saved
+    /// states (one per market that has run here); `now` is Unix seconds.
+    pub fn render(&self, daemons: &[DaemonStatus], now: i64) -> String {
         let mut out = String::new();
 
         header(
@@ -219,56 +219,72 @@ impl Metrics {
             &mut out,
             "stockwise_daemon_up",
             "gauge",
-            "1 if the intraday daemon saved its state in the last 45 minutes.",
+            "1 if the market's intraday daemon saved its state in the last 45 minutes.",
         );
-        let fresh = daemon.is_some_and(|d| d.is_fresh(now));
-        let _ = writeln!(out, "stockwise_daemon_up {}", u8::from(fresh));
-        if let Some(d) = daemon {
-            let gauges: [(&str, &str, f64); 8] = [
-                (
-                    "stockwise_daemon_status_age_seconds",
-                    "Seconds since the daemon last saved its state.",
-                    d.age_secs(now) as f64,
-                ),
-                (
-                    "stockwise_daemon_open_positions",
-                    "Open paper positions.",
-                    d.open_positions as f64,
-                ),
-                (
-                    "stockwise_daemon_day_pnl",
-                    "Day P&L of the paper session (realized + unrealized).",
-                    d.day_pnl,
-                ),
-                (
-                    "stockwise_daemon_realized_pnl",
-                    "Realized P&L of the paper session today.",
-                    d.realized_pnl,
-                ),
-                (
-                    "stockwise_daemon_unrealized_pnl",
-                    "Unrealized P&L of open paper positions.",
-                    d.unrealized_pnl,
-                ),
-                (
-                    "stockwise_daemon_capital",
-                    "Paper capital the daemon trades with.",
-                    d.capital,
-                ),
-                (
-                    "stockwise_daemon_kill_switch",
-                    "1 once the daily loss limit tripped (no new entries today).",
-                    if d.kill_switch { 1.0 } else { 0.0 },
-                ),
-                (
-                    "stockwise_daemon_settled",
-                    "1 once the day is over and recorded in the simulator history.",
-                    if d.settled { 1.0 } else { 0.0 },
-                ),
-            ];
+        for market in crate::daemon_status::MARKETS {
+            let fresh = daemons
+                .iter()
+                .any(|d| d.market == market && d.is_fresh(now));
+            let _ = writeln!(
+                out,
+                "stockwise_daemon_up{{market=\"{}\"}} {}",
+                market,
+                u8::from(fresh)
+            );
+        }
+        let gauges: [(&str, &str, fn(&DaemonStatus, i64) -> f64); 8] = [
+            (
+                "stockwise_daemon_status_age_seconds",
+                "Seconds since the daemon last saved its state.",
+                |d, now| d.age_secs(now) as f64,
+            ),
+            (
+                "stockwise_daemon_open_positions",
+                "Open paper positions.",
+                |d, _| d.open_positions as f64,
+            ),
+            (
+                "stockwise_daemon_day_pnl",
+                "Day P&L of the paper session (realized + unrealized).",
+                |d, _| d.day_pnl,
+            ),
+            (
+                "stockwise_daemon_realized_pnl",
+                "Realized P&L of the paper session today.",
+                |d, _| d.realized_pnl,
+            ),
+            (
+                "stockwise_daemon_unrealized_pnl",
+                "Unrealized P&L of open paper positions.",
+                |d, _| d.unrealized_pnl,
+            ),
+            (
+                "stockwise_daemon_capital",
+                "Paper capital the daemon trades with.",
+                |d, _| d.capital,
+            ),
+            (
+                "stockwise_daemon_kill_switch",
+                "1 once the daily loss limit tripped (no new entries today).",
+                |d, _| if d.kill_switch { 1.0 } else { 0.0 },
+            ),
+            (
+                "stockwise_daemon_settled",
+                "1 once the day is over and recorded in the simulator history.",
+                |d, _| if d.settled { 1.0 } else { 0.0 },
+            ),
+        ];
+        if !daemons.is_empty() {
             for (name, help, value) in gauges {
                 header(&mut out, name, "gauge", help);
-                let _ = writeln!(out, "{name} {value}");
+                for d in daemons {
+                    let _ = writeln!(
+                        out,
+                        "{name}{{market=\"{}\"}} {}",
+                        label(&d.market),
+                        value(d, now)
+                    );
+                }
             }
         }
         out
@@ -285,7 +301,7 @@ mod tests {
         m.observe("GET", "/api/quote", 200, Duration::from_millis(3));
         m.observe("GET", "/api/quote", 200, Duration::from_millis(300));
         m.observe("GET", "/api/quote", 404, Duration::from_secs(20));
-        let text = m.render(None, 0);
+        let text = m.render(&[], 0);
         assert!(text.contains(
             "stockwise_http_requests_total{method=\"GET\",route=\"/api/quote\",status=\"200\"} 2"
         ));
@@ -307,13 +323,15 @@ mod tests {
         assert!(
             text.contains("stockwise_http_request_duration_seconds_count{route=\"/api/quote\"} 3")
         );
-        assert!(text.contains("stockwise_daemon_up 0"));
+        assert!(text.contains("stockwise_daemon_up{market=\"IN\"} 0"));
+        assert!(text.contains("stockwise_daemon_up{market=\"US\"} 0"));
         assert!(!text.contains("stockwise_daemon_open_positions"));
     }
 
     #[test]
     fn every_sample_has_help_and_type() {
         let d = DaemonStatus {
+            market: "US".into(),
             updated_at: 100,
             open_positions: 2,
             day_pnl: -12.5,
@@ -322,12 +340,13 @@ mod tests {
         };
         let m = Metrics::new();
         m.observe("GET", "/healthz", 200, Duration::from_millis(1));
-        let text = m.render(Some(&d), 160);
-        assert!(text.contains("stockwise_daemon_up 1"));
-        assert!(text.contains("stockwise_daemon_open_positions 2"));
-        assert!(text.contains("stockwise_daemon_day_pnl -12.5"));
-        assert!(text.contains("stockwise_daemon_kill_switch 1"));
-        assert!(text.contains("stockwise_daemon_status_age_seconds 60"));
+        let text = m.render(&[d], 160);
+        assert!(text.contains("stockwise_daemon_up{market=\"US\"} 1"));
+        assert!(text.contains("stockwise_daemon_up{market=\"IN\"} 0"));
+        assert!(text.contains("stockwise_daemon_open_positions{market=\"US\"} 2"));
+        assert!(text.contains("stockwise_daemon_day_pnl{market=\"US\"} -12.5"));
+        assert!(text.contains("stockwise_daemon_kill_switch{market=\"US\"} 1"));
+        assert!(text.contains("stockwise_daemon_status_age_seconds{market=\"US\"} 60"));
         for line in text.lines().filter(|l| !l.starts_with('#')) {
             let name = line
                 .split(['{', ' '])

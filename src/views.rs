@@ -36,8 +36,8 @@ pub trait DataSource: Send + Sync {
     fn alerts(&self) -> Result<AlertStore> {
         AlertStore::load()
     }
-    /// The intraday daemon's last saved state, if it has run.
-    fn daemon_status(&self) -> Option<DaemonStatus> {
+    /// Each intraday daemon's last saved state (one per market that ran).
+    fn daemon_status(&self) -> Vec<DaemonStatus> {
         crate::daemon_status::load()
     }
 }
@@ -604,7 +604,7 @@ pub mod fixtures {
         pub portfolio: Portfolio,
         pub watchlist: Watchlist,
         pub alerts: AlertStore,
-        pub daemon: Option<DaemonStatus>,
+        pub daemon: Vec<DaemonStatus>,
         /// Number of quote requests served.
         pub quote_calls: AtomicUsize,
         /// When set, every network call fails with this message.
@@ -638,7 +638,7 @@ pub mod fixtures {
                 portfolio,
                 watchlist,
                 alerts,
-                daemon: None,
+                daemon: Vec::new(),
                 quote_calls: AtomicUsize::new(0),
                 fail: Mutex::new(None),
             }
@@ -711,7 +711,7 @@ pub mod fixtures {
                 alerts: self.alerts.alerts.clone(),
             })
         }
-        fn daemon_status(&self) -> Option<DaemonStatus> {
+        fn daemon_status(&self) -> Vec<DaemonStatus> {
             self.daemon.clone()
         }
     }

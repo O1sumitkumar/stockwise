@@ -309,9 +309,7 @@ async fn healthz() -> Response {
 
 async fn prometheus<D: DataSource>(State(st): Shared<D>) -> Response {
     let daemon = st.source.daemon_status();
-    let body = st
-        .metrics
-        .render(daemon.as_ref(), chrono::Utc::now().timestamp());
+    let body = st.metrics.render(&daemon, chrono::Utc::now().timestamp());
     (
         [(
             header::CONTENT_TYPE,
@@ -880,13 +878,14 @@ mod tests {
     #[tokio::test]
     async fn metrics_count_routes_and_report_the_daemon() {
         let f = Fixture {
-            daemon: Some(DaemonStatus {
+            daemon: vec![DaemonStatus {
+                market: "IN".into(),
                 updated_at: chrono::Utc::now().timestamp(),
                 open_positions: 3,
                 day_pnl: 420.5,
                 kill_switch: false,
                 ..Default::default()
-            }),
+            }],
             ..Default::default()
         };
         let app = app_with(f, None);
@@ -911,10 +910,11 @@ mod tests {
         assert!(text.contains(
             "stockwise_http_requests_total{method=\"GET\",route=\"unmatched\",status=\"404\"} 1"
         ));
-        assert!(text.contains("stockwise_daemon_up 1"));
-        assert!(text.contains("stockwise_daemon_open_positions 3"));
-        assert!(text.contains("stockwise_daemon_day_pnl 420.5"));
-        assert!(text.contains("stockwise_daemon_kill_switch 0"));
+        assert!(text.contains("stockwise_daemon_up{market=\"IN\"} 1"));
+        assert!(text.contains("stockwise_daemon_up{market=\"US\"} 0"));
+        assert!(text.contains("stockwise_daemon_open_positions{market=\"IN\"} 3"));
+        assert!(text.contains("stockwise_daemon_day_pnl{market=\"IN\"} 420.5"));
+        assert!(text.contains("stockwise_daemon_kill_switch{market=\"IN\"} 0"));
         assert!(text.contains("stockwise_upstream_errors_total "));
         assert!(text.contains("stockwise_cache_hits_total{layer=\"memory\"} "));
     }

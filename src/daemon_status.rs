@@ -1,21 +1,25 @@
 //! What the intraday daemon is doing, for `stockwise serve` → `/metrics`.
 //!
-//! The daemon saves its day state to `daemon_state.json` after every tick.
-//! This module reads only the fields the metrics need, leniently, so the
-//! server keeps working if the daemon's state gains fields. Paper positions
-//! only; the daemon never places live orders.
+//! The daemon saves its day state after every tick, one file per market
+//! (`daemon_state.json` for NSE, `daemon_state_us.json` for NYSE). This
+//! module reads only the fields the metrics need, leniently, so the server
+//! keeps working if the daemon's state gains fields. Paper positions only;
+//! the daemon never places live orders.
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-
-const FILE: &str = "daemon_state.json";
 
 /// A status older than this means the daemon stopped. Its slowest loop, the
 /// wait while the market is closed, saves at least every 30 minutes.
 pub const STALE_AFTER_SECS: i64 = 45 * 60;
 
+/// Markets a daemon can run for, as the metrics label them.
+pub const MARKETS: [&str; 2] = ["IN", "US"];
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DaemonStatus {
+    /// `IN` or `US`.
+    pub market: String,
     /// Unix seconds of the last save.
     pub updated_at: i64,
     pub capital: f64,
@@ -50,6 +54,8 @@ struct RawRisk {
 struct RawState {
     updated_at: DateTime<Utc>,
     #[serde(default)]
+    market: String,
+    #[serde(default)]
     capital: f64,
     #[serde(default)]
     positions: Vec<RawPosition>,
@@ -71,6 +77,11 @@ impl DaemonStatus {
             .collect();
         let unrealized: f64 = open.iter().map(|p| p.pnl).sum();
         Some(Self {
+            market: if raw.market.is_empty() {
+                "IN".into()
+            } else {
+                raw.market.to_ascii_uppercase()
+            },
             updated_at: raw.updated_at.timestamp(),
             capital: raw.capital,
             open_positions: open.len(),
@@ -91,12 +102,17 @@ impl DaemonStatus {
     }
 }
 
-/// The daemon's last saved state, or None if it never ran against this data
-/// directory (or the file can't be read).
-pub fn load() -> Option<DaemonStatus> {
-    let path = crate::store::path(FILE).ok()?;
-    let json = std::fs::read_to_string(path).ok()?;
-    DaemonStatus::from_state_json(&json)
+/// The last saved state of each market's daemon that has run against this
+/// data directory (unreadable files are skipped).
+pub fn load() -> Vec<DaemonStatus> {
+    MARKETS
+        .iter()
+        .filter_map(|m| {
+            let path = crate::store::path(crate::daemon::state_file(m)).ok()?;
+            let json = std::fs::read_to_string(path).ok()?;
+            DaemonStatus::from_state_json(&json)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -128,6 +144,7 @@ mod tests {
         assert_eq!(s.capital, 25000.0);
         assert!(!s.kill_switch);
         assert!(!s.settled);
+        assert_eq!(s.market, "IN");
         assert_eq!(s.updated_at, 1_792_560_600);
     }
 
