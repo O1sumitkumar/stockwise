@@ -1,6 +1,5 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Alert {
@@ -30,30 +29,13 @@ pub struct AlertStore {
     pub alerts: Vec<Alert>,
 }
 
-fn alerts_path() -> Result<PathBuf> {
-    let dir = dirs::data_local_dir()
-        .context("Cannot determine local data directory")?
-        .join("stockwise");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir.join("alerts.json"))
-}
-
 impl AlertStore {
     pub fn load() -> Result<Self> {
-        let path = alerts_path()?;
-        if !path.exists() {
-            return Ok(AlertStore::default());
-        }
-        let data = std::fs::read_to_string(&path)?;
-        let store: AlertStore = serde_json::from_str(&data)?;
-        Ok(store)
+        crate::store::load("alerts.json")
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = alerts_path()?;
-        let data = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, data)?;
-        Ok(())
+        crate::store::save("alerts.json", self, false)
     }
 
     pub fn add(&mut self, symbol: &str, condition: AlertCondition, target: f64) {

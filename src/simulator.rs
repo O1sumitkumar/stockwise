@@ -1,6 +1,5 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 /// A single simulated trade
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,30 +45,13 @@ pub struct SimHistory {
     pub sessions: Vec<SimSession>,
 }
 
-fn sim_path() -> Result<PathBuf> {
-    let dir = dirs::data_local_dir()
-        .context("Cannot determine local data directory")?
-        .join("stockwise");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir.join("sim_history.json"))
-}
-
 impl SimHistory {
     pub fn load() -> Result<Self> {
-        let path = sim_path()?;
-        if !path.exists() {
-            return Ok(SimHistory::default());
-        }
-        let data = std::fs::read_to_string(&path)?;
-        let history: SimHistory = serde_json::from_str(&data)?;
-        Ok(history)
+        crate::store::load("sim_history.json")
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = sim_path()?;
-        let data = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, data)?;
-        Ok(())
+        crate::store::save("sim_history.json", self, false)
     }
 
     pub fn stats(&self) -> SimStats {

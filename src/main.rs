@@ -25,6 +25,7 @@ mod longterm;
 mod market;
 mod portfolio;
 mod simulator;
+mod store;
 mod technical;
 mod watchlist;
 mod wealth;
@@ -471,7 +472,17 @@ async fn main() {
             symbol,
             qty,
             price,
-        } => commands::cmd_trade(&action, symbol.as_deref(), qty, price, m).await,
+        } => {
+            commands::cmd_trade(
+                &action,
+                symbol.as_deref(),
+                qty,
+                price,
+                Default::default(),
+                m,
+            )
+            .await
+        }
         Commands::Dashboard => commands::cmd_dashboard(m).await,
     };
 
