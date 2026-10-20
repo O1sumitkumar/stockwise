@@ -76,6 +76,16 @@ pub fn target(symbol: &str) -> Option<Target> {
     }
 }
 
+/// Trading currency of an Alpha Vantage equity symbol, where it is
+/// unambiguous: US listings and BSE. (London quotes in pence, for one.)
+fn equity_currency(av_symbol: &str) -> Option<&'static str> {
+    match av_symbol.rsplit_once('.') {
+        None => Some("USD"),
+        Some((_, "BSE")) => Some("INR"),
+        Some(_) => None,
+    }
+}
+
 /// Alpha Vantage symbol → Yahoo symbol (`RELIANCE.BSE` → `RELIANCE.BO`).
 pub fn to_yahoo(symbol: &str) -> String {
     let upper = symbol.to_ascii_uppercase();
@@ -130,7 +140,10 @@ impl AlphaVantage {
                 let json = self
                     .call(&[("function", "GLOBAL_QUOTE"), ("symbol", &sym)], ttl)
                     .await?;
-                Ok(parse_global_quote(&json))
+                Ok(parse_global_quote(&json).map(|mut q| {
+                    q.currency = equity_currency(&sym).map(str::to_string);
+                    q
+                }))
             }
             Some(Target::Fx { from, to }) => {
                 let json = self.exchange_rate(&from, &to, ttl).await?;
@@ -209,8 +222,12 @@ impl AlphaVantage {
         series.currency = match &target {
             Target::Fx { to, .. } => Some(to.clone()),
             Target::Crypto { market, .. } => Some(market.clone()),
-            Target::Equity(_) => None,
+            Target::Equity(sym) => equity_currency(sym).map(str::to_string),
         };
+        if series.currency.is_none() {
+            // Prices without a currency would print as `$`; Yahoo knows it.
+            anyhow::bail!("Alpha Vantage gives no currency for {}", symbol);
+        }
         Ok(series)
     }
 
@@ -441,10 +458,35 @@ mod tests {
             "k-1234".into(),
             Some(server.url.clone()),
         );
-        // Two bars cannot cover a year.
+        // Beyond the free plan's 100 bars, or `max`: refused without
+        // spending one of the 25 daily requests.
         assert!(p.chart("IBM", "1y", "1d").await.is_err());
+        assert!(p.chart("IBM", "max", "1mo").await.is_err());
         // Intraday intervals are never asked of the provider.
         assert!(p.chart("IBM", "1d", "5m").await.is_err());
+        assert_eq!(server.requests().len(), 0);
+        // Within the plan, but the bars don't reach back far enough.
+        assert!(p.chart("IBM", "1mo", "1d").await.is_err());
         assert_eq!(server.requests().len(), 1);
+    }
+
+    #[test]
+    fn equity_currency_only_where_unambiguous() {
+        assert_eq!(equity_currency("IBM"), Some("USD"));
+        assert_eq!(equity_currency("RELIANCE.BSE"), Some("INR"));
+        assert_eq!(equity_currency("TSCO.LON"), None);
+    }
+
+    #[tokio::test]
+    async fn unreachable_provider_is_dropped_for_the_run() {
+        // Nothing listens on the discard port: the first request fails fast
+        // and the remaining symbols are not attempted.
+        let p = Provider::new(
+            ProviderKind::AlphaVantage,
+            "k-1234".into(),
+            Some("http://127.0.0.1:9".into()),
+        );
+        assert!(p.quotes(&["IBM", "MSFT", "AAPL"]).await.is_err());
+        assert_eq!(p.remaining(), 0);
     }
 }

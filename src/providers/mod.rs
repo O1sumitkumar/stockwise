@@ -105,6 +105,18 @@ impl ProviderKind {
             ProviderKind::TwelveData => 8,
         }
     }
+
+    /// Calendar days of daily history the free plan returns, or `None` when
+    /// it reaches back years (Twelve Data: up to 5000 bars). Longer ranges —
+    /// and `max` — go to Yahoo without spending a request.
+    fn history_days(self) -> Option<i64> {
+        match self {
+            // `outputsize=compact`: the latest 100 trading days.
+            ProviderKind::AlphaVantage => Some(140),
+            ProviderKind::Massive => Some(730),
+            ProviderKind::TwelveData => None,
+        }
+    }
 }
 
 /// What `STOCKWISE_DATA_PROVIDER` asks for.
@@ -267,7 +279,18 @@ impl MarketData for Provider {
         let Some(step) = Resample::for_interval(interval) else {
             bail!("{} serves daily, weekly and monthly bars only", self.name());
         };
-        let start = range_start(range, chrono::Utc::now().date_naive());
+        let today = chrono::Utc::now().date_naive();
+        let start = range_start(range, today);
+        if let Some(days) = self.kind().history_days() {
+            let oldest = today - chrono::Duration::days(days);
+            if start.is_none_or(|s| s < oldest) {
+                bail!(
+                    "{} keeps {} days of history on the free plan",
+                    self.name(),
+                    days
+                );
+            }
+        }
         let series = match self {
             Provider::AlphaVantage(p) => p.daily(symbol, start).await?,
             Provider::Massive(p) => p.daily(symbol, start).await?,
@@ -434,10 +457,19 @@ impl Http {
         if let Auth::Header(header, prefix) = auth {
             req = req.header(header, format!("{}{}", prefix, self.key));
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("{} request failed: {}", name, e.without_url()))?;
+        let resp = match req.send().await {
+            Ok(resp) => resp,
+            // Unreachable or timing out: don't make every remaining symbol
+            // wait for it too.
+            Err(e) => {
+                self.exhausted.store(true, Ordering::Relaxed);
+                let msg = format!("request failed ({})", e.without_url());
+                notice_once(&self.noticed, || {
+                    format!("{}: {} — using Yahoo Finance instead", name, msg)
+                });
+                bail!("{}: {}", name, msg);
+            }
+        };
         let status = resp.status();
         let body = resp
             .text()

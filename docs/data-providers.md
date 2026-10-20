@@ -36,7 +36,7 @@ Vantage. Indices (`^NSEI`, `^GSPC`) always come from Yahoo.
 |------|----------------------------|
 | Quotes (`quote`, `dashboard`, `portfolio`, ...) | Provider for price, day range, volume and change; Yahoo for name, 52-week range, fundamentals and anything else missing. `quote` says which provider answered |
 | Bulk scans (`movers`, `screen`, `heatmap`, ...) | Yahoo, when the scan has more symbols than the provider's per-run budget, so one table never mixes sources |
-| Daily, weekly, monthly history | Provider, if its plan reaches back over the whole period (weekly and monthly bars are built from daily ones); otherwise Yahoo |
+| Daily, weekly, monthly history | Provider, if its plan reaches back over the whole period (weekly and monthly bars are built from daily ones); otherwise Yahoo. Ranges beyond the free plan — over ~140 days on Alpha Vantage, over 2 years on Massive, and `-p max` on both — go straight to Yahoo without spending a request |
 | Intraday bars (`-p 1d`, `-p 5d`) | Yahoo (not on any free tier) |
 | `search` | Provider's matches, mapped back to Yahoo symbols (`RELIANCE.BSE` → `RELIANCE.BO`, `X:BTCUSD` → `BTC-USD`); Yahoo's when it finds none |
 | Fundamentals, news, insider, earnings | Yahoo |
@@ -46,7 +46,7 @@ Vantage. Indices (`^NSEI`, `^GSPC`) always come from Yahoo.
 - Each command spends at most a small per-run budget of provider requests —
   5 for Alpha Vantage and Massive, 8 for Twelve Data — so one scan can't burn
   a day's allowance or wait a minute for the next slot.
-- If a provider reports a rate limit or refuses the key, StockWise prints one
+- If a provider reports a rate limit, refuses the key, or can't be reached, StockWise prints one
   `ⓘ` notice on stderr, stops asking it for the rest of the run, and uses
   Yahoo. `--json` output on stdout is unaffected.
 - Provider answers share the Redis / in-memory cache (quotes 1–5 minutes,

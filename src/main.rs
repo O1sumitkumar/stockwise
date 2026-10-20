@@ -866,7 +866,10 @@ fn exit_quietly_on_broken_pipe() {
 async fn main() {
     exit_quietly_on_broken_pipe();
     // The language is needed before parsing: the help text is built from it.
-    let args: Vec<String> = std::env::args().collect();
+    // args_os: a non-UTF-8 argument is clap's to report, not a panic here.
+    let args: Vec<String> = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     let (lang, source) = i18n::detect(&args, |k| std::env::var(k).ok());
     i18n::set_lang(lang, source);
     let matches = build_cli().get_matches();
