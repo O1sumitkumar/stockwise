@@ -12,7 +12,7 @@ use crate::simulator::{SimHistory, SimSession, SimTrade};
 use crate::technical;
 use crate::watchlist::Watchlist;
 use crate::wealth::WealthHistory;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use colored::Colorize;
 
 fn period_to_interval(period: &str) -> &str {
@@ -4346,6 +4346,10 @@ pub async fn cmd_import(source: &str, file: &str, market: Market) -> Result<()> 
     let header = lines[0].to_lowercase();
     let mut portfolio = Portfolio::load()?;
     let mut imported = 0;
+    // An export is a full snapshot: the first row for a symbol replaces the
+    // existing holding (so re-importing never doubles it); further rows for the
+    // same symbol in this file are extra lots and are averaged in.
+    let mut seen = std::collections::HashSet::new();
 
     match source {
         "kite" | "zerodha" => {
@@ -4400,7 +4404,11 @@ pub async fn cmd_import(source: &str, file: &str, market: Market) -> Result<()> 
                 }
 
                 let resolved = market::resolve_symbol(symbol_raw, market);
-                portfolio.add(&resolved, qty, avg);
+                if seen.insert(resolved.clone()) {
+                    portfolio.set(&resolved, qty, avg);
+                } else {
+                    portfolio.add(&resolved, qty, avg);
+                }
                 imported += 1;
                 println!(
                     "  {} {} — {} shares @ ₹{:.2}",
@@ -4472,7 +4480,11 @@ pub async fn cmd_import(source: &str, file: &str, market: Market) -> Result<()> 
                 }
 
                 let resolved = market::resolve_symbol(symbol_raw, market);
-                portfolio.add(&resolved, qty, avg);
+                if seen.insert(resolved.clone()) {
+                    portfolio.set(&resolved, qty, avg);
+                } else {
+                    portfolio.add(&resolved, qty, avg);
+                }
                 imported += 1;
                 println!(
                     "  {} {} — {} shares @ ₹{:.2}",
@@ -4548,7 +4560,11 @@ pub async fn cmd_import(source: &str, file: &str, market: Market) -> Result<()> 
                 }
 
                 let resolved = market::resolve_symbol(symbol_raw, market);
-                portfolio.add(&resolved, qty, avg);
+                if seen.insert(resolved.clone()) {
+                    portfolio.set(&resolved, qty, avg);
+                } else {
+                    portfolio.add(&resolved, qty, avg);
+                }
                 imported += 1;
                 println!(
                     "  {} {} — {} shares @ {:.2}",
@@ -4618,15 +4634,151 @@ fn find_col(cols: &[String], names: &[&str]) -> Option<usize> {
 
 // ── Angel One Trading ──
 
+/// Safety switches for commands that place live orders.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OrderOpts {
+    /// Skip the interactive confirmation (required when stdin is not a terminal).
+    pub yes: bool,
+    /// Resolve and preview the order, but never send it.
+    pub dry_run: bool,
+}
+
+/// Resolve, preview, confirm, and place one live order. Each guard exists
+/// because a typo in a shell command could otherwise spend real money.
+async fn place_live_order(
+    side: &str,
+    symbol: &str,
+    qty: u32,
+    limit: Option<f64>,
+    opts: OrderOpts,
+) -> Result<()> {
+    if qty == 0 {
+        bail!("Quantity must be at least 1");
+    }
+    if let Some(p) = limit
+        && !(p.is_finite() && p > 0.0)
+    {
+        bail!("Limit price must be a positive number");
+    }
+    let sym = symbol.trim().to_uppercase();
+    let sym = sym.trim_end_matches(".NS").trim_end_matches("-EQ");
+
+    let client = crate::angel::AngelClient::new().await?;
+    let instrument = client.resolve_equity(sym, "NSE").await?;
+
+    // Reference price for the value estimate: the limit price, else last trade.
+    let yahoo_sym = format!("{}.NS", sym);
+    let last = match YahooClient::new().await {
+        Ok(y) => y
+            .get_quote(&[yahoo_sym.as_str()])
+            .await
+            .ok()
+            .and_then(|q| q.first().and_then(|q| q.regular_market_price)),
+        Err(_) => None,
+    };
+    let est_value = limit.or(last).map(|p| p * qty as f64);
+
+    print_header(&format!("{} order — REAL MONEY", side));
+    print_kv(
+        "Instrument",
+        &format!(
+            "{} ({}, token {})",
+            instrument.tradingsymbol, instrument.exchange, instrument.token
+        ),
+    );
+    print_kv("Side", side);
+    print_kv("Quantity", &qty.to_string());
+    match limit {
+        Some(p) => print_kv("Type", &format!("LIMIT @ ₹{:.2}", p)),
+        None => print_kv("Type", "MARKET"),
+    }
+    if let Some(l) = last {
+        print_kv("Last price", &format!("₹{:.2}", l));
+    }
+    print_kv(
+        "Est. value",
+        &est_value.map_or("unknown".to_string(), |v| format!("₹{:.2}", v)),
+    );
+    println!();
+
+    if let Some(cap) = crate::angel::AngelConfig::load()?.max_order_value {
+        match est_value {
+            Some(v) if v <= cap => {}
+            Some(v) => bail!(
+                "Estimated value ₹{:.2} exceeds max_order_value ₹{:.2} in your Angel One config",
+                v,
+                cap
+            ),
+            None => bail!(
+                "Cannot estimate the order value, so max_order_value (₹{:.2}) cannot be checked. Use a limit order.",
+                cap
+            ),
+        }
+    }
+
+    if opts.dry_run {
+        println!("  {} Dry run — no order sent.\n", "✓".green());
+        return Ok(());
+    }
+    if !opts.yes && !confirm_live_order()? {
+        println!("  Cancelled — no order sent.\n");
+        return Ok(());
+    }
+
+    let order_type = if limit.is_some() { "LIMIT" } else { "MARKET" };
+    let result = client
+        .place_order(
+            &instrument,
+            side,
+            qty,
+            order_type,
+            limit.unwrap_or(0.0),
+            0.0,
+        )
+        .await?;
+
+    match &result.orderid {
+        Some(id) => println!("  {} Order placed! ID: {}", "✓".green().bold(), id.cyan()),
+        None => println!(
+            "  {} Order accepted but no order id was returned — {}",
+            "⚠".yellow().bold(),
+            "do NOT resubmit; verify with `stockwise trade orders`.".yellow()
+        ),
+    }
+    println!();
+    Ok(())
+}
+
+/// Ask the user to type `yes`. Refuses (errors) when stdin is not a terminal,
+/// so scripts must opt in with `--yes`.
+fn confirm_live_order() -> Result<bool> {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "Refusing to place a live order without confirmation. Run it in a terminal, or pass --yes."
+        );
+    }
+    print!(
+        "  Type {} to place this order (anything else cancels): ",
+        "yes".bold()
+    );
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    Ok(line.trim() == "yes")
+}
+
 pub async fn cmd_trade(
     action: &str,
     symbol: Option<&str>,
     qty: Option<u32>,
     price: Option<f64>,
+    opts: OrderOpts,
     _market: Market,
 ) -> Result<()> {
     match action {
         "setup" => {
+            let path = crate::store::path(crate::angel::CONFIG_FILE)?;
             println!();
             print_header("Angel One SmartAPI Setup");
             println!("  To connect your Angel One account, you need:");
@@ -4640,55 +4792,61 @@ pub async fn cmd_trade(
                 "API Key".bold()
             );
             println!("  3. Your {} (Angel One login ID)", "Client ID".bold());
-            println!("  4. Your {} (Angel One login password)", "Password".bold());
+            println!("  4. Your {} (Angel One login PIN)", "Password".bold());
             println!(
                 "  5. Your {} (from Authenticator app / Angel One TOTP setup)",
                 "TOTP Secret".bold()
             );
             println!();
             println!("  Then run:");
-            println!(
-                "    {} stockwise trade config <API_KEY> <CLIENT_ID> <PASSWORD> <TOTP_SECRET>",
-                "$".dimmed()
-            );
+            println!("    {} stockwise trade config", "$".dimmed());
+            println!("  and fill in the file it creates:");
+            println!("    {}", path.display().to_string().cyan());
             println!();
-            println!("  {}", "Your credentials are stored locally and never sent anywhere except Angel One's API.".dimmed());
+            println!(
+                "  {}",
+                "Never pass credentials as command-line arguments — they end up in shell history."
+                    .dimmed()
+            );
+            println!(
+                "  {}",
+                "The file is readable only by you and is sent nowhere except Angel One's API."
+                    .dimmed()
+            );
+            println!(
+                "  {}",
+                "Optional: add \"max_order_value\": 50000 to cap the value of any single order."
+                    .dimmed()
+            );
             println!();
             Ok(())
         }
         "config" => {
-            // symbol=api_key, qty arg repurposed... Actually let's parse from positional args differently
-            // This is called as: stockwise trade config <API_KEY> <CLIENT_ID> <PASSWORD> <TOTP_SECRET>
-            // But our CLI structure passes them as symbol, and we need more args.
-            // For simplicity, read from the config directly
-            println!("  {}", "Use this format:".bold());
-            println!("    stockwise trade config");
-            println!("  Then edit the config file at:");
-            let path = dirs::data_local_dir().map(|d| d.join("stockwise/angel_config.json"));
-            if let Some(p) = &path {
-                println!("    {}", p.display().to_string().cyan());
-            }
-            println!();
-            // Create template config
+            let path = crate::store::path(crate::angel::CONFIG_FILE)?;
             let config = crate::angel::AngelConfig::load()?;
-            if !config.is_configured() {
-                let template = crate::angel::AngelConfig {
-                    api_key: "YOUR_API_KEY".into(),
-                    client_id: "YOUR_CLIENT_ID".into(),
-                    password: "YOUR_PASSWORD".into(),
-                    totp_secret: "YOUR_TOTP_SECRET".into(),
-                };
-                template.save()?;
+            println!();
+            if config.is_configured() {
                 println!(
-                    "  {} Created config template. Edit the file above with your credentials.",
-                    "✓".green()
+                    "  {} Configured for client {} — {}",
+                    "✓".green(),
+                    config.client_id.cyan(),
+                    path.display()
                 );
             } else {
-                println!(
-                    "  {} Already configured for client: {}",
-                    "✓".green(),
-                    config.client_id.cyan()
-                );
+                if !path.exists() {
+                    crate::angel::AngelConfig::template().save()?;
+                    println!(
+                        "  {} Created a credentials template (owner-only access).",
+                        "✓".green()
+                    );
+                } else {
+                    println!(
+                        "  {} Credentials file still has placeholder or empty values.",
+                        "⚠".yellow()
+                    );
+                }
+                println!("  Edit it with your API key, client ID, PIN and TOTP secret:");
+                println!("    {}", path.display().to_string().cyan());
             }
             println!();
             Ok(())
@@ -4773,14 +4931,16 @@ pub async fn cmd_trade(
                 let qty = h.quantity.unwrap_or(0) as f64;
                 let avg = h.averageprice.unwrap_or(0.0);
                 if !sym.is_empty() && qty > 0.0 && avg > 0.0 {
-                    let resolved = if sym.contains('.') {
-                        sym.to_string()
+                    // Broker symbols carry a series suffix (RELIANCE-EQ); Yahoo
+                    // wants RELIANCE.NS.
+                    let base = sym.rsplit_once('-').map_or(sym, |(b, _)| b);
+                    let resolved = if base.contains('.') {
+                        base.to_string()
                     } else {
-                        format!("{}.NS", sym)
+                        format!("{}.NS", base)
                     };
-                    // Remove old and re-add to sync
-                    portfolio.remove(&resolved);
-                    portfolio.add(&resolved, qty, avg);
+                    // Overwrite quantity/cost but keep the original added date.
+                    portfolio.set(&resolved, qty, avg);
                 }
             }
             portfolio.save()?;
@@ -4819,9 +4979,9 @@ pub async fn cmd_trade(
                 let pnl = p.pnl.as_deref().unwrap_or("0");
                 let pnl_f: f64 = pnl.parse().unwrap_or(0.0);
                 let pnl_str = if pnl_f >= 0.0 {
-                    format!("+₹{}", pnl).green().to_string()
+                    format!("+₹{:.2}", pnl_f).green().to_string()
                 } else {
-                    format!("-₹{}", pnl).red().to_string()
+                    format!("-₹{:.2}", pnl_f.abs()).red().to_string()
                 };
                 println!(
                     "  {:<14} {:>8} {:>10} {:>10} {:>12}",
@@ -4835,146 +4995,21 @@ pub async fn cmd_trade(
             println!();
             Ok(())
         }
-        "buy" => {
-            let sym = symbol.context("Symbol required. Usage: stockwise trade buy RELIANCE 10")?;
+        "buy" | "sell" | "limit" => {
+            let sym = symbol.context("Symbol required, e.g. stockwise trade buy RELIANCE 10")?;
             let quantity =
-                qty.context("Quantity required. Usage: stockwise trade buy RELIANCE 10")?;
-            let sym_upper = sym.to_uppercase();
-
-            let client = crate::angel::AngelClient::new().await?;
-
-            // Search for the symbol token
-            let token = client
-                .search_scrip(&sym_upper, "NSE")
-                .await?
-                .context(format!("Could not find symbol {} on NSE", sym_upper))?;
-
-            println!(
-                "  {} Placing {} order: {} {} shares...",
-                "⟳".yellow(),
-                "BUY".green().bold(),
-                sym_upper.cyan(),
-                quantity
-            );
-
-            let result = client
-                .place_order(
-                    &sym_upper, &token, "NSE", "BUY", quantity, "MARKET", 0.0, 0.0,
-                )
-                .await?;
-
-            if let Some(id) = &result.orderid {
-                println!("  {} Order placed! ID: {}", "✓".green().bold(), id.cyan());
-                println!(
-                    "  {} BUY {} × {} shares at MARKET",
-                    "→".green(),
-                    sym_upper.cyan(),
-                    quantity
-                );
-            } else {
-                println!(
-                    "  {} Order accepted but no order id was returned — {}",
-                    "⚠".yellow().bold(),
-                    "do NOT resubmit; verify with `stockwise trade orders`.".yellow()
-                );
-            }
-            println!();
-            Ok(())
-        }
-        "sell" => {
-            let sym = symbol.context("Symbol required. Usage: stockwise trade sell RELIANCE 10")?;
-            let quantity =
-                qty.context("Quantity required. Usage: stockwise trade sell RELIANCE 10")?;
-            let sym_upper = sym.to_uppercase();
-
-            let client = crate::angel::AngelClient::new().await?;
-            let token = client
-                .search_scrip(&sym_upper, "NSE")
-                .await?
-                .context(format!("Could not find symbol {} on NSE", sym_upper))?;
-
-            println!(
-                "  {} Placing {} order: {} {} shares...",
-                "⟳".yellow(),
-                "SELL".red().bold(),
-                sym_upper.cyan(),
-                quantity
-            );
-
-            let result = client
-                .place_order(
-                    &sym_upper, &token, "NSE", "SELL", quantity, "MARKET", 0.0, 0.0,
-                )
-                .await?;
-
-            if let Some(id) = &result.orderid {
-                println!("  {} Order placed! ID: {}", "✓".green().bold(), id.cyan());
-                println!(
-                    "  {} SELL {} × {} shares at MARKET",
-                    "→".red(),
-                    sym_upper.cyan(),
-                    quantity
-                );
-            } else {
-                println!(
-                    "  {} Order accepted but no order id was returned — {}",
-                    "⚠".yellow().bold(),
-                    "do NOT resubmit; verify with `stockwise trade orders`.".yellow()
-                );
-            }
-            println!();
-            Ok(())
-        }
-        "limit" => {
-            let sym =
-                symbol.context("Symbol required. Usage: stockwise trade limit RELIANCE 10 1300")?;
-            let quantity = qty.context("Quantity required")?;
-            let limit_price = price
-                .context("Limit price required. Usage: stockwise trade limit RELIANCE 10 1300")?;
-            let sym_upper = sym.to_uppercase();
-
-            let client = crate::angel::AngelClient::new().await?;
-            let token = client
-                .search_scrip(&sym_upper, "NSE")
-                .await?
-                .context(format!("Could not find symbol {}", sym_upper))?;
-
-            println!(
-                "  {} Placing LIMIT BUY: {} × {} @ ₹{:.2}...",
-                "⟳".yellow(),
-                sym_upper.cyan(),
-                quantity,
-                limit_price
-            );
-
-            let result = client
-                .place_order(
-                    &sym_upper,
-                    &token,
-                    "NSE",
+                qty.context("Quantity required, e.g. stockwise trade buy RELIANCE 10")?;
+            let (side, limit) = match action {
+                "buy" => ("BUY", None),
+                "sell" => ("SELL", None),
+                _ => (
                     "BUY",
-                    quantity,
-                    "LIMIT",
-                    limit_price,
-                    0.0,
-                )
-                .await?;
-
-            if let Some(id) = &result.orderid {
-                println!(
-                    "  {} Limit order placed! ID: {}",
-                    "✓".green().bold(),
-                    id.cyan()
-                );
-            } else {
-                println!(
-                    "  {} Order accepted but no order id was returned — {}",
-                    "⚠".yellow().bold(),
-                    "do NOT resubmit; verify with `stockwise trade orders`.".yellow()
-                );
-            }
-            println!();
-            Ok(())
+                    Some(price.context(
+                        "Limit price required, e.g. stockwise trade limit RELIANCE 10 1300",
+                    )?),
+                ),
+            };
+            place_live_order(side, sym, quantity, limit, opts).await
         }
         "orders" => {
             let client = crate::angel::AngelClient::new().await?;

@@ -1,8 +1,11 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::time::Duration;
 
 const BASE_URL: &str = "https://apiconnect.angelone.in";
+pub const CONFIG_FILE: &str = "angel_config.json";
+/// Prefix of the placeholder values written by `trade config`.
+const PLACEHOLDER_PREFIX: &str = "YOUR_";
 
 // ── Config persistence ──
 
@@ -12,36 +15,46 @@ pub struct AngelConfig {
     pub client_id: String,
     pub password: String,
     pub totp_secret: String,
-}
-
-fn config_path() -> Result<PathBuf> {
-    let dir = dirs::data_local_dir()
-        .context("Cannot determine local data directory")?
-        .join("stockwise");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir.join("angel_config.json"))
+    /// Refuse any single order whose estimated value exceeds this (₹).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_order_value: Option<f64>,
 }
 
 impl AngelConfig {
     pub fn load() -> Result<Self> {
-        let path = config_path()?;
-        if !path.exists() {
-            return Ok(AngelConfig::default());
+        let path = crate::store::path(CONFIG_FILE)?;
+        // The file holds a password and TOTP secret; older versions wrote it
+        // world-readable.
+        if crate::store::restrict_permissions(&path)? {
+            eprintln!(
+                "  Restricted {} to owner-only access (it was readable by other users).",
+                path.display()
+            );
         }
-        let data = std::fs::read_to_string(&path)?;
-        let config: AngelConfig = serde_json::from_str(&data)?;
-        Ok(config)
+        crate::store::load_from(&path)
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = config_path()?;
-        let data = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, data)?;
-        Ok(())
+        crate::store::save(CONFIG_FILE, self, true)
     }
 
     pub fn is_configured(&self) -> bool {
-        !self.api_key.is_empty() && !self.client_id.is_empty()
+        let real = |v: &str| !v.is_empty() && !v.starts_with(PLACEHOLDER_PREFIX);
+        real(&self.api_key)
+            && real(&self.client_id)
+            && real(&self.password)
+            && real(&self.totp_secret)
+    }
+
+    /// Template with placeholder values for the user to edit.
+    pub fn template() -> Self {
+        Self {
+            api_key: format!("{PLACEHOLDER_PREFIX}API_KEY"),
+            client_id: format!("{PLACEHOLDER_PREFIX}CLIENT_ID"),
+            password: format!("{PLACEHOLDER_PREFIX}PASSWORD_OR_PIN"),
+            totp_secret: format!("{PLACEHOLDER_PREFIX}TOTP_SECRET"),
+            max_order_value: None,
+        }
     }
 }
 
@@ -257,10 +270,25 @@ pub struct OrderStatus {
     pub orderid: Option<String>,
     pub tradingsymbol: Option<String>,
     pub transactiontype: Option<String>,
+    #[serde(default, deserialize_with = "string_or_number")]
     pub quantity: Option<String>,
+    #[serde(default, deserialize_with = "string_or_number")]
     pub price: Option<String>,
     pub status: Option<String>,
     pub text: Option<String>,
+}
+
+/// Angel One returns some numeric fields as JSON numbers in one endpoint and
+/// as strings in another; accept both.
+fn string_or_number<'de, D>(d: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        Some(serde_json::Value::String(s)) => Some(s),
+        Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -270,11 +298,62 @@ struct SearchScrip {
     pub exchange: Option<String>,
 }
 
+/// A broker instrument resolved from a user-typed symbol.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Instrument {
+    pub tradingsymbol: String,
+    pub token: String,
+    pub exchange: String,
+}
+
+/// Pick the cash-equity (`-EQ`) instrument for `symbol` from searchScrip
+/// results. Only an exact match is accepted, so a typo or partial name can
+/// never resolve to a different stock or series.
+fn pick_equity(results: Vec<SearchScrip>, symbol: &str, exchange: &str) -> Result<Instrument> {
+    let wanted = format!("{}-EQ", symbol.trim_end_matches("-EQ"));
+    let mut matches = results.into_iter().filter(|s| {
+        s.tradingsymbol.as_deref() == Some(wanted.as_str())
+            && s.exchange.as_deref().is_none_or(|e| e == exchange)
+    });
+    let Some(hit) = matches.next() else {
+        bail!(
+            "No exact {} equity match for {} on {}. Check the symbol with `stockwise search`.",
+            wanted,
+            symbol,
+            exchange
+        );
+    };
+    if matches.next().is_some() {
+        bail!(
+            "Several instruments match {} on {}; refusing to guess.",
+            wanted,
+            exchange
+        );
+    }
+    Ok(Instrument {
+        tradingsymbol: wanted,
+        token: hit.symboltoken.context("Broker returned no symbol token")?,
+        exchange: exchange.to_string(),
+    })
+}
+
+/// Unwrap an Angel One response envelope, turning `status: false` into an
+/// error instead of an empty result.
+fn expect_ok<T>(resp: ApiResponse<T>, what: &str) -> Result<Option<T>> {
+    if !resp.status {
+        bail!("Angel One {} failed: {}", what, resp.message);
+    }
+    Ok(resp.data)
+}
+
 impl AngelClient {
     pub async fn new() -> Result<Self> {
         let config = AngelConfig::load()?;
         if !config.is_configured() {
-            bail!("Angel One not configured. Run: stockwise trade setup");
+            bail!(
+                "Angel One is not configured. Run `stockwise trade setup` for instructions, then edit {}",
+                crate::store::path(CONFIG_FILE)?.display()
+            );
         }
 
         let totp = generate_totp(&config.totp_secret)
@@ -282,6 +361,8 @@ impl AngelClient {
 
         let client = reqwest::Client::builder()
             .user_agent("stockwise-cli")
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
             .build()?;
 
         // Login
@@ -326,21 +407,31 @@ impl AngelClient {
         })
     }
 
-    fn auth_headers(&self) -> reqwest::header::HeaderMap {
-        let mut headers = reqwest::header::HeaderMap::new();
+    fn auth_headers(&self) -> Result<reqwest::header::HeaderMap> {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let mut headers = HeaderMap::new();
         headers.insert(
             "Authorization",
-            format!("Bearer {}", self.jwt_token).parse().unwrap(),
+            HeaderValue::from_str(&format!("Bearer {}", self.jwt_token))
+                .context("Broker returned an invalid session token")?,
         );
-        headers.insert("Content-Type", "application/json".parse().unwrap());
-        headers.insert("Accept", "application/json".parse().unwrap());
-        headers.insert("X-UserType", "USER".parse().unwrap());
-        headers.insert("X-SourceID", "WEB".parse().unwrap());
-        headers.insert("X-ClientLocalIP", "127.0.0.1".parse().unwrap());
-        headers.insert("X-ClientPublicIP", "127.0.0.1".parse().unwrap());
-        headers.insert("X-MACAddress", "00:00:00:00:00:00".parse().unwrap());
-        headers.insert("X-PrivateKey", self.config.api_key.parse().unwrap());
-        headers
+        for (name, value) in [
+            ("Content-Type", "application/json"),
+            ("Accept", "application/json"),
+            ("X-UserType", "USER"),
+            ("X-SourceID", "WEB"),
+            ("X-ClientLocalIP", "127.0.0.1"),
+            ("X-ClientPublicIP", "127.0.0.1"),
+            ("X-MACAddress", "00:00:00:00:00:00"),
+        ] {
+            headers.insert(name, HeaderValue::from_static(value));
+        }
+        headers.insert(
+            "X-PrivateKey",
+            HeaderValue::from_str(&self.config.api_key)
+                .context("API key in the Angel One config contains invalid characters")?,
+        );
+        Ok(headers)
     }
 
     pub async fn get_holdings(&self) -> Result<Vec<Holding>> {
@@ -350,13 +441,13 @@ impl AngelClient {
                 "{}/rest/secure/angelbroking/portfolio/v1/getHolding",
                 BASE_URL
             ))
-            .headers(self.auth_headers())
+            .headers(self.auth_headers()?)
             .send()
             .await?
             .json()
             .await?;
 
-        Ok(resp.data.unwrap_or_default())
+        Ok(expect_ok(resp, "holdings request")?.unwrap_or_default())
     }
 
     pub async fn get_positions(&self) -> Result<Vec<Position>> {
@@ -366,16 +457,18 @@ impl AngelClient {
                 "{}/rest/secure/angelbroking/order/v1/getPosition",
                 BASE_URL
             ))
-            .headers(self.auth_headers())
+            .headers(self.auth_headers()?)
             .send()
             .await?
             .json()
             .await?;
 
-        Ok(resp.data.unwrap_or_default())
+        Ok(expect_ok(resp, "positions request")?.unwrap_or_default())
     }
 
-    pub async fn search_scrip(&self, symbol: &str, exchange: &str) -> Result<Option<String>> {
+    /// Resolve a user-typed NSE/BSE symbol (e.g. `RELIANCE`) to its exact
+    /// cash-equity instrument.
+    pub async fn resolve_equity(&self, symbol: &str, exchange: &str) -> Result<Instrument> {
         let body = serde_json::json!({
             "exchange": exchange,
             "searchscrip": symbol
@@ -386,24 +479,20 @@ impl AngelClient {
                 "{}/rest/secure/angelbroking/order/v1/searchScrip",
                 BASE_URL
             ))
-            .headers(self.auth_headers())
+            .headers(self.auth_headers()?)
             .json(&body)
             .send()
             .await?
             .json()
             .await?;
 
-        Ok(resp
-            .data
-            .and_then(|v| v.into_iter().next())
-            .and_then(|s| s.symboltoken))
+        let results = expect_ok(resp, "symbol search")?.unwrap_or_default();
+        pick_equity(results, symbol, exchange)
     }
 
     pub async fn place_order(
         &self,
-        symbol: &str,
-        token: &str,
-        exchange: &str,
+        instrument: &Instrument,
         transaction: &str, // BUY or SELL
         qty: u32,
         order_type: &str, // MARKET, LIMIT, SL
@@ -412,10 +501,10 @@ impl AngelClient {
     ) -> Result<OrderResponse> {
         let order = OrderRequest {
             variety: "NORMAL".into(),
-            tradingsymbol: symbol.into(),
-            symboltoken: token.into(),
+            tradingsymbol: instrument.tradingsymbol.clone(),
+            symboltoken: instrument.token.clone(),
             transactiontype: transaction.into(),
-            exchange: exchange.into(),
+            exchange: instrument.exchange.clone(),
             ordertype: order_type.into(),
             producttype: "DELIVERY".into(),
             duration: "DAY".into(),
@@ -440,14 +529,20 @@ impl AngelClient {
                 "{}/rest/secure/angelbroking/order/v1/placeOrder",
                 BASE_URL
             ))
-            .headers(self.auth_headers())
+            .headers(self.auth_headers()?)
             .json(&order)
             .send()
             .await
-            .context("Failed to place order")?
+            .context(
+                "Could not reach Angel One while placing the order. Its state is UNKNOWN — \
+                 check the Angel One app or `stockwise trade orders` before retrying",
+            )?
             .json()
             .await
-            .context("Failed to parse order response")?;
+            .context(
+                "Unreadable response while placing the order. Its state is UNKNOWN — \
+                 check the Angel One app or `stockwise trade orders` before retrying",
+            )?;
 
         if !resp.status {
             bail!("Order failed: {}", resp.message);
@@ -463,12 +558,57 @@ impl AngelClient {
                 "{}/rest/secure/angelbroking/order/v1/getOrderBook",
                 BASE_URL
             ))
-            .headers(self.auth_headers())
+            .headers(self.auth_headers()?)
             .send()
             .await?
             .json()
             .await?;
 
-        Ok(resp.data.unwrap_or_default())
+        Ok(expect_ok(resp, "order book request")?.unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scrip(sym: &str, token: &str) -> SearchScrip {
+        SearchScrip {
+            symboltoken: Some(token.into()),
+            tradingsymbol: Some(sym.into()),
+            exchange: Some("NSE".into()),
+        }
+    }
+
+    #[test]
+    fn pick_equity_takes_exact_eq_series_not_first_hit() {
+        let results = vec![
+            scrip("RELIANCE-BE", "1"),
+            scrip("RELIANCEPP-EQ", "2"),
+            scrip("RELIANCE-EQ", "2885"),
+        ];
+        let inst = pick_equity(results, "reliance".to_uppercase().as_str(), "NSE").unwrap();
+        assert_eq!(inst.tradingsymbol, "RELIANCE-EQ");
+        assert_eq!(inst.token, "2885");
+    }
+
+    #[test]
+    fn pick_equity_rejects_partial_matches() {
+        let results = vec![scrip("TATAMOTORS-EQ", "1"), scrip("TATASTEEL-EQ", "2")];
+        assert!(pick_equity(results, "TATA", "NSE").is_err());
+    }
+
+    #[test]
+    fn placeholder_config_is_not_configured() {
+        assert!(!AngelConfig::template().is_configured());
+        assert!(!AngelConfig::default().is_configured());
+    }
+
+    #[test]
+    fn order_status_accepts_numeric_price() {
+        let o: OrderStatus =
+            serde_json::from_str(r#"{"orderid":"1","price":194.5,"quantity":"3"}"#).unwrap();
+        assert_eq!(o.price.as_deref(), Some("194.5"));
+        assert_eq!(o.quantity.as_deref(), Some("3"));
     }
 }
