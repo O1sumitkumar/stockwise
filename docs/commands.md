@@ -102,7 +102,7 @@ Data lives in the directory shown by `stockwise doctor`.
 | `portfolio remove <SYMBOL>` | Remove a holding |
 | `watch [show]` / `watch add <SYMBOLS...>` / `watch remove <SYMBOLS...>` (`w`) | Watchlist |
 | `alert [list]` / `alert add <SYMBOL> <above\|below> <PRICE>` / `alert check` / `alert remove <N>` | Price alerts |
-| `import <kite\|indmoney\|csv> <FILE>` | Import broker holdings; re-importing updates instead of doubling |
+| `import <kite\|indmoney\|groww\|upstox\|cas\|csv> <FILE>` | Import broker holdings or a CAS (casparser JSON/CSV); re-importing updates instead of doubling. See [brokers.md](brokers.md#importing-holdings) |
 | `export <portfolio\|watchlist>` | Write a CSV to the current directory |
 | `wealth` | Save today's portfolio value and show growth (run daily) |
 | `rebalance` | Trades to reach equal weight |
@@ -111,17 +111,23 @@ Data lives in the directory shown by `stockwise doctor`.
 | `divcal` | Dividend ranking and income for portfolio + watchlist |
 | `pcorr` | Correlation between holdings, diversification warnings |
 
-## Live trading (Angel One)
+## Live trading
 
-See [angel-one.md](angel-one.md). Orders are previewed and need a typed `yes`.
+See [brokers.md](brokers.md). Orders are previewed and need a typed `yes`.
+Every `trade` command takes `--broker angel|zerodha|upstox|dhan|fyers`
+(default `angel`, or `STOCKWISE_BROKER`); all but `angel` are experimental —
+untested against a live account.
 
 | Command | Description |
 |---------|-------------|
-| `trade setup` / `trade config` | How to connect / create the owner-only credentials file |
+| `trade setup` / `trade config [--keyring]` | How to connect / create the owner-only credentials file, move secrets into the OS keyring |
+| `trade login` | Daily login (Zerodha, Upstox, Fyers) or paste a Dhan token |
 | `trade holdings` / `positions` / `orders` | Live holdings (synced into `portfolio`), open positions, order book |
-| `trade buy <SYMBOL> <QTY> [--dry-run] [--yes]` | Market buy on NSE |
-| `trade sell <SYMBOL> <QTY> [--dry-run] [--yes]` | Market sell on NSE |
+| `trade buy <SYMBOL> <QTY> [--limit P] [--trigger T] [--dry-run] [--yes]` | Buy on NSE: MARKET, LIMIT, SL-M (`--trigger`) or SL (both) |
+| `trade sell <SYMBOL> <QTY> [--limit P] [--trigger T] [--dry-run] [--yes]` | Sell on NSE, same order types |
 | `trade limit <SYMBOL> <QTY> <PRICE> [--dry-run] [--yes]` | Limit buy on NSE |
+| `trade gtt <buy\|sell> <SYMBOL> <QTY> --trigger T --limit P [--dry-run] [--yes]` | Single-leg GTT (not Upstox) |
+| `trade gtt list` / `trade gtt cancel <ID>` | List / cancel GTTs (cancel asks for confirmation) |
 
 ## Setup
 

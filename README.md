@@ -97,7 +97,7 @@ stockwise completions zsh > ~/.zfunc/_stockwise           # optional: tab comple
 | **Market** | `movers`, `sectors`, `heatmap`, `sentiment`, `news`, `rotation`, `sectorcmp`, `peers`, `insider`, `ipo`, `earnings`, `surprise`, `matrix`, `picks`, `screen`, `dividends` |
 | **Strategies & bots** | `backtest`, `sip`, `whatif`, `intraday`, `longterm`, `daemon`, `sim`, `report` |
 | **Portfolio** | `portfolio`, `watch`, `alert`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
-| **Live trading** | `trade` (Angel One) |
+| **Live trading** | `trade` (Angel One; Zerodha, Upstox, Dhan, Fyers experimental) |
 
 `stockwise --help` shows the same groups; [docs/commands.md](docs/commands.md)
 has every option.
@@ -105,7 +105,7 @@ has every option.
 ### Track a portfolio
 
 ```bash
-stockwise import kite ~/Downloads/holdings.csv   # or: portfolio add TCS 10 3500
+stockwise import kite ~/Downloads/holdings.csv   # or groww, upstox, cas, csv — or: portfolio add TCS 10 3500
 stockwise portfolio                              # live P&L + allocation
 stockwise alert add RELIANCE below 1200
 stockwise tax in                                 # LTCG/STCG estimate for this FY
@@ -132,17 +132,21 @@ stockwise sim history               # track record + confidence rating
 The daemon never sends broker orders. Read [docs/bot-design.md](docs/bot-design.md)
 for how it decides.
 
-### Live orders (optional, Angel One)
+### Live orders (optional)
 
 ```bash
-stockwise trade setup                          # how to create owner-only credentials
+stockwise trade setup                          # how to connect Angel One
 stockwise trade buy RELIANCE 10 --dry-run      # resolve + preview, send nothing
 stockwise trade buy RELIANCE 10                # preview, then type "yes" to send
+stockwise trade sell RELIANCE 10 --trigger 1250            # stop-loss (SL-M)
+stockwise trade holdings --broker zerodha      # also: upstox, dhan, fyers (experimental)
 ```
 
 Orders resolve the exact NSE instrument, show the estimated value, respect an
 optional `max_order_value` cap, and refuse to run unattended without `--yes`.
-See [docs/angel-one.md](docs/angel-one.md).
+Broker secrets live in the OS keyring when one is available. Zerodha Kite,
+Upstox, Dhan and Fyers are **experimental — untested against a live account**:
+read-only until you opt in. See [docs/brokers.md](docs/brokers.md).
 
 ### Local AI (optional)
 
@@ -162,19 +166,21 @@ Everything works with no config. Optional environment variables:
 | `STOCKWISE_AI` | `1` to add AI sections by default |
 | `STOCKWISE_MODEL` / `OLLAMA_HOST` | Ollama model (default `qwen3:14b`) and server |
 | `STOCKWISE_REDIS_URL` | Optional shared cache (`redis://…`), or `off` |
+| `STOCKWISE_BROKER` | Default broker for `trade`: `angel` (default), `zerodha`, `upstox`, `dhan`, `fyers` |
+| `STOCKWISE_KEYRING` | `off` keeps broker secrets in the owner-only file instead of the OS keyring |
 | `NO_COLOR` | Disable colours (also automatic when piping) |
 
 ## Docs
 
 - [Commands reference](docs/commands.md)
 - [Trading bots](docs/bots.md) and [bot design](docs/bot-design.md)
-- [Angel One setup](docs/angel-one.md)
+- [Brokers: live trading, keyring, imports](docs/brokers.md)
 - [AI & Ollama](docs/ai.md)
 - [Architecture](docs/architecture.md)
 
 ## Roadmap & contributing
 
-Next up: Homebrew, a config file, more brokers (Zerodha, Upstox), notifications,
+Next up: Homebrew, a config file, notifications,
 and a TUI dashboard — see the [ROADMAP](ROADMAP.md). Ideas and bug reports are
 welcome in [Discussions](https://github.com/iamsaquib8/stockwise/discussions) and
 [Issues](https://github.com/iamsaquib8/stockwise/issues); start with

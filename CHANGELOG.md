@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **More brokers (experimental — untested against a live account):** Zerodha
+  Kite Connect, Upstox, Dhan and Fyers via `trade --broker <name>` (or
+  `STOCKWISE_BROKER`): holdings (synced into `portfolio`), positions, order
+  book, and orders. Built from each broker's public API docs and tested against
+  a local mock server. They stay read-only until you add
+  `"enable_orders": true` to the broker's config file. `trade login` handles the
+  daily browser login (Kite, Upstox, Fyers) or a pasted Dhan token.
+- **Stop-loss and GTT orders:** `trade buy|sell ... --trigger T [--limit P]`
+  places SL-M / SL orders; `trade gtt buy|sell|list|cancel` manages single-leg
+  GTTs (Angel One, Kite, Dhan Forever Orders, Fyers). Triggers are checked
+  against the side, the limit and the last price before anything is sent.
+  These are experimental on Angel One too and need `"enable_orders": true`.
+- **OS keyring for broker secrets** (macOS Keychain, Windows Credential
+  Manager, Secret Service). Secrets in an existing `angel_config.json` move
+  into the keyring automatically; `trade config --keyring` does it now. Without
+  a keyring (headless Linux) the owner-only file is used; `STOCKWISE_KEYRING=off`
+  forces that. `doctor` shows where each broker's secrets live.
+- `import groww`, `import upstox`, and `import cas` (CAMS / KFintech / NSDL /
+  CDSL statements as casparser JSON or CSV). Mutual funds are stored as
+  `MF:<AMFI code>`. Groww's ISIN-only exports are mapped to NSE tickers.
+
+### Changed
+- Every order type and broker goes through one safety flow
+  (`place_live_order`): exact instrument, price checks, preview,
+  `max_order_value`, `--dry-run`, typed `yes` / `--yes`. Angel One MARKET and
+  LIMIT orders behave as in 0.3.
+- `trade` tables show N/A instead of ₹0.00 when the broker sends no price.
+- `docs/angel-one.md` is now `docs/brokers.md`.
+
+### Fixed
+- Angel One P&L and position quantities read the documented fields
+  (`profitandloss`, `netqty`); they showed 0 before.
+
 ## [0.3.0] - 2026-10-21
 
 Usability and safety release. Command-line forms from 0.2 keep working.
