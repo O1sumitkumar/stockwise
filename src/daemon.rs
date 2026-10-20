@@ -189,6 +189,13 @@ pub fn update_position(pos: &mut LivePosition, new_price: f64, phase: Phase) {
             pos.stop_loss = pos.entry_price;
         }
         pos.status = PositionStatus::T1Hit;
+        // Only the remaining half is still open at the new price.
+        pos.pnl = pos.booked_pnl
+            + if is_long {
+                (new_price - pos.entry_price) * pos.remaining_qty as f64
+            } else {
+                (pos.entry_price - new_price) * pos.remaining_qty as f64
+            };
     }
 
     // Update trailing stop (only moves in favorable direction)
@@ -375,8 +382,16 @@ impl Event {
     }
 }
 
-/// File the intraday worker saves its day's state to after every tick.
-pub const STATE_FILE: &str = "daemon_state.json";
+/// File the intraday worker saves its day's state to after every tick:
+/// `daemon_state.json` for NSE, `daemon_state_us.json` for NYSE, so a daemon
+/// per market can run side by side.
+pub fn state_file(market: &str) -> &'static str {
+    if market.eq_ignore_ascii_case("US") {
+        "daemon_state_us.json"
+    } else {
+        "daemon_state.json"
+    }
+}
 
 /// One trading day of the intraday worker, persisted after every tick so a
 /// restart the same day resumes the open positions.
@@ -420,14 +435,14 @@ impl DaemonState {
         }
     }
 
-    /// The saved state, if any.
-    pub fn load() -> anyhow::Result<Option<Self>> {
-        crate::store::load(STATE_FILE)
+    /// The saved state for a market (`IN` / `US`), if any.
+    pub fn load(market: &str) -> anyhow::Result<Option<Self>> {
+        crate::store::load(state_file(market))
     }
 
     pub fn save(&mut self, now: DateTime<Utc>) -> anyhow::Result<()> {
         self.updated_at = now;
-        crate::store::save(STATE_FILE, self, false)
+        crate::store::save(state_file(&self.market), self, false)
     }
 
     pub fn open_count(&self) -> usize {
@@ -750,8 +765,12 @@ mod tests {
     #[test]
     fn test_pnl_calculation() {
         let mut pos = make_position(100.0, 103.0, 106.0, 97.0);
+        update_position(&mut pos, 102.0, Phase::Active);
+        assert!((pos.pnl - 20.0).abs() < 0.01); // 10 shares * 2.0
+        assert!((pos.pnl_pct - 2.0).abs() < 0.01);
+        // 105 crosses T1 (103): 5 booked at 103 (+15) + 5 open at 105 (+25).
         update_position(&mut pos, 105.0, Phase::Active);
-        assert!((pos.pnl - 50.0).abs() < 0.01); // 10 shares * 5.0
+        assert!((pos.pnl - 40.0).abs() < 0.01);
         assert!((pos.pnl_pct - 5.0).abs() < 0.01);
     }
 
@@ -807,6 +826,20 @@ mod tests {
         assert_eq!(pos.status, PositionStatus::Open);
         assert!((pos.pnl - 50.0).abs() < 0.01); // 10 shares * 5.0
         assert!((pos.pnl_pct - 5.0).abs() < 0.01); // (100-95)/100
+    }
+
+    #[test]
+    fn test_t1_tick_above_target1_values_only_the_open_half_at_the_price() {
+        // Long 10 @ 100, T1 102: a tick at 103 books 5 at 102 (+10) and
+        // leaves 5 open at 103 (+15) → 25, not 30.
+        let mut pos = make_position(100.0, 102.0, 110.0, 97.0);
+        update_position(&mut pos, 103.0, Phase::Active);
+        assert!((pos.pnl - 25.0).abs() < 1e-9, "{}", pos.pnl);
+        // Same tick at square-off closes at 25.
+        let mut pos = make_position(100.0, 102.0, 110.0, 97.0);
+        update_position(&mut pos, 103.0, Phase::SquareOff);
+        assert_eq!(pos.status, PositionStatus::SquaredOff);
+        assert!((pos.pnl - 25.0).abs() < 1e-9, "{}", pos.pnl);
     }
 
     #[test]
@@ -1023,6 +1056,12 @@ mod tests {
         assert!(record_session(&mut history, s.to_sim_session(true)));
         assert!(!record_session(&mut history, s.to_sim_session(true)));
         assert_eq!(history.sessions.len(), 1);
+    }
+
+    #[test]
+    fn each_market_has_its_own_state_file() {
+        assert_eq!(state_file("IN"), "daemon_state.json");
+        assert_eq!(state_file("US"), "daemon_state_us.json");
     }
 
     #[test]

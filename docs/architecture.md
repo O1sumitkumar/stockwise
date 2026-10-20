@@ -98,7 +98,7 @@ Location: `~/Library/Application Support/stockwise/` (macOS), `~/.local/share/st
 | `alerts.json` | Price alerts (symbol, condition, target) |
 | `wealth_history.json` | Daily portfolio value snapshots |
 | `sim_history.json` | Paper trading sessions and results |
-| `daemon_state.json` | The intraday daemon's current day (positions, risk), saved every tick |
+| `daemon_state.json` / `daemon_state_us.json` | The intraday daemon's current day (positions, risk), saved every tick |
 | `alert_watch.json` | Which alerts `alert watch` already announced |
 | `angel_config.json` | Angel One API credentials |
 

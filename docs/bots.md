@@ -189,16 +189,19 @@ Resilience:
   retried after 15 s, 30 s, 60 s … (capped at 5 minutes); after three
   failures in a row the session is rebuilt. Network blips never stop it.
 - The day's state (positions, risk manager, entries) is saved to
-  `daemon_state.json` in the data directory after every tick. Restarting the
-  daemon the same day resumes it — the capital from the saved state wins.
+  `daemon_state.json` (`daemon_state_us.json` with `-m us`) in the data
+  directory after every tick. Restarting the daemon the same day resumes it —
+  the capital from the saved state wins.
 - **Ctrl+C** (or SIGTERM, e.g. from systemd) squares off open positions at
   their last price, records the day in the simulator history, saves, and
   exits 0. A second Ctrl+C exits immediately; the saved state is resumed next
   time.
-- If the daemon wasn't running at the close (crash, laptop asleep), the next
-  start hands that day's entries to the simulator as an open session: run
-  `stockwise sim settle` to settle them from the day's 5-minute bars.
-- Run one intraday daemon at a time: they share `daemon_state.json`.
+- If the daemon missed the square-off (crash, laptop asleep), it hands that
+  day's entries to the simulator as an open session instead of closing them
+  at stale prices: run `stockwise sim settle` to settle them from the day's
+  5-minute bars.
+- One NSE and one NYSE daemon can run side by side; don't start two for the
+  same market — they would share one state file.
 
 The daemon is **paper-only**: it never calls a broker order API. Results are
 saved to simulation history — check with `stockwise sim history`. With
@@ -260,7 +263,9 @@ takes effect without a restart.
 Each trigger is announced **once**: an alert fires when its condition becomes
 true, re-arms after the price moves back, and fires at most once a day. That
 memory lives in `alert_watch.json`, so a restart doesn't repeat
-notifications. Network errors are retried with backoff; Ctrl+C stops it.
+notifications. If every configured channel fails, the trigger is not marked
+and the next check tries again. Network errors are retried with backoff;
+Ctrl+C stops it.
 
 ---
 

@@ -309,7 +309,12 @@ pub(super) async fn live_prices(
     let quotes = client.get_quote(&refs).await?;
     Ok(quotes
         .into_iter()
-        .filter_map(|q| Some((q.symbol?, q.regular_market_price?)))
+        .filter_map(|q| {
+            let price = q
+                .regular_market_price
+                .filter(|p| p.is_finite() && *p > 0.0)?;
+            Some((q.symbol?, price))
+        })
         .collect())
 }
 
@@ -642,8 +647,9 @@ async fn tick(
             }
             Ok(Tick::wait(30))
         }
+        Phase::Opening if state.entered => monitor(state, phase, market, feed).await,
         Phase::Opening => {
-            if state.entered || state.risk.killed {
+            if state.risk.killed {
                 return Ok(Tick::wait(15));
             }
             println!("  {} Running 9-strategy scan...", "⟳".yellow());
@@ -674,47 +680,67 @@ async fn tick(
             })
         }
         Phase::Active | Phase::WindDown | Phase::SquareOff => {
-            if state.open_count() == 0 {
-                return Ok(Tick::wait(60));
-            }
-            let client = feed.client().await?;
-            let prices = live_prices(client, &state.open_symbols()).await?;
-            let mut events = state.apply_prices(&prices, phase);
-            if phase == Phase::SquareOff {
-                // Anything without a fresh price closes at its last one.
-                events.extend(state.square_off_all());
-            }
-            state.tick_count += 1;
-            if state.tick_count.is_multiple_of(5) || !events.is_empty() {
-                print_status(state, market, phase);
-            }
-            if state.open_count() == 0 && !events.is_empty() {
-                println!(
-                    "\n  {} All positions closed. Waiting for post-market.",
-                    "✓".green().bold()
-                );
-            }
-            Ok(Tick {
-                events,
-                wait: Duration::from_secs(if phase == Phase::SquareOff { 30 } else { 60 }),
-                done: false,
-            })
+            monitor(state, phase, market, feed).await
         }
         Phase::PostMarket => {
-            let events = state.square_off_all();
-            if state.entered {
+            if state.open_count() > 0 {
+                // The square-off was missed (daemon down, or every square-off
+                // tick failed): last prices may be hours old, so let
+                // `sim settle` replay the day's bars instead.
+                hand_over_to_sim_settle(state)?;
+            } else if state.entered {
                 settle_day(state, market)?;
             } else {
                 state.settled = true;
                 println!("\n  {} No trades today.", "→".dimmed());
             }
             Ok(Tick {
-                events,
+                events: Vec::new(),
                 wait: Duration::ZERO,
                 done: true,
             })
         }
     }
+}
+
+/// Mark open positions to live prices (after the entries, through the
+/// square-off).
+async fn monitor(
+    state: &mut DaemonState,
+    phase: Phase,
+    market: Market,
+    feed: &mut Feed,
+) -> Result<Tick> {
+    if state.open_count() == 0 {
+        return Ok(Tick::wait(60));
+    }
+    let client = feed.client().await?;
+    let prices = live_prices(client, &state.open_symbols()).await?;
+    let mut events = state.apply_prices(&prices, phase);
+    if phase == Phase::SquareOff {
+        // Anything without a fresh price closes at its last one.
+        events.extend(state.square_off_all());
+    }
+    state.tick_count += 1;
+    if state.tick_count.is_multiple_of(5) || !events.is_empty() {
+        print_status(state, market, phase);
+    }
+    if state.open_count() == 0 && !events.is_empty() {
+        println!(
+            "\n  {} All positions closed. Waiting for post-market.",
+            "✓".green().bold()
+        );
+    }
+    let secs = match phase {
+        Phase::Opening => 15,
+        Phase::SquareOff => 30,
+        _ => 60,
+    };
+    Ok(Tick {
+        events,
+        wait: Duration::from_secs(secs),
+        done: false,
+    })
 }
 
 /// Ctrl+C / SIGTERM: square off at last prices, settle, save, exit 0.
@@ -767,7 +793,7 @@ async fn run_intraday(amount: Option<f64>, market: Market) -> Result<()> {
     let today = clock::session_date(market, now);
 
     // Resume today's session, or hand an unfinished earlier one to `sim settle`.
-    let mut state = match DaemonState::load()? {
+    let mut state = match DaemonState::load(code)? {
         Some(saved) if saved.date == today && saved.market == code => saved,
         Some(mut stale) => {
             hand_over_to_sim_settle(&mut stale)?;
@@ -804,7 +830,7 @@ async fn run_intraday(amount: Option<f64>, market: Market) -> Result<()> {
         println!(
             "  {} Resuming today's session from {}: {} open position(s), P&L {}",
             "↻".cyan().bold(),
-            crate::daemon::STATE_FILE,
+            crate::daemon::state_file(&state.market),
             state.open_count(),
             crate::daemon::signed_money(csym, state.total_pnl())
         );
@@ -902,14 +928,23 @@ async fn run_intraday(amount: Option<f64>, market: Market) -> Result<()> {
                     eprintln!(
                         "  {} Could not save {}: {:#}",
                         "!".yellow(),
-                        crate::daemon::STATE_FILE,
+                        crate::daemon::state_file(&state.market),
                         e
                     );
                 }
                 if t.done {
-                    notifier
-                        .send_logged(&eod_message(&state, market, "StockWise daemon EOD"))
-                        .await;
+                    if state.entered && state.open_count() == 0 {
+                        notifier
+                            .send_logged(&eod_message(&state, market, "StockWise daemon EOD"))
+                            .await;
+                    } else if state.entered {
+                        notifier
+                            .send_logged(&Message::new(
+                                format!("StockWise daemon missed the square-off on {}", state.date),
+                                "Run `stockwise sim settle` to settle the day from its 5-minute bars.",
+                            ))
+                            .await;
+                    }
                     tokio::select! {
                         _ = eod_ai_report(&state, market) => {}
                         _ = shutdown.wait() => {}
@@ -935,7 +970,7 @@ async fn run_intraday(amount: Option<f64>, market: Market) -> Result<()> {
                     eprintln!(
                         "  {} Could not save {}: {:#}",
                         "!".yellow(),
-                        crate::daemon::STATE_FILE,
+                        crate::daemon::state_file(&state.market),
                         e
                     );
                 }

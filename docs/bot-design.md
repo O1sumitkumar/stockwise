@@ -251,9 +251,9 @@ Implementation (done):
   for NSE, US Eastern (with daylight saving) for NYSE, holidays closed
 - Intraday: 60-second tick during market hours; one Yahoo session reused,
   failed ticks retried with bounded backoff (15 s → 5 min), never fatal
-- State persisted to `daemon_state.json` after every tick and resumed on a
-  same-day restart; a day the daemon missed the close of is handed to
-  `sim settle`
+- State persisted to `daemon_state.json` (`daemon_state_us.json` for NYSE)
+  after every tick and resumed on a same-day restart; a day whose square-off
+  the daemon missed is handed to `sim settle`
 - Ctrl+C / SIGTERM: square off at last prices, settle into the simulator
   history, save, exit 0
 - Longterm: single run, cron-scheduled or manual

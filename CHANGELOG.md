@@ -38,12 +38,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `daemon intraday` exited on the first network error, losing the day's
   paper positions. Errors are now logged and retried with backoff; the state
-  is saved to `daemon_state.json` every tick and resumed after a restart.
+  is saved to `daemon_state.json` (`daemon_state_us.json` for `-m us`) every
+  tick and resumed after a restart.
 - Ctrl+C in `daemon intraday` now squares off at the last prices, records
   the day in the simulator history and exits 0, as the banner promised.
 - Positions closed at the second target were not counted by the 3% daily
   loss kill switch; the kill switch also no longer re-fires every tick.
 - The daemon kept waiting forever after a day with no qualified trades.
+- Daemon P&L right after a first-target partial booking counted the booked
+  half at the current price instead of the target price.
+- Intraday plans could put a long's stop above the entry (support above the
+  price) or a short's below it; such levels are now ignored.
+- The daemon monitors positions from the moment it enters them, not only
+  from 15 minutes after the open, and ignores zero quotes.
 
 ## [0.3.0] - 2026-10-21
 

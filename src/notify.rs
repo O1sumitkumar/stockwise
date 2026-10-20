@@ -373,15 +373,19 @@ impl Notifier {
 
     /// Send, and print any failure as a warning. For worker loops, where a
     /// notification that can't be delivered must never stop the work.
-    pub async fn send_logged(&self, msg: &Message) {
+    /// Returns false only when channels are configured and every one failed.
+    pub async fn send_logged(&self, msg: &Message) -> bool {
         if !self.is_enabled() {
-            return;
+            return true;
         }
+        let mut delivered = false;
         for (channel, result) in self.send(msg).await {
-            if let Err(e) = result {
-                eprintln!("  ! {} notification failed: {:#}", channel, e);
+            match result {
+                Ok(()) => delivered = true,
+                Err(e) => eprintln!("  ! {} notification failed: {:#}", channel, e),
             }
         }
+        delivered
     }
 
     async fn send_one(&self, channel: Channel, msg: &Message) -> Result<()> {

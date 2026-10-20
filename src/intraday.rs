@@ -636,11 +636,18 @@ pub fn generate_trade_plans_with(
             Direction::Long => price * (1.0 - atr_pct * 0.4 / 100.0),
             Direction::Short => price * (1.0 + atr_pct * 0.4 / 100.0),
         };
+        // A support at or above the price (or a resistance at or below it)
+        // would put the stop on the wrong side of the entry: ignore it.
         let stop_loss = if signal.direction == Direction::Long {
-            signal.support1.map(|s| s.max(atr_stop)).unwrap_or(atr_stop)
+            signal
+                .support1
+                .filter(|s| *s < price)
+                .map(|s| s.max(atr_stop))
+                .unwrap_or(atr_stop)
         } else {
             signal
                 .resistance1
+                .filter(|r| *r > price)
                 .map(|r| r.min(atr_stop))
                 .unwrap_or(atr_stop)
         };
@@ -1101,6 +1108,21 @@ mod tests {
             assert!(p.capital_required <= 25000.0 * 0.30 + 1e-9);
             assert_eq!(p.capital_required, p.qty as f64 * p.entry);
         }
+    }
+
+    #[test]
+    fn test_stop_is_always_on_the_losing_side_of_the_entry() {
+        // Support above the price (an oversold bounce) must not become the stop.
+        let mut long = make_signal(80.0, Confidence::High, 2.0);
+        long.support1 = Some(101.0);
+        let plans = generate_trade_plans(&[long], 25000.0, 2.0, 1.0);
+        assert!(plans[0].stop_loss < plans[0].entry);
+
+        let mut short = make_signal(80.0, Confidence::High, 2.0);
+        short.direction = Direction::Short;
+        short.resistance1 = Some(99.0);
+        let plans = generate_trade_plans(&[short], 25000.0, 2.0, 1.0);
+        assert!(plans[0].stop_loss > plans[0].entry);
     }
 
     #[test]

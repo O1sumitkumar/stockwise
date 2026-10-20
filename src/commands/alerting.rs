@@ -60,6 +60,18 @@ impl WatchState {
         }
     }
 
+    /// Restore an alert's entry from before a trigger that couldn't be sent.
+    fn undo(&mut self, key: &str, previous: Option<Fired>) {
+        match previous {
+            Some(f) => {
+                self.fired.insert(key.to_string(), f);
+            }
+            None => {
+                self.fired.remove(key);
+            }
+        }
+    }
+
     /// Forget alerts that were removed.
     fn retain(&mut self, keys: &[String]) {
         self.fired.retain(|k, _| keys.contains(k));
@@ -94,6 +106,9 @@ fn is_due(symbol: &str, now: DateTime<Utc>) -> bool {
     alert_market(symbol).is_none_or(|m| clock::is_open(m, now))
 }
 
+/// Longest sleep while every watched market is closed.
+const MAX_IDLE_WAIT: Duration = Duration::from_secs(1800);
+
 /// How long to sleep when nothing is due: until the earliest next open of
 /// the markets the alerts trade on, in chunks of at most 30 minutes.
 fn wait_for_open(markets: &[Market], now: DateTime<Utc>, interval: Duration) -> Duration {
@@ -103,10 +118,14 @@ fn wait_for_open(markets: &[Market], now: DateTime<Utc>, interval: Duration) -> 
         .min()
         .and_then(|t| (t - now).to_std().ok())
         .unwrap_or(interval)
-        .clamp(interval, Duration::from_secs(1800))
+        .clamp(interval.min(MAX_IDLE_WAIT), MAX_IDLE_WAIT)
 }
 
 struct Trigger {
+    /// Watch-state key and its entry before this trigger, to undo the
+    /// "already notified" mark if the notification can't be delivered.
+    key: String,
+    previous: Option<Fired>,
     symbol: String,
     condition: String,
     target: f64,
@@ -196,7 +215,10 @@ async fn check_alerts(
         let quote = quotes
             .iter()
             .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()));
-        let Some(price) = quote.and_then(|q| q.regular_market_price) else {
+        let Some(price) = quote
+            .and_then(|q| q.regular_market_price)
+            .filter(|p| p.is_finite() && *p > 0.0)
+        else {
             if verbose {
                 println!(
                     "  {} {} — no live price, skipped",
@@ -212,7 +234,9 @@ async fn check_alerts(
             AlertCondition::Below => price <= alert.target,
         };
         let today = clock::session_date(alert_market(&alert.symbol).unwrap_or(market), now);
-        let fire = state.should_notify(&alert_key(alert), hit, today);
+        let key = alert_key(alert);
+        let previous = state.fired.get(&key).copied();
+        let fire = state.should_notify(&key, hit, today);
         if verbose {
             let status = if fire {
                 "TRIGGERED".red().bold().to_string()
@@ -232,6 +256,8 @@ async fn check_alerts(
         }
         if fire {
             pass.triggers.push(Trigger {
+                key,
+                previous,
                 symbol: alert.symbol.clone(),
                 condition: alert.condition.to_string(),
                 target: alert.target,
@@ -256,7 +282,6 @@ pub async fn cmd_alert_watch(interval: u64, once: bool, market: Market) -> Resul
         print_header("Alert Watch — single pass");
         let now = Utc::now();
         let pass = check_alerts(&mut feed, &mut state, market, now, true, true).await?;
-        crate::store::save(WATCH_STATE, &state, false)?;
         if pass.total == 0 {
             println!(
                 "  {}",
@@ -266,8 +291,9 @@ pub async fn cmd_alert_watch(interval: u64, once: bool, market: Market) -> Resul
             if pass.triggers.is_empty() {
                 println!("\n  {}", "No new triggers.".dimmed());
             }
-            report_triggers(&pass.triggers, market, &notifier).await;
+            report_triggers(&pass.triggers, &mut state, market, &notifier).await;
         }
+        crate::store::save(WATCH_STATE, &state, false)?;
         println!();
         return Ok(());
     }
@@ -307,10 +333,10 @@ pub async fn cmd_alert_watch(interval: u64, once: bool, market: Market) -> Resul
         let wait = match pass {
             Ok(pass) => {
                 feed.succeeded();
+                report_triggers(&pass.triggers, &mut state, market, &notifier).await;
                 if let Err(e) = crate::store::save(WATCH_STATE, &state, false) {
                     eprintln!("  {} Could not save {}: {:#}", "!".yellow(), WATCH_STATE, e);
                 }
-                report_triggers(&pass.triggers, market, &notifier).await;
                 if pass.total == 0 {
                     note_once(
                         &mut idle_note,
@@ -371,7 +397,14 @@ fn note_once(last: &mut Option<String>, note: &str) {
     }
 }
 
-async fn report_triggers(triggers: &[Trigger], market: Market, notifier: &Notifier) {
+/// Print and send the triggers. If every configured channel failed, the
+/// triggers are un-marked so the next check tries again.
+async fn report_triggers(
+    triggers: &[Trigger],
+    state: &mut WatchState,
+    market: Market,
+    notifier: &Notifier,
+) {
     if triggers.is_empty() {
         return;
     }
@@ -387,8 +420,13 @@ async fn report_triggers(triggers: &[Trigger], market: Market, notifier: &Notifi
             format_price(t.price, t.currency.as_deref()).bold()
         );
     }
-    if let Some(msg) = trigger_message(triggers) {
-        notifier.send_logged(&msg).await;
+    if let Some(msg) = trigger_message(triggers)
+        && !notifier.send_logged(&msg).await
+    {
+        for t in triggers {
+            state.undo(&t.key, t.previous);
+        }
+        eprintln!("  ! Not delivered — will try again at the next check.");
     }
 }
 
@@ -495,6 +533,34 @@ mod tests {
     }
 
     #[test]
+    fn an_undelivered_trigger_fires_again() {
+        let mut s = WatchState::default();
+        let previous = s.fired.get("a").copied();
+        assert!(s.should_notify("a", true, day(21)));
+        s.undo("a", previous);
+        assert!(s.should_notify("a", true, day(21)));
+        // Undo restores a re-armed entry too.
+        s.should_notify("a", false, day(22));
+        let previous = s.fired.get("a").copied();
+        assert!(s.should_notify("a", true, day(23)));
+        s.undo("a", previous);
+        assert!(s.should_notify("a", true, day(23)));
+    }
+
+    #[test]
+    fn long_intervals_do_not_break_the_idle_wait() {
+        let sat = clock::at(
+            Market::In,
+            day(24),
+            chrono::NaiveTime::from_hms_opt(9, 10, 0).unwrap(),
+        );
+        assert_eq!(
+            wait_for_open(&[Market::In], sat, Duration::from_secs(3600)),
+            MAX_IDLE_WAIT
+        );
+    }
+
+    #[test]
     fn removed_alerts_are_forgotten() {
         let mut s = WatchState::default();
         s.should_notify("a", true, day(21));
@@ -564,6 +630,8 @@ mod tests {
     #[test]
     fn several_triggers_become_one_message() {
         let t = |s: &str| Trigger {
+            key: s.into(),
+            previous: None,
             symbol: s.into(),
             condition: "above".into(),
             target: 100.0,
