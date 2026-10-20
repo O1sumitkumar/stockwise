@@ -9,6 +9,74 @@ const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleW
 const MAX_RETRIES: u32 = 3;
 const MIN_REQUEST_INTERVAL_MS: u64 = 200;
 const REDIS_KEY_PREFIX: &str = "stockwise:";
+const DEFAULT_REDIS_URL: &str = "redis://127.0.0.1:6379/";
+/// Never sleep longer than this for a single retry, whatever Retry-After says.
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(10);
+
+/// Connect to the optional Redis cache.
+///
+/// `STOCKWISE_REDIS_URL` picks the server (default: local Redis); set it to
+/// `off` to disable. Short timeouts mean a missing or hung Redis never slows
+/// a command down — StockWise falls back to its in-memory cache.
+pub async fn connect_redis() -> Option<redis::aio::MultiplexedConnection> {
+    let url = std::env::var("STOCKWISE_REDIS_URL").unwrap_or_else(|_| DEFAULT_REDIS_URL.into());
+    if url.is_empty() || url.eq_ignore_ascii_case("off") {
+        return None;
+    }
+    let client = redis::Client::open(url).ok()?;
+    let config = redis::AsyncConnectionConfig::new()
+        .set_connection_timeout(Duration::from_millis(300))
+        .set_response_timeout(Duration::from_millis(500));
+    client
+        .get_multiplexed_async_connection_with_config(&config)
+        .await
+        .ok()
+}
+
+/// Cache key for a request URL: the per-session `crumb` parameter is dropped
+/// so cached quotes survive across runs.
+fn cache_key(url: &str) -> String {
+    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+        return url.to_string();
+    };
+    let kept: Vec<(String, String)> = parsed
+        .query_pairs()
+        .filter(|(k, _)| k != "crumb")
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    if kept.is_empty() {
+        parsed.set_query(None);
+    } else {
+        parsed.query_pairs_mut().clear().extend_pairs(kept);
+    }
+    parsed.to_string()
+}
+
+/// Build `base` + `/segment` + `?query`, percent-encoding every part, so a
+/// symbol like `M&M.NS` or a search for "AT&T" can't break the URL.
+pub fn build_url(base: &str, segment: Option<&str>, query: &[(&str, &str)]) -> String {
+    let mut url = reqwest::Url::parse(base).expect("static base URL is valid");
+    if let Some(seg) = segment {
+        url.path_segments_mut()
+            .expect("base URL can have path segments")
+            .push(seg);
+    }
+    if !query.is_empty() {
+        url.query_pairs_mut().extend_pairs(query);
+    }
+    url.to_string()
+}
+
+/// Delay before retry `attempt` (0-based), honouring a server Retry-After.
+fn retry_delay(attempt: u32, retry_after: Option<&header::HeaderValue>, base_ms: u64) -> Duration {
+    let from_header = retry_after
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(Duration::from_secs);
+    from_header
+        .unwrap_or_else(|| Duration::from_millis(base_ms * 2u64.pow(attempt)))
+        .min(MAX_RETRY_DELAY)
+}
 
 // ── Hybrid Cache: Redis (primary) + In-Memory (fallback) ──
 
@@ -24,18 +92,8 @@ struct HybridCache {
 
 impl HybridCache {
     async fn new() -> Self {
-        let redis = match redis::Client::open("redis://127.0.0.1:6379/") {
-            Ok(client) => match client.get_multiplexed_tokio_connection().await {
-                Ok(conn) => {
-                    eprintln!("  {} Redis cache connected", colored::Colorize::green("●"));
-                    Some(conn)
-                }
-                Err(_) => None,
-            },
-            Err(_) => None,
-        };
         Self {
-            redis,
+            redis: connect_redis().await,
             memory: HashMap::new(),
         }
     }
@@ -48,14 +106,17 @@ impl HybridCache {
         let redis_key = format!("{}{}", REDIS_KEY_PREFIX, key);
 
         // Try Redis first
-        if let Some(ref mut conn) = self.redis
-            && let Ok(val) = redis::cmd("GET")
+        if let Some(ref mut conn) = self.redis {
+            match redis::cmd("GET")
                 .arg(&redis_key)
                 .query_async::<Option<String>>(conn)
                 .await
-            && let Some(v) = val
-        {
-            return Some(v);
+            {
+                Ok(Some(v)) => return Some(v),
+                Ok(None) => {}
+                // Timed out or dropped: stop using Redis for this run.
+                Err(_) => self.redis = None,
+            }
         }
 
         // Fallback to memory
@@ -310,8 +371,7 @@ impl YahooClient {
                     continue;
                 }
                 Err(e) => bail!(
-                    "Failed to connect to Yahoo Finance after {} retries: {}",
-                    MAX_RETRIES,
+                    "Cannot reach Yahoo Finance ({}). Check your internet connection.",
                     e
                 ),
             }
@@ -326,16 +386,43 @@ impl YahooClient {
                 .send()
                 .await
             {
-                Ok(resp) => {
+                Ok(resp) if resp.status().is_success() => {
                     crumb = resp.text().await.context("Failed to read crumb")?;
-                    break;
+                    // A real crumb is a short token; anything else is an error page.
+                    if !crumb.is_empty() && crumb.len() < 64 && !crumb.contains(char::is_whitespace)
+                    {
+                        break;
+                    }
+                    if attempt == MAX_RETRIES - 1 {
+                        bail!(
+                            "Yahoo Finance returned an invalid session token. Try again shortly."
+                        );
+                    }
+                    tokio::time::sleep(retry_delay(attempt, None, 500)).await;
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    if attempt == MAX_RETRIES - 1 {
+                        bail!(
+                            "Yahoo Finance refused to start a session (HTTP {}). {}",
+                            status,
+                            if status.as_u16() == 429 {
+                                "You are being rate limited — wait a minute and retry."
+                            } else {
+                                "Try again shortly."
+                            }
+                        );
+                    }
+                    let delay = retry_delay(attempt, resp.headers().get(header::RETRY_AFTER), 500);
+                    tokio::time::sleep(delay).await;
                 }
                 Err(_e) if attempt < MAX_RETRIES - 1 => {
-                    let delay = Duration::from_millis(500 * 2u64.pow(attempt));
-                    tokio::time::sleep(delay).await;
-                    continue;
+                    tokio::time::sleep(retry_delay(attempt, None, 500)).await;
                 }
-                Err(e) => bail!("Failed to get crumb after {} retries: {}", MAX_RETRIES, e),
+                Err(e) => bail!(
+                    "Cannot reach Yahoo Finance ({}). Check your internet connection.",
+                    e
+                ),
             }
         }
 
@@ -355,7 +442,7 @@ impl YahooClient {
         // Check cache first (Redis → memory)
         {
             let mut cache = self.cache.lock().await;
-            if let Some(cached) = cache.get(url).await {
+            if let Some(cached) = cache.get(&cache_key(url)).await {
                 return Ok(cached);
             }
         }
@@ -375,14 +462,24 @@ impl YahooClient {
             tokio::time::sleep(sleep_until - now).await;
         }
 
+        // Yahoo session cookies go to Yahoo only (news also comes from Google).
+        let is_yahoo = reqwest::Url::parse(url)
+            .ok()
+            .and_then(|u| {
+                u.host_str()
+                    .map(|h| h == "yahoo.com" || h.ends_with(".yahoo.com"))
+            })
+            .unwrap_or(false);
+
         // Fetch with retry + exponential backoff
+        let mut last_status = None;
         for attempt in 0..MAX_RETRIES {
-            let result = self
-                .client
-                .get(url)
-                .header(header::COOKIE, &self.cookie)
-                .send()
-                .await;
+            let last_attempt = attempt == MAX_RETRIES - 1;
+            let mut req = self.client.get(url);
+            if is_yahoo {
+                req = req.header(header::COOKIE, &self.cookie);
+            }
+            let result = req.send().await;
 
             match result {
                 Ok(resp) => {
@@ -391,42 +488,62 @@ impl YahooClient {
                         let body = resp.text().await.context("Failed to read response body")?;
                         // Cache to Redis + memory
                         let mut cache = self.cache.lock().await;
-                        cache.set(url.to_string(), body.clone(), cache_ttl).await;
+                        cache.set(cache_key(url), body.clone(), cache_ttl).await;
                         return Ok(body);
-                    } else if status.as_u16() == 429 {
-                        // Rate limited — back off aggressively
-                        let delay = Duration::from_secs(2u64.pow(attempt + 1));
+                    }
+                    last_status = Some(status);
+                    if status.as_u16() == 429 {
+                        if last_attempt {
+                            break;
+                        }
+                        let delay =
+                            retry_delay(attempt + 1, resp.headers().get(header::RETRY_AFTER), 1000);
                         eprintln!(
                             "  Rate limited by Yahoo Finance. Waiting {}s...",
                             delay.as_secs()
                         );
                         tokio::time::sleep(delay).await;
-                        continue;
-                    } else if status.as_u16() >= 500 {
-                        // Server error — retry
-                        let delay = Duration::from_millis(500 * 2u64.pow(attempt));
-                        tokio::time::sleep(delay).await;
-                        continue;
+                    } else if status.is_server_error() {
+                        if last_attempt {
+                            break;
+                        }
+                        tokio::time::sleep(retry_delay(attempt, None, 500)).await;
                     } else {
                         bail!("Yahoo Finance returned HTTP {}", status);
                     }
                 }
-                Err(_e) if attempt < MAX_RETRIES - 1 => {
-                    let delay = Duration::from_millis(500 * 2u64.pow(attempt));
-                    tokio::time::sleep(delay).await;
-                    continue;
+                Err(_e) if !last_attempt => {
+                    tokio::time::sleep(retry_delay(attempt, None, 500)).await;
                 }
-                Err(e) => bail!("Request failed after {} retries: {}", MAX_RETRIES, e),
+                Err(e) => bail!(
+                    "Request to Yahoo Finance failed after {} attempts: {}",
+                    MAX_RETRIES,
+                    e
+                ),
             }
         }
-        bail!("Request failed after {} retries", MAX_RETRIES)
+        match last_status {
+            Some(s) if s.as_u16() == 429 => {
+                bail!("Yahoo Finance is rate limiting requests. Wait a minute and try again.")
+            }
+            Some(s) => bail!(
+                "Yahoo Finance returned HTTP {} after {} attempts",
+                s,
+                MAX_RETRIES
+            ),
+            None => bail!(
+                "Request to Yahoo Finance failed after {} attempts",
+                MAX_RETRIES
+            ),
+        }
     }
 
     pub async fn get_quote(&self, symbols: &[&str]) -> Result<Vec<Quote>> {
         let joined = symbols.join(",");
-        let url = format!(
-            "https://query2.finance.yahoo.com/v7/finance/quote?symbols={}&crumb={}",
-            joined, self.crumb
+        let url = build_url(
+            "https://query2.finance.yahoo.com/v7/finance/quote",
+            None,
+            &[("symbols", &joined), ("crumb", &self.crumb)],
         );
 
         let body = self.fetch(&url, Duration::from_secs(30)).await?; // cache 30s for quotes
@@ -436,9 +553,10 @@ impl YahooClient {
     }
 
     pub async fn get_chart(&self, symbol: &str, range: &str, interval: &str) -> Result<ChartData> {
-        let url = format!(
-            "https://query1.finance.yahoo.com/v8/finance/chart/{}?range={}&interval={}",
-            symbol, range, interval
+        let url = build_url(
+            "https://query1.finance.yahoo.com/v8/finance/chart",
+            Some(symbol),
+            &[("range", range), ("interval", interval)],
         );
 
         // Cache chart data longer for bigger timeframes
@@ -481,13 +599,69 @@ impl YahooClient {
     }
 
     pub async fn search(&self, query: &str) -> Result<Vec<SearchResult>> {
-        let url = format!(
-            "https://query2.finance.yahoo.com/v1/finance/search?q={}&quotesCount=10&newsCount=0",
-            query
+        let url = build_url(
+            "https://query2.finance.yahoo.com/v1/finance/search",
+            None,
+            &[("q", query), ("quotesCount", "10"), ("newsCount", "0")],
         );
         let body = self.fetch(&url, Duration::from_secs(120)).await?;
         let resp: SearchResponse =
             serde_json::from_str(&body).context("Failed to parse search response")?;
         Ok(resp.quotes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_url_encodes_ampersand_in_symbols() {
+        let url = build_url(
+            "https://query2.finance.yahoo.com/v7/finance/quote",
+            None,
+            &[("symbols", "M&M.NS,TCS.NS"), ("crumb", "abc")],
+        );
+        assert!(url.contains("symbols=M%26M.NS%2CTCS.NS"), "{url}");
+        let parsed = reqwest::Url::parse(&url).unwrap();
+        let symbols = parsed
+            .query_pairs()
+            .find(|(k, _)| k == "symbols")
+            .unwrap()
+            .1;
+        assert_eq!(symbols, "M&M.NS,TCS.NS");
+    }
+
+    #[test]
+    fn build_url_encodes_path_segment() {
+        let url = build_url(
+            "https://query1.finance.yahoo.com/v8/finance/chart",
+            Some("M&M.NS"),
+            &[("range", "1mo")],
+        );
+        let parsed = reqwest::Url::parse(&url).unwrap();
+        assert_eq!(
+            parsed.path_segments().unwrap().next_back().unwrap(),
+            "M&M.NS"
+        );
+        assert!(url.starts_with("https://query1.finance.yahoo.com/v8/finance/chart/"));
+    }
+
+    #[test]
+    fn cache_key_drops_crumb() {
+        let a = cache_key("https://x.yahoo.com/q?symbols=AAPL&crumb=one");
+        let b = cache_key("https://x.yahoo.com/q?symbols=AAPL&crumb=two");
+        assert_eq!(a, b);
+        assert!(!a.contains("crumb"));
+        assert!(a.contains("symbols=AAPL"));
+    }
+
+    #[test]
+    fn retry_delay_honours_retry_after_but_caps_it() {
+        let ra = header::HeaderValue::from_static("3");
+        assert_eq!(retry_delay(0, Some(&ra), 500), Duration::from_secs(3));
+        let huge = header::HeaderValue::from_static("3600");
+        assert_eq!(retry_delay(0, Some(&huge), 500), MAX_RETRY_DELAY);
+        assert_eq!(retry_delay(1, None, 500), Duration::from_millis(1000));
     }
 }

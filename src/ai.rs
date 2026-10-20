@@ -3,7 +3,23 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-const OLLAMA_URL: &str = "http://localhost:11434";
+const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+
+/// Ollama server URL. Honours the standard `OLLAMA_HOST` variable
+/// (`host:port` or a full URL), defaulting to the local server.
+fn ollama_url() -> String {
+    match std::env::var("OLLAMA_HOST") {
+        Ok(h) if !h.trim().is_empty() => {
+            let h = h.trim().trim_end_matches('/');
+            if h.starts_with("http://") || h.starts_with("https://") {
+                h.to_string()
+            } else {
+                format!("http://{}", h)
+            }
+        }
+        _ => DEFAULT_OLLAMA_URL.to_string(),
+    }
+}
 const DEFAULT_MODEL: &str = "qwen3:14b";
 const AI_CACHE_PREFIX: &str = "stockwise:ai:";
 const AI_CACHE_TTL_SECS: i64 = 3600; // 1 hour for AI responses
@@ -36,10 +52,7 @@ pub struct AiClient {
 impl AiClient {
     pub async fn connect() -> Self {
         let model = std::env::var("STOCKWISE_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
-        let redis = match redis::Client::open("redis://127.0.0.1:6379/") {
-            Ok(c) => c.get_multiplexed_tokio_connection().await.ok(),
-            Err(_) => None,
-        };
+        let redis = crate::api::connect_redis().await;
         Self {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
@@ -65,7 +78,9 @@ impl AiClient {
 
     pub async fn is_available(&self) -> bool {
         self.client
-            .get(format!("{}/api/tags", OLLAMA_URL))
+            .get(format!("{}/api/tags", ollama_url()))
+            // Probe quickly so an unreachable OLLAMA_HOST never stalls a command.
+            .timeout(std::time::Duration::from_secs(2))
             .send()
             .await
             .is_ok()
@@ -110,7 +125,7 @@ impl AiClient {
 
         let raw: String = self
             .client
-            .post(format!("{}/api/generate", OLLAMA_URL))
+            .post(format!("{}/api/generate", ollama_url()))
             .json(&req)
             .send()
             .await

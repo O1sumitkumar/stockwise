@@ -1406,9 +1406,10 @@ fn parse_rss(xml: &str, source_tag: &'static str) -> Vec<NewsItem> {
 
 /// Fetch Yahoo Finance RSS for a symbol
 async fn fetch_yahoo_rss(client: &YahooClient, symbol: &str) -> Vec<NewsItem> {
-    let url = format!(
-        "https://feeds.finance.yahoo.com/rss/2.0/headline?s={}&region=US&lang=en-US",
-        symbol
+    let url = crate::api::build_url(
+        "https://feeds.finance.yahoo.com/rss/2.0/headline",
+        None,
+        &[("s", symbol), ("region", "US"), ("lang", "en-US")],
     );
     match client.raw_get_text(&url).await {
         Ok(xml) => parse_rss(&xml, "Yahoo RSS"),
@@ -1418,10 +1419,10 @@ async fn fetch_yahoo_rss(client: &YahooClient, symbol: &str) -> Vec<NewsItem> {
 
 /// Fetch Google News RSS for a query
 async fn fetch_google_news_rss(client: &YahooClient, query: &str) -> Vec<NewsItem> {
-    let encoded = query.replace(' ', "+");
-    let url = format!(
-        "https://news.google.com/rss/search?q={}&hl=en&gl=US&ceid=US:en",
-        encoded
+    let url = crate::api::build_url(
+        "https://news.google.com/rss/search",
+        None,
+        &[("q", query), ("hl", "en"), ("gl", "US"), ("ceid", "US:en")],
     );
     match client.raw_get_text(&url).await {
         Ok(xml) => parse_rss(&xml, "Google News"),
@@ -1431,9 +1432,11 @@ async fn fetch_google_news_rss(client: &YahooClient, query: &str) -> Vec<NewsIte
 
 /// Fetch Yahoo Finance search API news (JSON)
 async fn fetch_yahoo_json_news(client: &YahooClient, query: &str, count: usize) -> Vec<NewsItem> {
-    let url = format!(
-        "https://query2.finance.yahoo.com/v1/finance/search?q={}&quotesCount=0&newsCount={}",
-        query, count
+    let count = count.to_string();
+    let url = crate::api::build_url(
+        "https://query2.finance.yahoo.com/v1/finance/search",
+        None,
+        &[("q", query), ("quotesCount", "0"), ("newsCount", &count)],
     );
     let resp = match client.raw_get(&url).await {
         Ok(r) => r,
