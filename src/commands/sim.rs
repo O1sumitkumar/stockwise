@@ -390,133 +390,7 @@ pub async fn cmd_sim(
             }
             println!();
         }
-        "history" | "stats" => {
-            let history = SimHistory::load()?;
-            let stats = history.stats();
-            if stats.total_days == 0 {
-                println!(
-                    "\n  {} No history. Run {}.",
-                    "→".dimmed(),
-                    "stockwise sim start".cyan()
-                );
-                return Ok(());
-            }
-
-            print_header("Paper Trading Performance");
-            let daily_pnls: Vec<f64> = history
-                .sessions
-                .iter()
-                .filter(|s| s.settled)
-                .filter_map(|s| s.total_pnl)
-                .collect();
-            if daily_pnls.len() > 1 {
-                let mut equity = vec![0.0_f64];
-                for &pnl in &daily_pnls {
-                    equity.push(equity.last().unwrap() + pnl);
-                }
-                let color = if *equity.last().unwrap() >= 0.0 {
-                    "green"
-                } else {
-                    "red"
-                };
-                for line in charts::line_chart(&equity, 50, 8, color, "Cumulative P&L") {
-                    println!("{}", line);
-                }
-                println!();
-                println!("  {}", "Daily P&L".bold());
-                for s in history.sessions.iter().filter(|s| s.settled) {
-                    let pnl = s.total_pnl.unwrap_or(0.0);
-                    let bar_len = (pnl.abs()
-                        / stats
-                            .best_day
-                            .unwrap_or(1.0)
-                            .abs()
-                            .max(stats.worst_day.unwrap_or(1.0).abs())
-                        * 20.0)
-                        .min(20.0) as usize;
-                    let bar = if pnl >= 0.0 {
-                        "█".repeat(bar_len.max(1)).green().to_string()
-                    } else {
-                        "█".repeat(bar_len.max(1)).red().to_string()
-                    };
-                    let ps = if pnl >= 0.0 {
-                        format!("+{}{:.0}", csym, pnl).green().to_string()
-                    } else {
-                        format!("-{}{:.0}", csym, pnl.abs()).red().to_string()
-                    };
-                    println!("  {} {} {}", s.date.dimmed(), bar, ps);
-                }
-            }
-
-            print_section("Performance");
-            print_kv("Days Simulated", &stats.total_days.to_string());
-            print_kv(
-                "Winning Days",
-                &format!("{} ({:.0}%)", stats.winning_days, stats.day_win_rate),
-            );
-            let ts = if stats.total_pnl >= 0.0 {
-                format!("+{}{:.0}", csym, stats.total_pnl)
-                    .green()
-                    .bold()
-                    .to_string()
-            } else {
-                format!("-{}{:.0}", csym, stats.total_pnl.abs())
-                    .red()
-                    .bold()
-                    .to_string()
-            };
-            print_kv("Total P&L", &ts);
-            print_kv(
-                "Avg Daily P&L",
-                &format!("{}{:.0}", csym, stats.avg_daily_pnl),
-            );
-            if let Some(b) = stats.best_day {
-                print_kv(
-                    "Best Day",
-                    &format!("+{}{:.0}", csym, b).green().to_string(),
-                );
-            }
-            if let Some(w) = stats.worst_day {
-                print_kv("Worst Day", &format!("{}{:.0}", csym, w).red().to_string());
-            }
-            print_kv("Total Trades", &stats.total_trades.to_string());
-            print_kv("Trade Win Rate", &format!("{:.0}%", stats.trade_win_rate));
-            print_kv("Max Win Streak", &format!("{} days", stats.max_win_streak));
-            print_kv(
-                "Max Loss Streak",
-                &format!("{} days", stats.max_loss_streak),
-            );
-            if let Some(s) = stats.sharpe {
-                print_kv("Sharpe (ann.)", &format!("{:.2}", s));
-            }
-
-            print_section("Bot Confidence");
-            if stats.total_days >= 5 {
-                let conf = if stats.day_win_rate >= 65.0
-                    && stats.trade_win_rate >= 55.0
-                    && stats.total_pnl > 0.0
-                {
-                    "HIGH — Bot is consistently profitable. Consider going live."
-                        .green()
-                        .bold()
-                        .to_string()
-                } else if stats.day_win_rate >= 50.0 && stats.total_pnl > 0.0 {
-                    "MODERATE — Profitable but inconsistent. Keep testing."
-                        .yellow()
-                        .to_string()
-                } else {
-                    "LOW — Underperforming. Review strategy.".red().to_string()
-                };
-                println!("  {}", conf);
-            } else {
-                println!(
-                    "  {} Need 5+ days for confidence rating ({}/5)",
-                    "→".dimmed(),
-                    stats.total_days
-                );
-            }
-            println!();
-        }
+        "history" | "stats" => return cmd_sim_history(market, Format::Table),
         "reset" => return cmd_sim_reset(false),
         _ => {
             println!();
@@ -547,6 +421,198 @@ pub async fn cmd_sim(
             println!();
         }
     }
+    Ok(())
+}
+
+/// The bot's confidence rating from settled sessions: `high`, `moderate` or
+/// `low`; `None` until there are 5 days of history.
+fn sim_confidence(stats: &crate::simulator::SimStats) -> Option<&'static str> {
+    if stats.total_days < 5 {
+        None
+    } else if stats.day_win_rate >= 65.0 && stats.trade_win_rate >= 55.0 && stats.total_pnl > 0.0 {
+        Some("high")
+    } else if stats.day_win_rate >= 50.0 && stats.total_pnl > 0.0 {
+        Some("moderate")
+    } else {
+        Some("low")
+    }
+}
+
+/// `sim history --json`: statistics over settled sessions, the confidence
+/// rating, and every session (open ones have null P&L).
+pub(crate) fn sim_history_json(
+    history: &SimHistory,
+    stats: &crate::simulator::SimStats,
+) -> serde_json::Value {
+    let sessions: Vec<serde_json::Value> = history
+        .sessions
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "date": s.date,
+                "market": s.market,
+                "capital": s.capital,
+                "target_percent": s.target_pct,
+                "settled": s.settled,
+                "trades": s.trades.len(),
+                "pnl": round_opt(s.total_pnl, 2),
+                "pnl_percent": round_opt(s.total_pnl_pct, 2),
+                "wins": s.win_count,
+                "losses": s.loss_count,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "stats": {
+            "days": stats.total_days,
+            "winning_days": stats.winning_days,
+            "day_win_rate_percent": round(stats.day_win_rate, 2),
+            "total_pnl": round(stats.total_pnl, 2),
+            "avg_daily_pnl": round(stats.avg_daily_pnl, 2),
+            "best_day": round_opt(stats.best_day, 2),
+            "worst_day": round_opt(stats.worst_day, 2),
+            "trades": stats.total_trades,
+            "winning_trades": stats.winning_trades,
+            "losing_trades": stats.losing_trades,
+            "trade_win_rate_percent": round(stats.trade_win_rate, 2),
+            "sharpe": round_opt(stats.sharpe, 3),
+            "max_win_streak": stats.max_win_streak,
+            "max_loss_streak": stats.max_loss_streak,
+        },
+        "confidence": sim_confidence(stats),
+        "sessions": sessions,
+    })
+}
+
+/// `sim history`: past sessions and the bot's confidence rating.
+pub fn cmd_sim_history(market: Market, fmt: Format) -> Result<()> {
+    let csym = match market {
+        Market::In => "₹",
+        Market::Us => "$",
+    };
+    let history = SimHistory::load()?;
+    let stats = history.stats();
+    if fmt == Format::Json {
+        return output::print_json(&sim_history_json(&history, &stats));
+    }
+    if stats.total_days == 0 {
+        println!(
+            "\n  {} No history. Run {}.",
+            "→".dimmed(),
+            "stockwise sim start".cyan()
+        );
+        return Ok(());
+    }
+
+    print_header("Paper Trading Performance");
+    let daily_pnls: Vec<f64> = history
+        .sessions
+        .iter()
+        .filter(|s| s.settled)
+        .filter_map(|s| s.total_pnl)
+        .collect();
+    if daily_pnls.len() > 1 {
+        let mut equity = vec![0.0_f64];
+        for &pnl in &daily_pnls {
+            equity.push(equity.last().unwrap() + pnl);
+        }
+        let color = if *equity.last().unwrap() >= 0.0 {
+            "green"
+        } else {
+            "red"
+        };
+        for line in charts::line_chart(&equity, 50, 8, color, "Cumulative P&L") {
+            println!("{}", line);
+        }
+        println!();
+        println!("  {}", "Daily P&L".bold());
+        for s in history.sessions.iter().filter(|s| s.settled) {
+            let pnl = s.total_pnl.unwrap_or(0.0);
+            let bar_len = (pnl.abs()
+                / stats
+                    .best_day
+                    .unwrap_or(1.0)
+                    .abs()
+                    .max(stats.worst_day.unwrap_or(1.0).abs())
+                * 20.0)
+                .min(20.0) as usize;
+            let bar = if pnl >= 0.0 {
+                "█".repeat(bar_len.max(1)).green().to_string()
+            } else {
+                "█".repeat(bar_len.max(1)).red().to_string()
+            };
+            let ps = if pnl >= 0.0 {
+                format!("+{}{:.0}", csym, pnl).green().to_string()
+            } else {
+                format!("-{}{:.0}", csym, pnl.abs()).red().to_string()
+            };
+            println!("  {} {} {}", s.date.dimmed(), bar, ps);
+        }
+    }
+
+    print_section("Performance");
+    print_kv("Days Simulated", &stats.total_days.to_string());
+    print_kv(
+        "Winning Days",
+        &format!("{} ({:.0}%)", stats.winning_days, stats.day_win_rate),
+    );
+    let ts = if stats.total_pnl >= 0.0 {
+        format!("+{}{:.0}", csym, stats.total_pnl)
+            .green()
+            .bold()
+            .to_string()
+    } else {
+        format!("-{}{:.0}", csym, stats.total_pnl.abs())
+            .red()
+            .bold()
+            .to_string()
+    };
+    print_kv("Total P&L", &ts);
+    print_kv(
+        "Avg Daily P&L",
+        &format!("{}{:.0}", csym, stats.avg_daily_pnl),
+    );
+    if let Some(b) = stats.best_day {
+        print_kv(
+            "Best Day",
+            &format!("+{}{:.0}", csym, b).green().to_string(),
+        );
+    }
+    if let Some(w) = stats.worst_day {
+        print_kv("Worst Day", &format!("{}{:.0}", csym, w).red().to_string());
+    }
+    print_kv("Total Trades", &stats.total_trades.to_string());
+    print_kv("Trade Win Rate", &format!("{:.0}%", stats.trade_win_rate));
+    print_kv("Max Win Streak", &format!("{} days", stats.max_win_streak));
+    print_kv(
+        "Max Loss Streak",
+        &format!("{} days", stats.max_loss_streak),
+    );
+    if let Some(s) = stats.sharpe {
+        print_kv("Sharpe (ann.)", &format!("{:.2}", s));
+    }
+
+    print_section("Bot Confidence");
+    if let Some(level) = sim_confidence(&stats) {
+        let conf = match level {
+            "high" => "HIGH — Bot is consistently profitable. Consider going live."
+                .green()
+                .bold()
+                .to_string(),
+            "moderate" => "MODERATE — Profitable but inconsistent. Keep testing."
+                .yellow()
+                .to_string(),
+            _ => "LOW — Underperforming. Review strategy.".red().to_string(),
+        };
+        println!("  {}", conf);
+    } else {
+        println!(
+            "  {} Need 5+ days for confidence rating ({}/5)",
+            "→".dimmed(),
+            stats.total_days
+        );
+    }
+    println!();
     Ok(())
 }
 

@@ -29,6 +29,8 @@ pub use metrics::Metrics;
 const MAX_SYMBOLS: usize = 50;
 /// Shortest accepted `STOCKWISE_API_TOKEN`.
 const MIN_TOKEN_LEN: usize = 16;
+/// How long Ctrl+C waits for requests in flight.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub struct AppState<D> {
     pub source: D,
@@ -46,15 +48,21 @@ type Shared<D> = State<Arc<AppState<D>>>;
 pub enum ApiError {
     BadRequest(String),
     NotFound(String),
-    /// Market data or a local data file could not be read.
+    /// Market data could not be fetched.
     Data(anyhow::Error),
+    /// A local data file could not be read. Details (with file paths) go to
+    /// the server log only.
+    Local(anyhow::Error),
 }
 
 impl ApiError {
     fn from_data(e: anyhow::Error) -> Self {
-        match e.downcast_ref::<views::NotFound>() {
-            Some(nf) => Self::NotFound(nf.to_string()),
-            None => Self::Data(e),
+        if let Some(nf) = e.downcast_ref::<views::NotFound>() {
+            Self::NotFound(nf.to_string())
+        } else if e.downcast_ref::<views::LocalData>().is_some() {
+            Self::Local(e)
+        } else {
+            Self::Data(e)
         }
     }
 }
@@ -83,6 +91,13 @@ impl IntoResponse for ApiError {
                 let msg = redact(&format!("{:#}", e));
                 eprintln!("  {} {}", "error:".red(), msg);
                 (StatusCode::BAD_GATEWAY, msg)
+            }
+            Self::Local(e) => {
+                eprintln!("  {} {:#}", "error:".red(), e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Could not read local data (see the server log)".into(),
+                )
             }
         };
         (status, axum::Json(serde_json::json!({ "error": msg }))).into_response()
@@ -310,6 +325,58 @@ async fn require_token<D: DataSource>(State(st): Shared<D>, req: Request, next: 
     next.run(req).await
 }
 
+/// Without a token the API trusts the network position, so it only answers
+/// requests addressed to this machine by a loopback name. That stops a web
+/// page from reading it through DNS rebinding (evil.example resolving to
+/// 127.0.0.1): the browser would still send `Host: evil.example`.
+fn loopback_host(host: &str) -> bool {
+    let name = match host.strip_prefix('[') {
+        // [::1]:8787
+        Some(rest) => rest.split(']').next().unwrap_or(""),
+        None => host.rsplit_once(':').map_or(host, |(name, _port)| name),
+    };
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    name == "localhost"
+        || name.ends_with(".localhost")
+        || name.parse::<IpAddr>().is_ok_and(is_loopback)
+}
+
+async fn check_host<D: DataSource>(State(st): Shared<D>, req: Request, next: Next) -> Response {
+    if st.token.is_none() {
+        let host = req
+            .headers()
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !loopback_host(host) {
+            return (
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({
+                    "error": "Host not allowed: without STOCKWISE_API_TOKEN the API only answers to localhost"
+                })),
+            )
+                .into_response();
+        }
+    }
+    next.run(req).await
+}
+
+/// Method label for metrics: anything unusual is folded into OTHER so
+/// clients can't grow the label set without bound.
+fn method_label(m: &axum::http::Method) -> &'static str {
+    use axum::http::Method;
+    match *m {
+        Method::GET => "GET",
+        Method::HEAD => "HEAD",
+        Method::POST => "POST",
+        Method::PUT => "PUT",
+        Method::DELETE => "DELETE",
+        Method::PATCH => "PATCH",
+        Method::OPTIONS => "OPTIONS",
+        _ => "OTHER",
+    }
+}
+
 /// Count and time every request; mark responses private and uncacheable.
 async fn track<D: DataSource>(State(st): Shared<D>, req: Request, next: Next) -> Response {
     let route = req
@@ -317,15 +384,11 @@ async fn track<D: DataSource>(State(st): Shared<D>, req: Request, next: Next) ->
         .get::<MatchedPath>()
         .map(|p| p.as_str().to_string())
         .unwrap_or_else(|| "unmatched".into());
-    let method = req.method().clone();
+    let method = method_label(req.method());
     let started = Instant::now();
     let mut resp = next.run(req).await;
-    st.metrics.observe(
-        method.as_str(),
-        &route,
-        resp.status().as_u16(),
-        started.elapsed(),
-    );
+    st.metrics
+        .observe(method, &route, resp.status().as_u16(), started.elapsed());
     let headers = resp.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(
@@ -353,6 +416,10 @@ pub fn router<D: DataSource + 'static>(state: Arc<AppState<D>>) -> Router {
         .route("/healthz", get(healthz))
         .merge(protected)
         .fallback(not_found)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            check_host::<D>,
+        ))
         .layer(middleware::from_fn_with_state(state.clone(), track::<D>))
         .with_state(state)
 }
@@ -453,12 +520,26 @@ pub async fn run(bind: &str, allow_remote: bool, market: Market) -> Result<()> {
         token,
         metrics: Metrics::new(),
     });
-    axum::serve(listener, router(state))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await
-        .context("Server error")?;
+    // Ctrl+C stops accepting connections and lets requests in flight finish,
+    // for at most SHUTDOWN_GRACE (a request can be inside Yahoo retries).
+    let (stopping_tx, stopping) = tokio::sync::oneshot::channel::<()>();
+    let server = axum::serve(listener, router(state)).with_graceful_shutdown(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        let _ = stopping_tx.send(());
+    });
+    let grace = async {
+        match stopping.await {
+            Ok(()) => tokio::time::sleep(SHUTDOWN_GRACE).await,
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    tokio::select! {
+        result = std::future::IntoFuture::into_future(server) => result.context("Server error")?,
+        _ = grace => eprintln!(
+            "  Requests still running after {}s; stopping anyway.",
+            SHUTDOWN_GRACE.as_secs()
+        ),
+    }
     println!("\n  Stopped.");
     Ok(())
 }
@@ -486,7 +567,9 @@ mod tests {
     }
 
     async fn get_with(app: &Router, uri: &str, auth: Option<&str>) -> (StatusCode, Response) {
-        let mut req = Request::builder().uri(uri);
+        let mut req = Request::builder()
+            .uri(uri)
+            .header(header::HOST, "127.0.0.1:8787");
         if let Some(a) = auth {
             req = req.header(header::AUTHORIZATION, a);
         }
@@ -606,9 +689,11 @@ mod tests {
             StatusCode::BAD_REQUEST
         );
 
+        // Same shapes as `portfolio --json`, `watch --json`, `alert check --json`.
         let (s, v) = get_json(&app, "/api/portfolio").await;
         assert_eq!(s, StatusCode::OK);
-        assert_eq!(v["total_pnl"], 5500.0);
+        assert_eq!(v["totals"]["pnl"], 5500.0);
+        assert_eq!(v["holdings"][0]["weight_percent"], 84.54);
         assert_eq!(v["unpriced"][0], "DELISTED.NS");
 
         let (s, v) = get_json(&app, "/api/watchlist").await;
@@ -618,8 +703,9 @@ mod tests {
 
         let (s, v) = get_json(&app, "/api/alerts").await;
         assert_eq!(s, StatusCode::OK);
-        assert_eq!(v[0]["triggered"], true);
-        assert_eq!(v[2]["triggered"], false);
+        assert_eq!(v[0]["status"], "triggered");
+        assert_eq!(v[1]["status"], "waiting");
+        assert_eq!(v[2]["status"], "no_price");
         assert!(v[2]["price"].is_null());
     }
 
@@ -637,6 +723,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_file_errors_are_500_without_paths() {
+        struct BrokenFiles(Fixture);
+        impl DataSource for BrokenFiles {
+            async fn quotes(&self, s: &[&str]) -> anyhow::Result<Vec<crate::api::Quote>> {
+                self.0.quotes(s).await
+            }
+            async fn chart(
+                &self,
+                s: &str,
+                r: &str,
+                i: &str,
+            ) -> anyhow::Result<crate::api::ChartData> {
+                self.0.chart(s, r, i).await
+            }
+            async fn search(&self, q: &str) -> anyhow::Result<Vec<crate::api::SearchResult>> {
+                self.0.search(q).await
+            }
+            fn alerts(&self) -> anyhow::Result<crate::alerts::AlertStore> {
+                anyhow::bail!("/Users/me/stockwise/alerts.json is not valid JSON")
+            }
+        }
+        let app = router(Arc::new(AppState {
+            source: BrokenFiles(Fixture::default()),
+            market: Market::In,
+            token: None,
+            metrics: Metrics::new(),
+        }));
+        let (status, v) = get_json(&app, "/api/alerts").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(!v["error"].as_str().unwrap().contains("/Users"), "{v}");
+    }
+
+    #[tokio::test]
+    async fn foreign_host_names_are_refused_without_a_token() {
+        let app = app();
+        let get = |host: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .uri("/api/portfolio")
+                        .header(header::HOST, host)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+        // DNS rebinding: a page on evil.example resolved to 127.0.0.1.
+        assert_eq!(get("evil.example:8787").await, StatusCode::FORBIDDEN);
+        assert_eq!(get("192.168.1.5:8787").await, StatusCode::FORBIDDEN);
+        for ok in [
+            "localhost:8787",
+            "127.0.0.1:8787",
+            "[::1]:8787",
+            "app.localhost",
+        ] {
+            assert_eq!(get(ok).await, StatusCode::OK, "{ok}");
+        }
+        // With a token any Host is fine (remote use).
+        let token = "0123456789abcdef0123";
+        let app = app_with(Fixture::default(), Some(token));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/portfolio")
+                    .header(header::HOST, "my-server.lan:8787")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn unusual_methods_share_one_metrics_label() {
+        use axum::http::Method;
+        assert_eq!(method_label(&Method::GET), "GET");
+        assert_eq!(
+            method_label(&Method::from_bytes(b"A0001").unwrap()),
+            "OTHER"
+        );
+    }
+
+    #[tokio::test]
     async fn unknown_routes_and_methods() {
         let app = app();
         assert_eq!(get_json(&app, "/api/trade").await.0, StatusCode::NOT_FOUND);
@@ -646,6 +821,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/portfolio")
+                    .header(header::HOST, "localhost")
                     .body(Body::empty())
                     .unwrap(),
             )

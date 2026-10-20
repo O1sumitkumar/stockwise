@@ -13,6 +13,7 @@ use crate::insights;
 use crate::intraday;
 use crate::longterm;
 use crate::market::{self, Market};
+use crate::output::{self, CsvRow, Format, round, round_opt};
 use crate::portfolio::Portfolio;
 use crate::simulator::{SimHistory, SimSession, SimTrade};
 use crate::technical;
@@ -21,6 +22,7 @@ use crate::watchlist::Watchlist;
 use crate::wealth::WealthHistory;
 use anyhow::{Context, Result, bail};
 use colored::Colorize;
+use serde::Serialize;
 
 fn period_to_interval(period: &str) -> &str {
     match period {
@@ -47,11 +49,15 @@ mod interfaces;
 mod markets;
 mod overview;
 mod risk;
+mod setup;
 mod sim;
 mod strategies;
 mod technicals;
 mod trade;
 mod worker;
+
+#[cfg(test)]
+mod output_tests;
 
 pub use fundamentals::*;
 pub use holdings::*;
@@ -59,6 +65,7 @@ pub use interfaces::*;
 pub use markets::*;
 pub use overview::*;
 pub use risk::*;
+pub use setup::*;
 pub use sim::*;
 pub use strategies::*;
 pub use technicals::*;

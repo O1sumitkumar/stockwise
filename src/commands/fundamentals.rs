@@ -164,7 +164,83 @@ pub async fn cmd_analyze(symbol: &str, market: Market) -> Result<()> {
     Ok(())
 }
 
-pub async fn cmd_compare(symbols: &[String], market: Market) -> Result<()> {
+/// One stock in `compare --json/--csv`: a row per symbol, a column per
+/// metric (the table shows the transpose). Ratios are fractions as Yahoo
+/// reports them (`dividend_yield` 0.012 = 1.2%).
+#[derive(Debug, Serialize)]
+pub(crate) struct CompareRow {
+    pub(crate) symbol: Option<String>,
+    pub(crate) name: Option<String>,
+    pub(crate) currency: Option<String>,
+    pub(crate) price: Option<f64>,
+    pub(crate) change_percent: Option<f64>,
+    pub(crate) market_cap: Option<f64>,
+    pub(crate) pe_ttm: Option<f64>,
+    pub(crate) pe_forward: Option<f64>,
+    pub(crate) eps_ttm: Option<f64>,
+    pub(crate) price_to_book: Option<f64>,
+    pub(crate) dividend_yield: Option<f64>,
+    pub(crate) profit_margin: Option<f64>,
+    pub(crate) revenue_growth: Option<f64>,
+    pub(crate) debt_to_equity: Option<f64>,
+    pub(crate) beta: Option<f64>,
+    pub(crate) year_high: Option<f64>,
+    pub(crate) year_low: Option<f64>,
+    pub(crate) sma_50: Option<f64>,
+    pub(crate) analyst_rating: Option<String>,
+}
+
+impl CsvRow for CompareRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "symbol",
+        "name",
+        "currency",
+        "price",
+        "change_percent",
+        "market_cap",
+        "pe_ttm",
+        "pe_forward",
+        "eps_ttm",
+        "price_to_book",
+        "dividend_yield",
+        "profit_margin",
+        "revenue_growth",
+        "debt_to_equity",
+        "beta",
+        "year_high",
+        "year_low",
+        "sma_50",
+        "analyst_rating",
+    ];
+}
+
+impl From<&crate::api::Quote> for CompareRow {
+    fn from(q: &crate::api::Quote) -> Self {
+        Self {
+            symbol: q.symbol.clone(),
+            name: q.short_name.clone().or_else(|| q.long_name.clone()),
+            currency: q.currency.clone(),
+            price: q.regular_market_price,
+            change_percent: q.regular_market_change_percent,
+            market_cap: q.market_cap,
+            pe_ttm: q.trailing_pe,
+            pe_forward: q.forward_pe,
+            eps_ttm: q.eps_trailing_twelve_months,
+            price_to_book: q.price_to_book,
+            dividend_yield: q.trailing_annual_dividend_yield,
+            profit_margin: q.profit_margins,
+            revenue_growth: q.revenue_growth,
+            debt_to_equity: q.debt_to_equity,
+            beta: q.beta,
+            year_high: q.fifty_two_week_high,
+            year_low: q.fifty_two_week_low,
+            sma_50: q.fifty_day_average,
+            analyst_rating: q.recommendation_key.clone(),
+        }
+    }
+}
+
+pub async fn cmd_compare(symbols: &[String], market: Market, fmt: Format) -> Result<()> {
     let resolved = resolve_symbols(symbols, market);
     let client = YahooClient::new().await?;
     let sym_refs: Vec<&str> = resolved.iter().map(|s| s.as_str()).collect();
@@ -176,6 +252,13 @@ pub async fn cmd_compare(symbols: &[String], market: Market) -> Result<()> {
             resolved.join(", "),
             market::not_found_hint(market)
         );
+    }
+    if !fmt.is_table() {
+        let rows: Vec<CompareRow> = quotes.iter().map(CompareRow::from).collect();
+        return match fmt {
+            Format::Csv => output::print_csv(&rows),
+            _ => output::print_json(&rows),
+        };
     }
 
     print_header("Stock Comparison");
@@ -415,22 +498,80 @@ pub async fn cmd_peers(symbol: &str, market: Market) -> Result<()> {
 
 // ── Dividends ──
 
-pub async fn cmd_dividends(symbol: &str, market: Market) -> Result<()> {
+/// Income and DRIP projections behind `dividends`, from the price and the
+/// trailing yield (a fraction). `drip` starts from 1,000 shares and
+/// reinvests every year's dividend at today's price.
+pub(crate) fn dividend_json(
+    symbol: &str,
+    currency: Option<&str>,
+    price: f64,
+    div_yield: f64,
+) -> serde_json::Value {
+    let div_rate = div_yield * price;
+    let income: Vec<serde_json::Value> = [100000.0, 500000.0, 1000000.0]
+        .into_iter()
+        .map(|invested| {
+            let shares = (invested / price).floor();
+            let annual = shares * div_rate;
+            serde_json::json!({
+                "invested": invested,
+                "shares": shares,
+                "annual_income": round(annual, 2),
+                "monthly_income": round(annual / 12.0, 2),
+            })
+        })
+        .collect();
+    let mut drip = Vec::new();
+    let initial = 1000.0;
+    let mut shares = initial;
+    for year in 1..=10 {
+        shares += shares * div_rate / price;
+        if year == 1 || year == 5 || year == 10 {
+            drip.push(serde_json::json!({
+                "year": year,
+                "shares": round(shares, 4),
+                "growth_percent": round((shares / initial - 1.0) * 100.0, 2),
+            }));
+        }
+    }
+    let pays = div_yield > 0.0;
+    serde_json::json!({
+        "symbol": symbol,
+        "currency": currency,
+        "price": price,
+        "pays_dividend": pays,
+        "dividend_yield_percent": round(div_yield * 100.0, 2),
+        "annual_dividend_per_share": round(div_rate, 4),
+        "income": if pays { income } else { Vec::new() },
+        "drip": if pays { drip } else { Vec::new() },
+    })
+}
+
+pub async fn cmd_dividends(symbol: &str, market: Market, fmt: Format) -> Result<()> {
     let resolved = market::resolve_symbol(symbol, market);
     let client = YahooClient::new().await?;
     let quotes = client.get_quote(&[&resolved]).await?;
     let q = quotes.first().context("Symbol not found")?;
     let cur = q.currency.as_deref();
     let csym = market::currency_symbol(cur);
+    let price = q
+        .regular_market_price
+        .filter(|p| *p > 0.0)
+        .with_context(|| format!("No live price for {}", resolved))?;
+    let div_yield = q.trailing_annual_dividend_yield.unwrap_or(0.0);
+    let report = dividend_json(&resolved, cur, price, div_yield);
+    if fmt == Format::Json {
+        return output::print_json(&report);
+    }
 
     print_header(&format!("Dividend Analysis: {}", resolved));
-    let price = q.regular_market_price.unwrap_or(0.0);
     print_kv("Price", &format_price(price, cur));
 
-    let div_yield = q.trailing_annual_dividend_yield.unwrap_or(0.0);
-    let div_rate = q.trailing_annual_dividend_yield.unwrap_or(0.0) * price;
     if div_yield > 0.0 {
-        print_kv("Annual Dividend", &format!("{}{:.2}/share", csym, div_rate));
+        print_kv(
+            "Annual Dividend",
+            &format!("{}{:.2}/share", csym, div_yield * price),
+        );
         print_kv(
             "Dividend Yield",
             &format!("{:.2}%", div_yield * 100.0).green().to_string(),
@@ -438,34 +579,31 @@ pub async fn cmd_dividends(symbol: &str, market: Market) -> Result<()> {
 
         // Dividend income projection
         print_section("Income Projection");
-        for investment in [100000.0, 500000.0, 1000000.0] {
-            let shares = (investment / price).floor();
-            let annual_income = shares * div_rate;
-            let monthly = annual_income / 12.0;
+        for row in report["income"].as_array().into_iter().flatten() {
+            let f = |k: &str| row[k].as_f64().unwrap_or_default();
             print_kv(
-                &format!("{}{:.0} invested", csym, investment),
+                &format!("{}{:.0} invested", csym, f("invested")),
                 &format!(
                     "{}{:.0}/year ({}{:.0}/month)",
-                    csym, annual_income, csym, monthly
+                    csym,
+                    f("annual_income"),
+                    csym,
+                    f("monthly_income")
                 ),
             );
         }
 
         // DRIP projection (dividend reinvestment)
         print_section("DRIP Growth (10 years)");
-        let mut shares = 1000.0 / price * price; // normalized to 1000 units of currency
-        let initial_shares = shares;
-        for year in 1..=10 {
-            let div_income = shares * div_rate;
-            let new_shares = div_income / price;
-            shares += new_shares;
-            if year == 1 || year == 5 || year == 10 {
-                let growth = ((shares / initial_shares) - 1.0) * 100.0;
-                print_kv(
-                    &format!("Year {}", year),
-                    &format!("{:.2} shares (+{:.1}% from DRIP)", shares, growth),
-                );
-            }
+        for row in report["drip"].as_array().into_iter().flatten() {
+            print_kv(
+                &format!("Year {}", row["year"]),
+                &format!(
+                    "{:.2} shares (+{:.1}% from DRIP)",
+                    row["shares"].as_f64().unwrap_or_default(),
+                    row["growth_percent"].as_f64().unwrap_or_default()
+                ),
+            );
         }
     } else {
         println!("  {}", "This stock does not pay dividends.".dimmed());

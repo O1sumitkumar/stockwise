@@ -37,13 +37,23 @@ fn count(counter: &AtomicU64) {
     counter.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Redis URL: `STOCKWISE_REDIS_URL`, then `redis_url` in the config file,
+/// then local Redis. An empty env var has always meant "off", so it counts
+/// as set.
+pub fn redis_url() -> String {
+    std::env::var("STOCKWISE_REDIS_URL")
+        .ok()
+        .or_else(|| crate::config::get().redis_url.clone())
+        .unwrap_or_else(|| DEFAULT_REDIS_URL.into())
+}
+
 /// Connect to the optional Redis cache.
 ///
-/// `STOCKWISE_REDIS_URL` picks the server (default: local Redis); set it to
-/// `off` to disable. Short timeouts mean a missing or hung Redis never slows
-/// a command down — StockWise falls back to its in-memory cache.
+/// [`redis_url`] picks the server; `off` disables it. Short timeouts mean a
+/// missing or hung Redis never slows a command down — StockWise falls back
+/// to its in-memory cache.
 pub async fn connect_redis() -> Option<redis::aio::MultiplexedConnection> {
-    let url = std::env::var("STOCKWISE_REDIS_URL").unwrap_or_else(|_| DEFAULT_REDIS_URL.into());
+    let url = redis_url();
     if url.is_empty() || url.eq_ignore_ascii_case("off") {
         return None;
     }

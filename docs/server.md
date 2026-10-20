@@ -5,7 +5,7 @@ spreadsheets, Grafana or Home Assistant, plus Prometheus metrics for the
 server and the intraday daemon.
 
 ```bash
-stockwise serve                          # http://127.0.0.1:8787
+stockwise serve                          # http://127.0.0.1:8787; Ctrl+C stops it
 stockwise serve --bind 127.0.0.1:9000    # another port (or STOCKWISE_BIND)
 stockwise serve -m us                    # bare tickers are US symbols
 ```
@@ -25,9 +25,9 @@ market (`-m`, default India: `TCS` → `TCS.NS`); `quote`, `history` and
 | `GET /api/history/{symbol}?period=1mo` | `{symbol, currency, period, interval, bars: [{time, open, high, low, close, volume}]}`. Periods as in the CLI; default `1mo` | `history --json` |
 | `GET /api/markets` | Array of `{region, symbol, name, price, change, change_percent, currency}`, your market first | `markets --json` |
 | `GET /api/search?q=tata motors` | Array of `{symbol, shortname, longname, quoteType, exchange}` | `search --json` |
-| `GET /api/portfolio` | Holdings valued at live prices, with totals (below) | `portfolio` |
-| `GET /api/watchlist` | Array of `{symbol, name, price, change, change_percent, volume, currency}` in watchlist order | `watch` |
-| `GET /api/alerts` | Array of `{index, symbol, condition, target, created_at, price, triggered}` | `alert check` |
+| `GET /api/portfolio` | Holdings valued at live prices, with totals (below) | `portfolio --json` |
+| `GET /api/watchlist` | Array of `{symbol, price, change, change_percent, volume, currency}` in watchlist order | `watch --json` |
+| `GET /api/alerts` | Array of `{index, symbol, condition, target, price, currency, status}`; `status` is `triggered`, `waiting` or `no_price` | `alert check --json` |
 | `GET /healthz` | `{"status": "ok", "version": "..."}` — never needs a token | |
 | `GET /metrics` | Prometheus text format (below) | |
 
@@ -36,30 +36,33 @@ market (`-m`, default India: `TCS` → `TCS.NS`); `quote`, `history` and
 ```json
 {
   "holdings": [
-    {"symbol": "TCS.NS", "shares": 10.0, "avg_cost": 3500.0, "price": 4100.0,
-     "value": 41000.0, "pnl": 6000.0, "pnl_percent": 17.14, "currency": "INR"}
+    {"symbol": "TCS.NS", "shares": 10.0, "avg_cost": 3500.0, "cost_basis": 35000.0,
+     "price": 4100.0, "value": 41000.0, "pnl": 6000.0, "pnl_percent": 17.14,
+     "weight_percent": 100.0, "currency": "INR"}
   ],
-  "total_cost": 35000.0, "total_value": 41000.0,
-  "total_pnl": 6000.0, "total_pnl_percent": 17.14,
-  "currency": "INR",
+  "totals": {"cost_basis": 35000.0, "value": 41000.0, "pnl": 6000.0,
+             "pnl_percent": 17.14, "currency": "INR"},
   "unpriced": []
 }
 ```
 
-A holding without a live price has `null` price, value and P&L, is listed in
-`unpriced`, and is left out of the totals — it is never valued at 0. Likewise
-an alert without a price has `"price": null, "triggered": false`.
+A holding without a live price has `null` price, value, P&L and weight, is
+listed in `unpriced`, and is left out of the totals — it is never valued at 0.
+Likewise an alert without a price has `"price": null, "status": "no_price"`
+and never counts as triggered.
 
 Errors are `{"error": "..."}` with status 400 (bad parameter), 401 (missing
-or wrong token), 404 (unknown symbol or endpoint), 405 (not GET), or 502
-(market data or a local data file could not be read; the detail is also
-printed by the server). Responses carry `Cache-Control: no-store`.
+or wrong token), 403 (request not addressed to localhost while no token is
+set, see below), 404 (unknown symbol or endpoint), 405 (not GET), 500 (a local
+data file such as `portfolio.json` could not be read; details only in the
+server's log), or 502 (market data could not be fetched). Responses carry
+`Cache-Control: no-store`.
 
 ```bash
 curl -s 'localhost:8787/api/quote?symbols=RELIANCE,TCS' | jq '.[] | {symbol, regularMarketPrice}'
 curl -s 'localhost:8787/api/history/INFY?period=6mo' | jq '.bars | map(.close) | max'
-curl -s localhost:8787/api/portfolio | jq '{total_value, total_pnl_percent}'
-curl -s localhost:8787/api/alerts | jq '.[] | select(.triggered)'
+curl -s localhost:8787/api/portfolio | jq '.totals | {value, pnl_percent}'
+curl -s localhost:8787/api/alerts | jq '.[] | select(.status == "triggered")'
 ```
 
 ## Prometheus metrics
@@ -86,7 +89,8 @@ stockwise_daemon_settled 0
 ```
 
 `route` is the route template (`/api/history/{symbol}`), so label values stay
-bounded; anything that matched no route is `unmatched`.
+bounded; anything that matched no route is `unmatched`, and unusual HTTP
+methods are counted as `OTHER`.
 
 **Daemon metrics.** `stockwise daemon intraday` saves its day state to
 `daemon_state.json` in the data directory after every tick. The server reads
@@ -112,7 +116,9 @@ during market hours.
 ## Remote access
 
 The API shows your holdings, so it listens on loopback only by default and
-refuses any other address:
+refuses any other address. Without a token it also only answers requests
+whose `Host` is `localhost`, `*.localhost` or a loopback IP, so a web page
+can't reach it through DNS rebinding.
 
 ```text
 $ stockwise serve --bind 0.0.0.0:8787

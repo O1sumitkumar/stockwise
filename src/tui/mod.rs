@@ -81,6 +81,7 @@ pub async fn run(market: Market, opts: Options) -> Result<()> {
     // Redraw every second so "updated" and spinners stay current.
     let mut clock = tokio::time::interval(Duration::from_secs(1));
 
+    let mut terminate = Box::pin(terminate_signal());
     let result: Result<()> = async {
         loop {
             terminal.draw(|f| ui::render(f, &app, &theme))?;
@@ -88,8 +89,8 @@ pub async fn run(market: Market, opts: Options) -> Result<()> {
                 Some(msg) = rx.recv() => msg,
                 _ = refresh.tick() => Msg::RefreshDue,
                 _ = clock.tick() => continue,
-                // SIGINT from outside (raw mode turns the keyboard's Ctrl+C into a key event).
-                _ = tokio::signal::ctrl_c() => break,
+                // Signals from outside (raw mode turns the keyboard's Ctrl+C into a key event).
+                _ = &mut terminate => break,
             };
             for effect in app.update(msg) {
                 spawn_effect(effect, &source, market, &tx);
@@ -105,6 +106,31 @@ pub async fn run(market: Market, opts: Options) -> Result<()> {
     stop.store(true, Ordering::Relaxed);
     let _ = input.join();
     result
+}
+
+/// SIGINT, SIGTERM or SIGHUP (Ctrl+C only on Windows): leave the loop so
+/// the terminal is restored.
+async fn terminate_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let (Ok(mut term), Ok(mut hup)) = (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::hangup()),
+        ) else {
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+            _ = hup.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// Terminal events on a plain thread (crossterm's reader blocks), forwarded

@@ -6,17 +6,23 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Directory that holds every StockWise data file.
-///
-/// `STOCKWISE_HOME` overrides the platform default
-/// (`dirs::data_local_dir()/stockwise`).
+/// Where the data directory is, without creating it: `STOCKWISE_HOME`, then
+/// `home` in the config file, then `dirs::data_local_dir()/stockwise`.
+pub fn data_dir_location() -> Result<PathBuf> {
+    Ok(
+        match crate::config::setting("STOCKWISE_HOME", |c| c.home.as_ref()) {
+            Some(p) => crate::config::expand_home(&p),
+            None => dirs::data_local_dir()
+                .context("Cannot determine local data directory (set STOCKWISE_HOME)")?
+                .join("stockwise"),
+        },
+    )
+}
+
+/// Directory that holds every StockWise data file (see
+/// [`data_dir_location`]), created if missing.
 pub fn data_dir() -> Result<PathBuf> {
-    let dir = match std::env::var_os("STOCKWISE_HOME") {
-        Some(p) if !p.is_empty() => PathBuf::from(p),
-        _ => dirs::data_local_dir()
-            .context("Cannot determine local data directory (set STOCKWISE_HOME)")?
-            .join("stockwise"),
-    };
+    let dir = data_dir_location()?;
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("Cannot create data directory {}", dir.display()))?;
     Ok(dir)

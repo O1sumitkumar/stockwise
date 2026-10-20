@@ -202,6 +202,9 @@ impl App {
             .as_ref()
             .is_some_and(|c| c.symbol == symbol && c.period == period);
         if shown && !force {
+            // Back on a chart that is already drawn: an answer for the symbol
+            // just left is ignored, so nothing is loading any more.
+            self.chart_loading = false;
             return Vec::new();
         }
         if !shown {
@@ -454,9 +457,12 @@ impl App {
                     Vec::new()
                 }
             }
+            // Editing the query drops results and any search in flight (its
+            // answer will no longer match the input and is ignored).
             KeyCode::Backspace => {
                 search.input.pop();
                 search.done = false;
+                search.busy = false;
                 search.results.clear();
                 Vec::new()
             }
@@ -464,6 +470,7 @@ impl App {
                 if search.input.chars().count() < MAX_QUERY {
                     search.input.push(c);
                     search.done = false;
+                    search.busy = false;
                     search.results.clear();
                 }
                 Vec::new()
@@ -693,6 +700,40 @@ pub(crate) mod tests {
         let effects = app.update(Msg::WatchlistSaved(Ok("Added TATASTEEL.NS".into())));
         assert_eq!(effects, vec![Effect::Refresh]);
         assert_eq!(app.status.as_ref().unwrap().text, "Added TATASTEEL.NS");
+    }
+
+    #[test]
+    fn editing_during_a_search_allows_a_new_one() {
+        let mut app = loaded();
+        app.update(key(KeyCode::Char('/')));
+        app.update(key(KeyCode::Char('t')));
+        assert_eq!(
+            app.update(key(KeyCode::Enter)),
+            vec![Effect::Search("t".into())]
+        );
+        app.update(key(KeyCode::Char('c')));
+        assert_eq!(
+            app.update(key(KeyCode::Enter)),
+            vec![Effect::Search("tc".into())]
+        );
+        // The late answer for "t" is ignored; the one for "tc" lands.
+        app.update(Msg::SearchDone {
+            query: "t".into(),
+            result: Ok(vec![]),
+        });
+        let Mode::Search(s) = &app.mode else {
+            panic!("still searching")
+        };
+        assert!(s.busy && !s.done);
+    }
+
+    #[test]
+    fn returning_to_a_shown_chart_stops_loading() {
+        let mut app = loaded();
+        app.update(key(KeyCode::Down));
+        assert!(app.chart_loading);
+        assert!(app.update(key(KeyCode::Up)).is_empty());
+        assert!(!app.chart_loading);
     }
 
     #[test]

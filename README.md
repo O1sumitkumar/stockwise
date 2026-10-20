@@ -49,9 +49,9 @@ stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR
   macOS, Linux and Windows. `stockwise doctor` checks everything.
 - **60 commands, one muscle memory.** Fundamentals, technicals, risk, screeners,
   sector rotation, backtests, SIP/what-if calculators, alerts, tax estimates.
-- **Scriptable.** `--json` on `quote`, `history`, `markets` and `search`; real
-  exit codes; shell completions; a read-only JSON API with Prometheus metrics
-  (`stockwise serve`).
+- **Scriptable.** `--json` on 21 data commands and `--csv` on their tables, a
+  config file for your defaults, real exit codes, shell completions, and a
+  read-only JSON API with Prometheus metrics (`stockwise serve`).
 - **Live dashboard.** `stockwise tui` keeps indices, watchlist, portfolio P&L,
   alerts and a chart on one refreshing screen.
 - **Practice before money.** A paper-trading simulator and an intraday paper
@@ -130,13 +130,25 @@ Read-only: the TUI never places orders. See [docs/tui.md](docs/tui.md).
 
 ### Script it
 
+`--json` works on the data commands (`portfolio`, `watch`, `alert`, `technical`,
+`risk`, `backtest`, `screen`, `movers`, `compare`, `tax`, ...) and `--csv` on
+their tables. Only the data goes to stdout; errors go to stderr with a non-zero
+exit code.
+
 ```bash
-stockwise quote TCS INFY --json | jq '.[] | {symbol, regularMarketPrice}'
-stockwise history AAPL -m us -p 6mo --json | jq '.bars | map(.close) | max'
-stockwise quote ZZZZ || echo "lookup failed"     # non-zero exit on errors
-stockwise serve                                  # same JSON over HTTP + /metrics on 127.0.0.1:8787
-curl -s localhost:8787/api/portfolio | jq '{total_value, total_pnl_percent}'
+stockwise portfolio --json | jq '.totals.pnl_percent'
+stockwise portfolio --csv > portfolio.csv                # straight into a spreadsheet
+stockwise history AAPL -m us -p 6mo --csv > aapl.csv     # every OHLCV bar
+stockwise alert check --json | jq -r '.[] | select(.status == "triggered") | .symbol'
+stockwise technical TCS --json | jq '{rsi_14, bias}'
+stockwise backtest INFY -s macd --json | jq '.total_return_percent'
+stockwise quote ZZZZ || echo "lookup failed"             # non-zero exit on errors
+stockwise serve                                          # the same JSON over HTTP + /metrics
+curl -s localhost:8787/api/portfolio | jq '.totals'
 ```
+
+Every JSON shape and CSV column is listed in
+[docs/commands.md](docs/commands.md#scripting-with---json-and---csv).
 
 `serve` has no trading endpoints and refuses non-loopback addresses unless you
 pass `--allow-remote` with a `STOCKWISE_API_TOKEN`. See
@@ -175,17 +187,42 @@ See [docs/ai.md](docs/ai.md).
 
 ## Configuration
 
-Everything works with no config. Optional environment variables:
+Everything works with no config. To keep your own defaults, create a config
+file:
 
-| Variable | Purpose |
-|----------|---------|
-| `STOCKWISE_MARKET` | Default market: `in` (default) or `us` |
-| `STOCKWISE_HOME` | Where portfolio, watchlist, alerts and history are stored |
-| `STOCKWISE_AI` | `1` to add AI sections by default |
-| `STOCKWISE_MODEL` / `OLLAMA_HOST` | Ollama model (default `qwen3:14b`) and server |
-| `STOCKWISE_REDIS_URL` | Optional shared cache (`redis://…`), or `off` |
-| `STOCKWISE_BIND` / `STOCKWISE_API_TOKEN` | `serve` address and bearer token |
-| `NO_COLOR` | Disable colours (also automatic when piping) |
+```bash
+stockwise config init     # writes a commented config.toml
+stockwise config show     # effective settings and where each comes from
+```
+
+```toml
+market = "us"
+model = "llama3.1:8b"
+
+[periods]                 # default -p per command
+technical = "6mo"
+backtest = "5y"
+```
+
+Each setting can also come from an environment variable or a flag.
+Precedence: **flag > environment variable > config file > built-in default.**
+
+| Config key | Env var | Flag | Purpose |
+|------------|---------|------|---------|
+| `market` | `STOCKWISE_MARKET` | `-m` | Default market: `in` (default) or `us` |
+| `ai` | `STOCKWISE_AI` | `--ai` / `--no-ai` | Add AI sections by default |
+| `model` | `STOCKWISE_MODEL` | | Ollama model (default `qwen3:14b`) |
+| `ollama_host` | `OLLAMA_HOST` | | Ollama server (default `http://localhost:11434`) |
+| `redis_url` | `STOCKWISE_REDIS_URL` | | Optional shared cache (`redis://…`), or `off` |
+| `home` | `STOCKWISE_HOME` | | Where portfolio, watchlist, alerts and history are stored |
+| `[periods] <command>` | | `-p` | Default period for `technical`, `history`, `risk`, `backtest`, `sip`, ... |
+| | `STOCKWISE_BIND` / `STOCKWISE_API_TOKEN` | `serve --bind` | `serve` address and bearer token |
+| | `STOCKWISE_CONFIG` | | Use another config file |
+| | `NO_COLOR` | | Disable colours (also automatic when piping) |
+
+The file lives in your platform's config directory (`stockwise config path`
+prints it); see [docs/commands.md](docs/commands.md#configuration-file) for
+details.
 
 ## Docs
 
@@ -198,7 +235,7 @@ Everything works with no config. Optional environment variables:
 
 ## Roadmap & contributing
 
-Next up: Homebrew, a config file, more brokers (Zerodha, Upstox), notifications,
+Next up: Homebrew, more brokers (Zerodha, Upstox), notifications,
 and a TUI dashboard — see the [ROADMAP](ROADMAP.md). Ideas and bug reports are
 welcome in [Discussions](https://github.com/iamsaquib8/stockwise/discussions) and
 [Issues](https://github.com/iamsaquib8/stockwise/issues); start with

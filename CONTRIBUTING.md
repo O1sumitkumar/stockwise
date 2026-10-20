@@ -67,8 +67,10 @@ cargo test                 # all tests green
 
 ## Good first contributions
 
-- `--json` output for another command (`portfolio`, `technical`, `risk`,
-  `backtest`) — see `cmd_quote` / `cmd_history` for the pattern.
+- `--json` / `--csv` output for another command (`analyze`, `peers`, `news`,
+  `picks`, ...) — build rows once and render them with `src/output.rs`; see
+  `cmd_portfolio_show` or `cmd_risk` for the pattern, and add the shape to
+  `docs/commands.md`.
 - More symbols in the India/US universes in `src/market.rs`, or a refresh when
   a ticker changes.
 - Unit tests for an indicator in `src/technical.rs` against a known reference.

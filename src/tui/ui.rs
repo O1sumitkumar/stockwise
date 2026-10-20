@@ -4,7 +4,7 @@
 use super::app::{App, CHART_PERIODS, Focus, Mode, Series};
 use crate::display::format_price;
 use crate::market::Market;
-use crate::views::{AlertRow, IndexRow};
+use crate::views::{AlertCheckRow, IndexRow};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -344,18 +344,19 @@ fn render_portfolio(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         );
         return;
     }
-    let cur = view.currency.as_deref();
+    let totals = &view.totals;
+    let cur = totals.currency.as_deref();
     let summary = vec![
         Span::raw(" Value "),
-        Span::styled(format_price(view.total_value, cur), theme.title),
+        Span::styled(format_price(totals.value, cur), theme.title),
         Span::raw("  P&L "),
         Span::styled(
             format!(
                 "{} ({:+.2}%)",
-                signed_money(view.total_pnl, cur),
-                view.total_pnl_percent
+                signed_money(totals.pnl, cur),
+                totals.pnl_percent
             ),
-            theme.signed(view.total_pnl),
+            theme.signed(totals.pnl),
         ),
     ];
     let [summary_area, table_area] =
@@ -456,9 +457,13 @@ fn compact(v: f64) -> String {
 }
 
 /// `! TCS ≥ 4000   4100`: the condition, then the live price.
-fn alert_row(a: &AlertRow, theme: &Theme) -> Row<'static> {
+fn triggered(a: &AlertCheckRow) -> bool {
+    a.status == "triggered"
+}
+
+fn alert_row(a: &AlertCheckRow, theme: &Theme) -> Row<'static> {
     let op = if a.condition == "above" { "≥" } else { "≤" };
-    let (mark, style) = if a.triggered {
+    let (mark, style) = if triggered(a) {
         ("! ", theme.warn)
     } else {
         ("  ", Style::default())
@@ -475,7 +480,7 @@ fn alert_row(a: &AlertRow, theme: &Theme) -> Row<'static> {
 
 fn render_alerts(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let alerts = app.snapshot.as_ref().map(|s| &s.alerts);
-    let fired = alerts.map_or(0, |a| a.iter().filter(|a| a.triggered).count());
+    let fired = alerts.map_or(0, |a| a.iter().filter(|a| triggered(a)).count());
     let title = match alerts {
         Some(a) if !a.is_empty() => format!(" Alerts ({} of {} triggered) ", fired, a.len()),
         _ => " Alerts ".to_string(),
@@ -499,8 +504,8 @@ fn render_alerts(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         return;
     }
     // Triggered first, then the rest in their `alert list` order.
-    let mut sorted: Vec<&AlertRow> = alerts.iter().collect();
-    sorted.sort_by_key(|a| !a.triggered);
+    let mut sorted: Vec<&AlertCheckRow> = alerts.iter().collect();
+    sorted.sort_by_key(|a| !triggered(a));
     let rows: Vec<Row> = sorted.into_iter().map(|a| alert_row(a, theme)).collect();
     let table = Table::new(rows, [Constraint::Min(10), Constraint::Length(8)]).header(
         Row::new(vec![
@@ -516,7 +521,7 @@ fn render_alert_summary(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let Some(alerts) = app.snapshot.as_ref().map(|s| &s.alerts) else {
         return;
     };
-    let fired: Vec<&AlertRow> = alerts.iter().filter(|a| a.triggered).collect();
+    let fired: Vec<&AlertCheckRow> = alerts.iter().filter(|a| triggered(a)).collect();
     let line = if fired.is_empty() {
         Line::styled(
             format!(" Alerts: none triggered ({} set)", alerts.len()),

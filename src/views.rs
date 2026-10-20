@@ -5,7 +5,7 @@
 //! the same shape. Nothing here prints. Market data and local files come
 //! through [`DataSource`], which tests replace with fixtures.
 
-use crate::alerts::{AlertCondition, AlertStore};
+use crate::alerts::AlertStore;
 use crate::api::{ChartData, Quote, SearchResult, YahooClient};
 use crate::daemon_status::DaemonStatus;
 use crate::market::{self, Market};
@@ -133,17 +133,16 @@ pub async fn quotes(src: &impl DataSource, resolved: &[String]) -> Result<QuoteS
 
 // ── markets ──
 
-/// One index in `stockwise markets --json`. Fields are in alphabetical order
-/// because that is the key order the command has always printed.
+/// One index in `stockwise markets --json` (field order = key order).
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct IndexRow {
+    pub region: String,
+    pub symbol: String,
+    pub name: String,
+    pub price: Option<f64>,
     pub change: Option<f64>,
     pub change_percent: Option<f64>,
     pub currency: Option<String>,
-    pub name: String,
-    pub price: Option<f64>,
-    pub region: String,
-    pub symbol: String,
 }
 
 /// Index lists in display order: the selected market first.
@@ -176,13 +175,13 @@ pub fn index_rows(region: &str, indices: &[(&str, &str)], quotes: &[Quote]) -> V
                 .map(|(_, name)| *name)
                 .unwrap_or(q_sym);
             IndexRow {
+                region: region.to_string(),
+                symbol: q_sym.to_string(),
+                name: name.to_string(),
+                price: q.regular_market_price,
                 change: q.regular_market_change,
                 change_percent: q.regular_market_change_percent,
                 currency: q.currency.clone(),
-                name: name.to_string(),
-                price: q.regular_market_price,
-                region: region.to_string(),
-                symbol: q_sym.to_string(),
             }
         })
         .collect()
@@ -212,25 +211,25 @@ pub async fn markets(src: &impl DataSource, market: Market) -> Result<Vec<IndexR
 
 // ── history ──
 
-/// `stockwise history --json`. Field order is the key order the command has
-/// always printed (alphabetical).
+/// `stockwise history --json` (field order = key order).
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct History {
-    pub bars: Vec<Bar>,
-    pub currency: Option<String>,
-    pub interval: String,
-    pub period: String,
     pub symbol: String,
+    pub currency: Option<String>,
+    pub period: String,
+    pub interval: String,
+    pub bars: Vec<Bar>,
 }
 
+/// One OHLCV bar of `history --json/--csv`.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Bar {
-    pub close: Option<f64>,
+    /// RFC 3339 UTC timestamp of the bar.
+    pub time: Option<String>,
+    pub open: Option<f64>,
     pub high: Option<f64>,
     pub low: Option<f64>,
-    pub open: Option<f64>,
-    /// RFC 3339 timestamp of the bar.
-    pub time: Option<String>,
+    pub close: Option<f64>,
     pub volume: Option<u64>,
     /// Unix seconds, for printers; not part of the JSON.
     #[serde(skip)]
@@ -270,21 +269,21 @@ pub fn history_from_chart(chart: ChartData, symbol: &str, period: &str, interval
         .into_iter()
         .enumerate()
         .map(|(i, ts)| Bar {
-            close: at(&close, i),
+            time: chrono::DateTime::from_timestamp(ts, 0).map(|d| d.to_rfc3339()),
+            open: at(&open, i),
             high: at(&high, i),
             low: at(&low, i),
-            open: at(&open, i),
-            time: chrono::DateTime::from_timestamp(ts, 0).map(|d| d.to_rfc3339()),
+            close: at(&close, i),
             volume: volume.get(i).copied().flatten(),
             ts,
         })
         .collect();
     History {
-        bars,
-        currency: chart.meta.and_then(|m| m.currency),
-        interval: interval.to_string(),
-        period: period.to_string(),
         symbol: symbol.to_string(),
+        currency: chart.meta.and_then(|m| m.currency),
+        period: period.to_string(),
+        interval: interval.to_string(),
+        bars,
     }
 }
 
@@ -309,80 +308,62 @@ pub async fn history(
     Ok(hist)
 }
 
-// ── portfolio ──
+// ── portfolio, watchlist, alerts ──
+//
+// The row builders live with the `portfolio`, `watch` and `alert` printers
+// (`commands::holdings`); these wrap them so `/api/*` and the TUI return
+// exactly what `--json` prints.
 
-/// One holding valued at the live price. Without a price, the value and P&L
-/// are None and the holding is left out of the totals — never valued at 0.
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct HoldingRow {
-    pub symbol: String,
-    pub shares: f64,
-    pub avg_cost: f64,
-    pub price: Option<f64>,
-    pub value: Option<f64>,
-    pub pnl: Option<f64>,
-    pub pnl_percent: Option<f64>,
-    pub currency: Option<String>,
-}
+pub(crate) use crate::commands::{AlertCheckRow, HoldingRow, PortfolioTotals, WatchRow};
 
-#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+/// `portfolio --json`: holdings, totals over the priced holdings, and the
+/// symbols left out for lack of a price (never valued at 0).
+#[derive(Debug, Default, Serialize)]
 pub struct PortfolioView {
     pub holdings: Vec<HoldingRow>,
-    /// Cost of the priced holdings.
-    pub total_cost: f64,
-    pub total_value: f64,
-    pub total_pnl: f64,
-    pub total_pnl_percent: f64,
-    /// Currency of the totals (that of the first quote; mixed-currency
-    /// portfolios are summed as plain numbers).
-    pub currency: Option<String>,
-    /// Holdings without a live price, excluded from the totals.
+    pub totals: PortfolioTotals,
     pub unpriced: Vec<String>,
 }
 
-fn pct(part: f64, whole: f64) -> f64 {
-    if whole > 0.0 {
-        (part / whole) * 100.0
-    } else {
-        0.0
+/// Value `portfolio` at `quotes`. Only the holdings' own quotes are used, so
+/// the totals' currency is a holding's, whatever else `quotes` contains.
+pub fn portfolio_view(portfolio: &Portfolio, quotes: &[Quote]) -> PortfolioView {
+    let own: Vec<Quote> = quotes
+        .iter()
+        .filter(|q| {
+            portfolio
+                .holdings
+                .iter()
+                .any(|h| q.symbol.as_deref() == Some(h.symbol.as_str()))
+        })
+        .cloned()
+        .collect();
+    let (holdings, totals) = crate::commands::holding_rows(&portfolio.holdings, &own);
+    let unpriced = holdings
+        .iter()
+        .filter(|r| r.price.is_none())
+        .map(|r| r.symbol.clone())
+        .collect();
+    PortfolioView {
+        holdings,
+        totals,
+        unpriced,
     }
 }
 
-pub fn portfolio_view(portfolio: &Portfolio, quotes: &[Quote]) -> PortfolioView {
-    let mut view = PortfolioView {
-        currency: quotes.first().and_then(|q| q.currency.clone()),
-        ..Default::default()
-    };
-    for h in &portfolio.holdings {
-        let quote = find_quote(quotes, &h.symbol);
-        let price = quote.and_then(|q| q.regular_market_price);
-        let mut row = HoldingRow {
-            symbol: h.symbol.clone(),
-            shares: h.shares,
-            avg_cost: h.avg_cost,
-            price,
-            value: None,
-            pnl: None,
-            pnl_percent: None,
-            currency: quote.and_then(|q| q.currency.clone()),
-        };
-        match price {
-            Some(price) => {
-                let value = h.shares * price;
-                let cost = h.shares * h.avg_cost;
-                row.value = Some(value);
-                row.pnl = Some(value - cost);
-                row.pnl_percent = Some(pct(value - cost, cost));
-                view.total_cost += cost;
-                view.total_value += value;
-            }
-            None => view.unpriced.push(h.symbol.clone()),
-        }
-        view.holdings.push(row);
+/// A local data file (portfolio, watchlist, alerts) could not be read — as
+/// opposed to market data. The server answers 500 for it instead of 502.
+#[derive(Debug)]
+pub struct LocalData;
+
+impl std::fmt::Display for LocalData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Could not read local data")
     }
-    view.total_pnl = view.total_value - view.total_cost;
-    view.total_pnl_percent = pct(view.total_pnl, view.total_cost);
-    view
+}
+
+fn local<T>(r: Result<T>) -> Result<T> {
+    r.map_err(|e| e.context(LocalData))
 }
 
 fn unique_symbols<'a>(groups: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
@@ -405,117 +386,47 @@ async fn quotes_for(src: &impl DataSource, symbols: &[&str]) -> Result<Vec<Quote
 }
 
 pub async fn portfolio(src: &impl DataSource) -> Result<PortfolioView> {
-    let p = src.portfolio()?;
+    let p = local(src.portfolio())?;
     let symbols = unique_symbols(p.holdings.iter().map(|h| h.symbol.as_str()));
     let quotes = quotes_for(src, &symbols).await?;
     Ok(portfolio_view(&p, &quotes))
 }
 
-// ── watchlist ──
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct WatchRow {
-    pub symbol: String,
-    pub name: Option<String>,
-    pub price: Option<f64>,
-    pub change: Option<f64>,
-    pub change_percent: Option<f64>,
-    pub volume: Option<u64>,
-    pub currency: Option<String>,
-}
-
-/// One row per watched symbol, in watchlist order; unknown symbols keep
-/// their row with no price.
-pub fn watch_rows(symbols: &[String], quotes: &[Quote]) -> Vec<WatchRow> {
-    symbols
-        .iter()
-        .map(|s| {
-            let q = find_quote(quotes, s);
-            WatchRow {
-                symbol: s.clone(),
-                name: q.and_then(|q| q.short_name.clone().or_else(|| q.long_name.clone())),
-                price: q.and_then(|q| q.regular_market_price),
-                change: q.and_then(|q| q.regular_market_change),
-                change_percent: q.and_then(|q| q.regular_market_change_percent),
-                volume: q.and_then(|q| q.regular_market_volume),
-                currency: q.and_then(|q| q.currency.clone()),
-            }
-        })
-        .collect()
-}
-
+/// `watch --json`: one row per watched symbol, in watchlist order.
 pub async fn watchlist(src: &impl DataSource) -> Result<Vec<WatchRow>> {
-    let wl = src.watchlist()?;
+    let wl = local(src.watchlist())?;
     let symbols = unique_symbols(wl.symbols.iter().map(String::as_str));
     let quotes = quotes_for(src, &symbols).await?;
-    Ok(watch_rows(&wl.symbols, &quotes))
+    Ok(crate::commands::watch_rows(&wl.symbols, &quotes))
 }
 
-// ── alerts ──
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct AlertRow {
-    /// Number used by `stockwise alert remove`.
-    pub index: usize,
-    pub symbol: String,
-    /// `above` or `below`.
-    pub condition: String,
-    pub target: f64,
-    pub created_at: String,
-    pub price: Option<f64>,
-    /// False when there is no live price: an alert never fires on a missing quote.
-    pub triggered: bool,
-}
-
-pub fn alert_rows(store: &AlertStore, quotes: &[Quote]) -> Vec<AlertRow> {
-    store
-        .alerts
-        .iter()
-        .enumerate()
-        .map(|(index, a)| {
-            let price = find_quote(quotes, &a.symbol).and_then(|q| q.regular_market_price);
-            let triggered = price.is_some_and(|p| match a.condition {
-                AlertCondition::Above => p >= a.target,
-                AlertCondition::Below => p <= a.target,
-            });
-            AlertRow {
-                index,
-                symbol: a.symbol.clone(),
-                condition: a.condition.to_string(),
-                target: a.target,
-                created_at: a.created_at.clone(),
-                price,
-                triggered,
-            }
-        })
-        .collect()
-}
-
-pub async fn alerts(src: &impl DataSource) -> Result<Vec<AlertRow>> {
-    let store = src.alerts()?;
+/// `alert check --json`: every alert with its live price and a `status` of
+/// `triggered`, `waiting` or `no_price`.
+pub async fn alerts(src: &impl DataSource) -> Result<Vec<AlertCheckRow>> {
+    let store = local(src.alerts())?;
     let symbols = unique_symbols(store.alerts.iter().map(|a| a.symbol.as_str()));
     let quotes = quotes_for(src, &symbols).await?;
-    Ok(alert_rows(&store, &quotes))
+    Ok(crate::commands::alert_check_rows(&store.alerts, &quotes))
 }
 
 // ── dashboard snapshot ──
 
 /// Everything the dashboard shows, priced from a single quote request.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Default)]
 pub struct Snapshot {
     pub indices: Vec<IndexRow>,
     pub watchlist: Vec<WatchRow>,
     pub portfolio: PortfolioView,
-    pub alerts: Vec<AlertRow>,
+    pub alerts: Vec<AlertCheckRow>,
 }
 
 /// Home-market indices (in list order, unpriced ones kept), watchlist,
 /// portfolio and alerts in one batched quote request.
 pub async fn snapshot(src: &impl DataSource, market: Market) -> Result<Snapshot> {
     let (region, indices) = index_sections(market)[0];
-    let p = src.portfolio()?;
-    let wl = src.watchlist()?;
-    let store = src.alerts()?;
+    let p = local(src.portfolio())?;
+    let wl = local(src.watchlist())?;
+    let store = local(src.alerts())?;
     let symbols = unique_symbols(
         indices
             .iter()
@@ -530,21 +441,21 @@ pub async fn snapshot(src: &impl DataSource, market: Market) -> Result<Snapshot>
         .map(|(sym, name)| {
             let q = find_quote(&quotes, sym);
             IndexRow {
+                region: region.to_string(),
+                symbol: sym.to_string(),
+                name: name.to_string(),
+                price: q.and_then(|q| q.regular_market_price),
                 change: q.and_then(|q| q.regular_market_change),
                 change_percent: q.and_then(|q| q.regular_market_change_percent),
                 currency: q.and_then(|q| q.currency.clone()),
-                name: name.to_string(),
-                price: q.and_then(|q| q.regular_market_price),
-                region: region.to_string(),
-                symbol: sym.to_string(),
             }
         })
         .collect();
     Ok(Snapshot {
         indices,
-        watchlist: watch_rows(&wl.symbols, &quotes),
+        watchlist: crate::commands::watch_rows(&wl.symbols, &quotes),
         portfolio: portfolio_view(&p, &quotes),
-        alerts: alert_rows(&store, &quotes),
+        alerts: crate::commands::alert_check_rows(&store.alerts, &quotes),
     })
 }
 
@@ -566,6 +477,7 @@ pub mod fixtures {
     //! Canned market data for tests of the views, the server and the TUI.
 
     use super::*;
+    use crate::alerts::AlertCondition;
     use crate::api::{ChartMeta, Indicators, QuoteIndicator};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -781,12 +693,11 @@ mod tests {
 
     #[test]
     fn markets_json_shape_is_pinned() {
-        // Same keys, order and values as the json! object 0.3 printed.
         let rows = block(markets(&Fixture::default(), Market::In)).unwrap();
         let first = serde_json::to_string(&rows[0]).unwrap();
         assert_eq!(
             first,
-            r#"{"change":124.0,"change_percent":0.5,"currency":"INR","name":"NIFTY 50","price":24800.0,"region":"Indian Markets","symbol":"^NSEI"}"#
+            r#"{"region":"Indian Markets","symbol":"^NSEI","name":"NIFTY 50","price":24800.0,"change":124.0,"change_percent":0.5,"currency":"INR"}"#
         );
         // India first for the default market; US indices the fixture lacks are dropped.
         assert_eq!(
@@ -804,11 +715,11 @@ mod tests {
         assert_eq!(h.interval, "1d");
         let v = serde_json::to_value(&h).unwrap();
         let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(keys, ["bars", "currency", "interval", "period", "symbol"]);
+        assert_eq!(keys, ["symbol", "currency", "period", "interval", "bars"]);
         let bar = serde_json::to_string(&h.bars[0]).unwrap();
         assert_eq!(
             bar,
-            r#"{"close":100.0,"high":101.0,"low":99.0,"open":100.0,"time":"2023-11-14T22:13:20+00:00","volume":1000}"#
+            r#"{"time":"2023-11-14T22:13:20+00:00","open":100.0,"high":101.0,"low":99.0,"close":100.0,"volume":1000}"#
         );
         assert_eq!(h.bars.len(), 5);
     }
@@ -840,38 +751,52 @@ mod tests {
         let v = block(portfolio(&Fixture::default())).unwrap();
         assert_eq!(v.holdings.len(), 3);
         // TCS 10 @ 3500 → 4100; INFY 5 @ 1600 → 1500.
-        assert_eq!(v.total_cost, 35000.0 + 8000.0);
-        assert_eq!(v.total_value, 41000.0 + 7500.0);
-        assert_eq!(v.total_pnl, 5500.0);
-        assert!((v.total_pnl_percent - 5500.0 / 43000.0 * 100.0).abs() < 1e-9);
+        assert_eq!(v.totals.cost_basis, 35000.0 + 8000.0);
+        assert_eq!(v.totals.value, 41000.0 + 7500.0);
+        assert_eq!(v.totals.pnl, 5500.0);
+        assert_eq!(v.totals.pnl_percent, 12.79);
         assert_eq!(v.unpriced, vec!["DELISTED.NS".to_string()]);
         let delisted = &v.holdings[2];
         assert_eq!(
             (delisted.price, delisted.value, delisted.pnl),
             (None, None, None)
         );
-        assert_eq!(v.currency.as_deref(), Some("INR"));
+        assert_eq!(v.totals.currency.as_deref(), Some("INR"));
     }
 
     #[test]
-    fn portfolio_json_shape() {
+    fn portfolio_json_matches_portfolio_json_flag() {
+        // Same keys as `portfolio --json` (pinned in commands/output_tests.rs).
         let v = serde_json::to_value(block(portfolio(&Fixture::default())).unwrap()).unwrap();
         let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["holdings", "totals", "unpriced"]);
+        let totals: Vec<&str> = v["totals"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         assert_eq!(
-            keys,
-            [
-                "currency",
-                "holdings",
-                "total_cost",
-                "total_pnl",
-                "total_pnl_percent",
-                "total_value",
-                "unpriced"
-            ]
+            totals,
+            ["cost_basis", "value", "pnl", "pnl_percent", "currency"]
         );
         assert_eq!(v["holdings"][0]["symbol"], "TCS.NS");
         assert_eq!(v["holdings"][0]["pnl"], 6000.0);
         assert!(v["holdings"][2]["price"].is_null());
+    }
+
+    #[test]
+    fn totals_currency_comes_from_a_holding() {
+        // A US portfolio viewed with Indian indices in the same quote batch.
+        let mut p = Portfolio::default();
+        p.add("AAPL", 2.0, 100.0);
+        let quotes = vec![
+            quote("^NSEI", Some(24800.0), 0.5, "INR"),
+            quote("AAPL", Some(150.0), 1.0, "USD"),
+        ];
+        let v = portfolio_view(&p, &quotes);
+        assert_eq!(v.totals.currency.as_deref(), Some("USD"));
+        assert_eq!(v.totals.value, 300.0);
     }
 
     #[test]
@@ -883,29 +808,55 @@ mod tests {
         *f.fail.lock().unwrap() = Some("offline".into());
         let v = block(portfolio(&f)).unwrap();
         assert!(v.holdings.is_empty());
-        assert_eq!(v.total_value, 0.0);
+        assert_eq!(v.totals.value, 0.0);
     }
 
     #[test]
-    fn watch_rows_keep_watchlist_order_and_unknown_symbols() {
-        let quotes = vec![quote("B.NS", Some(2.0), 1.0, "INR")];
-        let rows = watch_rows(&["A.NS".into(), "B.NS".into()], &quotes);
-        assert_eq!(rows[0].symbol, "A.NS");
-        assert_eq!(rows[0].price, None);
-        assert_eq!(rows[1].price, Some(2.0));
-        assert_eq!(rows[1].name.as_deref(), Some("B Ltd"));
+    fn watchlist_keeps_order_and_unknown_symbols() {
+        let mut f = Fixture::default();
+        f.watchlist.add("NOPE.NS");
+        let rows = block(watchlist(&f)).unwrap();
+        let symbols: Vec<&str> = rows.iter().map(|r| r.symbol.as_str()).collect();
+        assert_eq!(symbols, ["RELIANCE.NS", "TCS.NS", "NOPE.NS"]);
+        assert_eq!(rows[0].price, Some(1300.0));
+        assert_eq!(rows[2].price, None);
     }
 
     #[test]
     fn alerts_never_fire_without_a_price() {
         let rows = block(alerts(&Fixture::default())).unwrap();
-        assert_eq!(rows.len(), 3);
-        assert!(rows[0].triggered, "TCS 4100 >= 4000");
-        assert!(!rows[1].triggered, "RELIANCE 1300 is not below 1000");
-        assert!(!rows[2].triggered, "no price for DELISTED");
+        let status: Vec<&str> = rows.iter().map(|r| r.status).collect();
+        // TCS 4100 >= 4000; RELIANCE 1300 is not below 1000; no price for DELISTED.
+        assert_eq!(status, ["triggered", "waiting", "no_price"]);
         assert_eq!(rows[2].price, None);
         assert_eq!(rows[0].condition, "above");
         assert_eq!(rows[1].index, 1);
+    }
+
+    #[test]
+    fn local_file_errors_are_tagged() {
+        struct Broken;
+        impl DataSource for Broken {
+            async fn quotes(&self, _: &[&str]) -> Result<Vec<Quote>> {
+                Ok(Vec::new())
+            }
+            async fn chart(&self, _: &str, _: &str, _: &str) -> Result<ChartData> {
+                bail!("unused")
+            }
+            async fn search(&self, _: &str) -> Result<Vec<SearchResult>> {
+                Ok(Vec::new())
+            }
+            fn portfolio(&self) -> Result<Portfolio> {
+                bail!("/home/me/portfolio.json is not valid JSON")
+            }
+        }
+        let err = block(portfolio(&Broken)).unwrap_err();
+        assert!(err.downcast_ref::<LocalData>().is_some());
+        // Market data errors are not tagged.
+        let f = Fixture::default();
+        *f.fail.lock().unwrap() = Some("offline".into());
+        let err = block(watchlist(&f)).unwrap_err();
+        assert!(err.downcast_ref::<LocalData>().is_none());
     }
 
     #[test]
@@ -917,7 +868,11 @@ mod tests {
         assert_eq!(names, ["NIFTY 50", "SENSEX", "BANK NIFTY", "NIFTY IT"]);
         assert_eq!(s.watchlist.len(), 2);
         assert_eq!(s.portfolio.holdings.len(), 3);
-        assert_eq!(s.alerts.iter().filter(|a| a.triggered).count(), 1);
+        assert_eq!(s.portfolio.totals.currency.as_deref(), Some("INR"));
+        assert_eq!(
+            s.alerts.iter().filter(|a| a.status == "triggered").count(),
+            1
+        );
     }
 
     #[test]
