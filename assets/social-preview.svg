@@ -14,15 +14,8 @@
   </defs>
   <rect width="1280" height="640" fill="url(#bg)"/>
 
-  <!-- faint background chart -->
-  <g fill="#50fa7b" opacity="0.08">
-    <circle cx="80" cy="560" r="7"/><circle cx="150" cy="540" r="7"/><circle cx="220" cy="550" r="7"/>
-    <circle cx="290" cy="515" r="7"/><circle cx="360" cy="500" r="7"/><circle cx="430" cy="510" r="7"/>
-    <circle cx="500" cy="470" r="7"/><circle cx="570" cy="455" r="7"/><circle cx="640" cy="470" r="7"/>
-    <circle cx="710" cy="430" r="7"/><circle cx="780" cy="400" r="7"/><circle cx="850" cy="415" r="7"/>
-    <circle cx="920" cy="370" r="7"/><circle cx="990" cy="345" r="7"/><circle cx="1060" cy="355" r="7"/>
-    <circle cx="1130" cy="310" r="7"/><circle cx="1200" cy="280" r="7"/>
-  </g>
+  <!-- accent bar along the bottom edge -->
+  <rect x="0" y="628" width="1280" height="12" fill="url(#line)" opacity="0.85"/>
 
   <!-- icon -->
   <g transform="translate(100 150) scale(0.9)">
