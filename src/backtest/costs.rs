@@ -251,26 +251,38 @@ impl CostModel {
         }
     }
 
-    /// One-line summary for the report header.
+    /// One-line summary for the report header, listing only the charges
+    /// that are actually non-zero (after `--brokerage` / `--slippage-bps`).
     pub fn describe(&self, csym: &str) -> String {
-        let slip = format!("slippage {} bps", self.slippage_bps);
-        match self.name.as_str() {
-            "none" if self.slippage_bps == 0.0 => "none (gross)".into(),
-            "us" => format!("US — commission {}, {slip}", self.brokerage.describe(csym)),
-            name => {
-                let kind = if name == "in-intraday" {
-                    "India intraday"
-                } else if name == "in-delivery" {
-                    "India delivery"
-                } else {
-                    name
-                };
-                format!(
-                    "{kind} — brokerage {}, STT, exchange, SEBI, GST, stamp duty, {slip}",
-                    self.brokerage.describe(csym)
-                )
+        let kind = match self.name.as_str() {
+            "in-delivery" => "India delivery",
+            "in-intraday" => "India intraday",
+            "us" => "US",
+            other => other,
+        };
+        let mut parts = Vec::new();
+        if self.brokerage != Brokerage::default() {
+            parts.push(format!("brokerage {}", self.brokerage.describe(csym)));
+        }
+        for (rate, label) in [
+            (self.stt_buy_pct + self.stt_sell_pct, "STT"),
+            (self.exchange_pct, "exchange"),
+            (self.sebi_pct, "SEBI"),
+            (self.gst_pct, "GST"),
+            (self.stamp_buy_pct, "stamp duty"),
+            (self.dp_per_sell, "DP"),
+        ] {
+            if rate > 0.0 {
+                parts.push(label.to_string());
             }
         }
+        if self.slippage_bps > 0.0 {
+            parts.push(format!("slippage {} bps", self.slippage_bps));
+        }
+        if parts.is_empty() {
+            return format!("{kind} — nothing charged (gross)");
+        }
+        format!("{kind} — {}", parts.join(", "))
     }
 }
 
@@ -351,6 +363,21 @@ mod tests {
         assert_eq!(CostPreset::Auto.model(Some("INR")).name, "in-delivery");
         assert_eq!(CostPreset::Auto.model(Some("USD")).name, "us");
         assert_eq!(CostPreset::Auto.model(None).name, "us");
+    }
+
+    #[test]
+    fn descriptions_list_only_what_is_charged() {
+        assert_eq!(
+            CostModel::none().describe("₹"),
+            "none — nothing charged (gross)"
+        );
+        assert_eq!(CostModel::us().describe("$"), "US — slippage 5 bps");
+        let d = CostModel::in_delivery().describe("₹");
+        assert!(d.starts_with("India delivery — brokerage ₹20 or 0.1%, lower, STT"));
+        assert!(d.ends_with("DP, slippage 5 bps"));
+        let mut m = CostModel::none();
+        m.brokerage = Brokerage::parse("20").unwrap();
+        assert_eq!(m.describe("₹"), "none — brokerage ₹20/order");
     }
 
     #[test]

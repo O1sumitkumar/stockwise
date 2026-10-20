@@ -10,6 +10,7 @@ use super::{Bars, date};
 use anyhow::{Result, bail};
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 /// Parse a window length into trading days: `90d`, `13w`, `6mo`, `1y`.
 pub fn parse_window(s: &str) -> Result<usize, String> {
@@ -26,9 +27,10 @@ pub fn parse_window(s: &str) -> Result<usize, String> {
         "y" => 252,
         _ => return Err(format!("`{s}`: use a length like 90d, 13w, 6mo or 1y")),
     };
-    match n * per {
-        0 => Err(format!("`{s}` is empty")),
-        days => Ok(days),
+    match n.checked_mul(per) {
+        Some(0) => Err(format!("`{s}` is empty")),
+        Some(days) if days <= 252 * 100 => Ok(days),
+        _ => Err(format!("`{s}` is longer than 100 years")),
     }
 }
 
@@ -126,6 +128,52 @@ fn stats(bars: &Bars, r: &SimResult) -> WindowStats {
     }
 }
 
+/// One test window, traded with the chosen parameters.
+struct TestWindow {
+    /// Portfolio value at the close before the window opened.
+    base: f64,
+    times: Vec<i64>,
+    equity: Vec<f64>,
+    invested: Vec<f64>,
+    /// Trades that closed inside the window.
+    trades: Vec<Trade>,
+}
+
+/// Trade the chosen parameters from the start of the train window, so a
+/// position they would already hold carries into the test window, and keep
+/// only the test window. One bar past the window is simulated so a position
+/// still open at its end is valued, not sold; the next window carries it.
+/// Only the very last window sells at the final close.
+fn test_window(
+    symbol: &str,
+    bars: &Bars,
+    signals: &Signals,
+    train: &Range<usize>,
+    test: &Range<usize>,
+    cfg: &SimConfig,
+) -> TestWindow {
+    let end = (test.end + 1).min(bars.len());
+    let r = sim(
+        symbol,
+        &bars.slice(train.start..end),
+        &signals.slice(train.start..end),
+        cfg,
+    );
+    let (from, to) = (test.start - train.start, test.end - train.start);
+    let (first, last) = (date(bars.time[test.start]), date(bars.time[test.end - 1]));
+    TestWindow {
+        base: r.equity[from - 1],
+        times: r.times[from..to].to_vec(),
+        equity: r.equity[from..to].to_vec(),
+        invested: r.invested[from..to].to_vec(),
+        trades: r
+            .trades
+            .into_iter()
+            .filter(|t| t.exit_date >= first && t.exit_date <= last)
+            .collect(),
+    }
+}
+
 /// Train windows rank parameters by Sharpe; those that never trade rank last.
 fn score(s: &WindowStats) -> (bool, f64, f64) {
     (
@@ -211,37 +259,54 @@ pub fn run(
         }
         let (i, in_sample) = best.expect("at least one parameter combination");
         let (strategy, signals) = &candidates[i];
-        let test_bars = bars.slice(test_r.clone());
-        let test_signals = signals.slice(test_r.clone());
         let c = SimConfig {
-            capital,
             stop_loss_pct: strategy.stop_loss_pct,
             take_profit_pct: strategy.take_profit_pct,
             ..cfg.clone()
         };
-        let r = sim(symbol, &test_bars, &test_signals, &c);
-        let g = sim(
+        let net = test_window(symbol, bars, signals, &train_r, &test_r, &c);
+        let gross = test_window(
             symbol,
-            &test_bars,
-            &test_signals,
+            bars,
+            signals,
+            &train_r,
+            &test_r,
             &SimConfig {
-                capital: gross_capital,
                 costs: CostModel::none(),
                 ..c.clone()
             },
         );
-        capital = r.equity.last().copied().unwrap_or(capital);
-        gross_capital = g.equity.last().copied().unwrap_or(gross_capital);
-        costs += r.costs.total;
-        times.extend_from_slice(&r.times);
-        equity.extend_from_slice(&r.equity);
-        invested.extend_from_slice(&r.invested);
-        trades.extend(r.trades.iter().cloned());
+        // Chain the windows: each one's growth applies to the capital so far.
+        let scale = capital / net.base;
+        times.extend_from_slice(&net.times);
+        equity.extend(net.equity.iter().map(|v| v * scale));
+        invested.extend(net.invested.iter().map(|v| v * scale));
+        costs += net.trades.iter().map(|t| t.costs).sum::<f64>() * scale;
+        capital = net.equity.last().map_or(capital, |v| v * scale);
+        gross_capital *= gross.equity.last().map_or(1.0, |v| v / gross.base);
+        let m = engine::metrics(
+            net.base,
+            &net.times,
+            &net.equity,
+            &net.invested,
+            &net.trades,
+            0.0,
+        );
         folds.push(Fold {
             params: strategy.params.clone(),
             in_sample,
-            out_of_sample: stats(&test_bars, &r),
+            out_of_sample: WindowStats {
+                start: date(bars.time[test_r.start]),
+                end: date(bars.time[test_r.end - 1]),
+                bars: test_r.len(),
+                return_pct: m.total_return_pct,
+                annualised_pct: engine::annualised_pct(m.total_return_pct, test_r.len()),
+                sharpe: m.sharpe,
+                max_drawdown_pct: m.max_drawdown_pct,
+                trades: m.trades,
+            },
         });
+        trades.extend(net.trades);
     }
 
     let oos = engine::metrics(cfg.capital, &times, &equity, &invested, &trades, costs);
@@ -381,6 +446,8 @@ mod tests {
         assert!(parse_window("0d").is_err());
         assert!(parse_window("1q").is_err());
         assert!(parse_window("y").is_err());
+        assert!(parse_window("99999999999999999999y").is_err());
+        assert!(parse_window("200y").is_err());
     }
 
     #[test]
@@ -409,6 +476,34 @@ mod tests {
         }
         // Costs only make things worse.
         assert!(wf.out_of_sample_gross_return_pct >= wf.out_of_sample.total_return_pct);
+    }
+
+    #[test]
+    fn positions_carry_across_test_windows() {
+        // A steady uptrend: "close above its 5-day average" holds from bar 5
+        // on, so the strategy buys once and holds. Test windows must not each
+        // restart flat and sell at their end.
+        let closes: Vec<f64> = (0..400).map(|i| 100.0 + i as f64).collect();
+        let bars = Bars::from_closes(&closes);
+        let def = StrategyDef::parse(
+            r#"entry = "close > sma(5)"
+               exit = "close < sma(5)""#,
+            "trend",
+            "test",
+        )
+        .unwrap();
+        let cfg = SimConfig::single(100_000.0, Fill::NextOpen, CostModel::in_delivery());
+        let wf = run(&def, "SYN", &bars, 100, 50, &cfg).unwrap();
+        assert_eq!(wf.folds.len(), 6);
+        // One position, held from the first test bar, sold once at the end.
+        assert_eq!(wf.trades.len(), 1);
+        assert!(wf.out_of_sample.exposure_pct > 99.0);
+        assert!(wf.folds.iter().all(|f| f.out_of_sample.return_pct > 0.0));
+        // Last close / the close before the first test bar, less cash left
+        // over from buying whole shares.
+        let held = (499.0 / 199.0 - 1.0) * 100.0;
+        assert!(wf.out_of_sample_gross_return_pct > held * 0.99);
+        assert!(wf.out_of_sample_gross_return_pct < held * 1.01);
     }
 
     #[test]

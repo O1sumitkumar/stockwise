@@ -246,7 +246,8 @@ impl StrategyDef {
         Ok(def)
     }
 
-    /// The same strategy with some default parameters replaced.
+    /// The same strategy with some default parameters replaced. A replaced
+    /// parameter is also pinned in the grid, so walk-forward keeps it fixed.
     pub fn with_params(&self, overrides: &[(String, f64)]) -> Result<StrategyDef> {
         let mut def = self.clone();
         for (k, v) in overrides {
@@ -261,6 +262,9 @@ impl StrategyDef {
                 );
             }
             def.params.insert(k.clone(), *v);
+            if let Some(values) = def.grid.get_mut(k) {
+                *values = vec![*v];
+            }
         }
         def.compile()?;
         Ok(def)
@@ -1327,6 +1331,8 @@ mod tests {
         assert!(combos.iter().all(|c| c["period"] == 14.0));
         let d2 = d.with_params(&[("oversold".into(), 25.0)]).unwrap();
         assert_eq!(d2.params["oversold"], 25.0);
+        assert_eq!(d2.grid["oversold"], vec![25.0]);
+        assert_eq!(d2.grid_combos().len(), 3);
         assert!(d.with_params(&[("nope".into(), 1.0)]).is_err());
         assert!(d.with_params(&[("period".into(), 0.0)]).is_err());
         assert_eq!(

@@ -653,14 +653,14 @@ struct BacktestFlags {
     /// Brokerage per order: 20 (flat), 0.03% or 20,0.03% (whichever is lower)
     #[arg(long, value_parser = backtest::costs::Brokerage::parse)]
     brokerage: Option<backtest::costs::Brokerage>,
-    /// Slippage per fill, in basis points [default: 5, or 0 with --costs none]
-    #[arg(long, value_name = "BPS", value_parser = non_negative)]
+    /// Slippage per fill, in basis points, 0-1000 [default: 5, or 0 with --costs none]
+    #[arg(long, value_name = "BPS", value_parser = slippage_bps)]
     slippage_bps: Option<f64>,
     /// When a signal fills: the next bar's open, or the signal bar's close (look-ahead)
     #[arg(long, value_enum, ignore_case = true, default_value = "next-open")]
     fill: FillArg,
     /// Starting capital, in the stock's currency
-    #[arg(long, default_value = "100000", value_parser = positive)]
+    #[arg(long, default_value = "100000", value_parser = capital)]
     capital: f64,
     /// Print JSON instead of a report
     #[arg(long)]
@@ -733,17 +733,19 @@ impl From<RebalanceArg> for backtest::engine::Rebalance {
     }
 }
 
-fn positive(s: &str) -> Result<f64, String> {
+fn capital(s: &str) -> Result<f64, String> {
     match s.parse::<f64>() {
-        Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
-        _ => Err(format!("`{s}` must be a number above 0")),
+        Ok(v) if v > 0.0 && v <= 1e12 => Ok(v),
+        _ => Err(format!("`{s}` must be a number above 0 and at most 1e12")),
     }
 }
 
-fn non_negative(s: &str) -> Result<f64, String> {
+fn slippage_bps(s: &str) -> Result<f64, String> {
     match s.parse::<f64>() {
-        Ok(v) if v.is_finite() && v >= 0.0 => Ok(v),
-        _ => Err(format!("`{s}` must be a number, 0 or more")),
+        Ok(v) if (0.0..=1000.0).contains(&v) => Ok(v),
+        _ => Err(format!(
+            "`{s}` must be from 0 to 1000 basis points (1000 = 10%)"
+        )),
     }
 }
 
@@ -1327,6 +1329,9 @@ mod tests {
             vec!["stockwise", "backtest", "TCS", "--costs", "zerodha"],
             vec!["stockwise", "backtest", "TCS", "--fill", "open"],
             vec!["stockwise", "backtest", "TCS", "--capital", "0"],
+            vec!["stockwise", "backtest", "TCS", "--capital", "1e300"],
+            vec!["stockwise", "backtest", "TCS", "--slippage-bps", "20000"],
+            vec!["stockwise", "backtest", "TCS", "--slippage-bps", "-1"],
             vec!["stockwise", "backtest", "TCS", "--brokerage", "lots"],
             vec!["stockwise", "backtest", "TCS", "-P", "oversold"],
             vec![

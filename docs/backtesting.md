@@ -139,6 +139,13 @@ that traded) trades the following test window. Only test windows count. The
 test windows are chained with compounding capital into one out-of-sample
 equity curve, after costs.
 
+Positions carry across windows: the chosen parameters trade from the start of
+their train window, so a position they would already hold is open when the
+test window starts, and a position open at a window's end is valued, not
+sold — only the last window sells at the final close. A trade is listed in
+the window it closes in. Switching parameters between windows is assumed to
+cost nothing.
+
 ```bash
 stockwise backtest walkforward RELIANCE -s rsi --train 1y --test 3mo -p 10y
 ```
@@ -204,7 +211,7 @@ dip = [30, 35, 40]
 | `exit` | Same. Optional when `stop_loss_pct` or `take_profit_pct` is set |
 | `stop_loss_pct` | Exit when the price falls this far below the entry (0–100) |
 | `take_profit_pct` | Exit when the price rises this far above the entry |
-| `[params]` | Default parameter values; override with `-P name=value` (repeatable) |
+| `[params]` | Default parameter values; override with `-P name=value` (repeatable). A `-P` value also fixes that parameter for walk-forward |
 | `[grid]` | For each parameter, the values walk-forward tries (at most 500 combinations) |
 
 Unknown keys are errors, so a typo like `stop_los_pct` is caught.

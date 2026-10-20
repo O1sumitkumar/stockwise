@@ -378,8 +378,10 @@ impl Sim<'_> {
         } else {
             0
         };
-        while cost(qty + 1) <= s.cash {
-            qty += 1;
+        while let Some(next) = qty.checked_add(1)
+            && cost(next) <= s.cash
+        {
+            qty = next;
         }
         while qty > 0 && cost(qty) > s.cash {
             qty -= 1;
@@ -481,7 +483,10 @@ impl Sim<'_> {
         }
     }
 
-    fn check_stops(&mut self, k: usize, bar: usize) {
+    /// Stop and target exits. With `at_open`, only gaps through a level at
+    /// the open (checked before a rebalance trades at that open); otherwise
+    /// also touches during the bar.
+    fn check_stops(&mut self, k: usize, bar: usize, at_open: bool) {
         let b = self.assets[k].bars;
         let (o, h, l) = (b.open[bar], b.high[bar], b.low[bar]);
         let Some(p) = &self.sleeves[k].pos else {
@@ -494,7 +499,7 @@ impl Sim<'_> {
             if gap && o <= stop {
                 return self.sell(k, bar, o, None, ExitReason::StopLoss);
             }
-            if l <= stop {
+            if !at_open && l <= stop {
                 return self.sell(k, bar, stop, None, ExitReason::StopLoss);
             }
         }
@@ -503,7 +508,7 @@ impl Sim<'_> {
             if gap && o >= target {
                 return self.sell(k, bar, o, None, ExitReason::TakeProfit);
             }
-            if h >= target {
+            if !at_open && h >= target {
                 self.sell(k, bar, target, None, ExitReason::TakeProfit);
             }
         }
@@ -573,11 +578,12 @@ impl Sim<'_> {
         let w = self.target_weights();
         let target: Vec<f64> = w.iter().map(|w| w * total).collect();
 
-        // Trim overweight positions (ignore drifts under 1% of the target).
+        // Trim positions worth more than their target (ignore drifts under 1%
+        // of the target). Idle cash moves in the next step, not by selling.
         for k in 0..n {
             let Some(bar) = today[k] else { continue };
-            let excess = value(self, k) - target[k];
             let px = price(self, k);
+            let excess = held(self, k) * px - target[k];
             if held(self, k) > 0.0 && px > 0.0 && excess > 0.01 * target[k] {
                 let qty = (excess / px).floor() as u64;
                 self.sell(k, bar, px, Some(qty), ExitReason::Rebalance);
@@ -665,12 +671,18 @@ pub fn simulate(assets: &[Asset], cfg: &SimConfig) -> SimResult {
             }
         }
         if di > 0 && cfg.rebalance.due(days[di - 1], d) && n > 1 {
+            // A stop gapped through at the open fills before the rebalance.
+            for k in 0..n {
+                if let Some(bar) = today[k] {
+                    sim.check_stops(k, bar, true);
+                }
+            }
             sim.rebalance(&today);
             rebalances += 1;
         }
         for k in 0..n {
             if let Some(bar) = today[k] {
-                sim.check_stops(k, bar);
+                sim.check_stops(k, bar, false);
                 sim.on_close(k, bar);
                 let s = &mut sim.sleeves[k];
                 s.last_close = Some(assets[k].bars.close[bar]);
