@@ -190,7 +190,19 @@ See [docs/angel-one.md](docs/angel-one.md).
 With [Ollama](https://ollama.com) running, `stockwise report TCS` writes an AI
 stock report, and `--ai` adds commentary to `analyze`, `technical`, `compare`,
 `screen`, `backtest` and `deep`. It's opt-in because local models take 30–60s.
-See [docs/ai.md](docs/ai.md).
+Prefer a hosted model? Set `STOCKWISE_AI_PROVIDER` to `openai`, `anthropic` or
+`gemini` with your key — still only for `report` and `--ai`, with a notice
+whenever data is sent. See [docs/ai.md](docs/ai.md).
+
+### Crypto, forex and Hindi
+
+```bash
+stockwise quote BTC ETH -m crypto                    # BTC-USD, ETH-USD — trades 24/7
+stockwise quote BTC -m crypto --quote-currency inr   # BTC-INR
+stockwise quote USDINR EURUSD -m fx                  # USDINR=X, EURUSD=X, 4 decimals
+stockwise markets --crypto --fx                      # indices + top coins + major pairs
+stockwise dashboard --lang hi                        # हिन्दी में (also STOCKWISE_LANG=hi)
+```
 
 ## Configuration
 
@@ -198,19 +210,27 @@ Everything works with no config. Optional environment variables:
 
 | Variable | Purpose |
 |----------|---------|
-| `STOCKWISE_MARKET` | Default market: `in` (default) or `us` |
+| `STOCKWISE_MARKET` | Default market: `in` (default), `us`, `crypto` or `fx` |
+| `STOCKWISE_QUOTE_CURRENCY` | Currency for bare crypto tickers with `-m crypto` (default `usd`; `inr` gives `BTC-INR`) |
+| `STOCKWISE_LANG` | Output language: `en` or `hi` (Hindi). Default: your locale (`LANG=hi_IN…` picks Hindi) |
 | `STOCKWISE_HOME` | Where portfolio, watchlist, alerts and history are stored |
+| `STOCKWISE_DATA_PROVIDER` | Opt-in data provider: `alphavantage`, `massive` (Polygon) or `twelvedata`, with its API key — see [docs/data-providers.md](docs/data-providers.md) |
 | `STOCKWISE_AI` | `1` to add AI sections by default |
-| `STOCKWISE_MODEL` / `OLLAMA_HOST` | Ollama model (default `qwen3:14b`) and server |
+| `STOCKWISE_AI_PROVIDER` | `ollama` (default, local), or opt-in cloud: `openai`, `anthropic`, `gemini` with `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` — see [docs/ai.md](docs/ai.md) |
+| `STOCKWISE_MODEL` / `OLLAMA_HOST` | AI model (Ollama default `qwen3:14b`) and Ollama server |
 | `STOCKWISE_REDIS_URL` | Optional shared cache (`redis://…`), or `off` |
 | `NO_COLOR` | Disable colours (also automatic when piping) |
+
+The same settings work as flags: `-m crypto`, `--quote-currency inr`,
+`--lang hi`, `--ai`. Run `stockwise doctor` to see what is active.
 
 ## Docs
 
 - [Commands reference](docs/commands.md)
 - [Trading bots](docs/bots.md) and [bot design](docs/bot-design.md)
 - [Angel One setup](docs/angel-one.md)
-- [AI & Ollama](docs/ai.md)
+- [AI: Ollama and cloud providers](docs/ai.md)
+- [Data providers](docs/data-providers.md)
 - [Architecture](docs/architecture.md)
 
 ## Roadmap & contributing

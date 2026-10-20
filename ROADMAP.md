@@ -64,7 +64,8 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - 📋 Notifications — Telegram, Slack, Discord, email, and desktop, for alerts and daemon events
 
 **AI**
-- 📋 Optional cloud AI providers (OpenAI, Anthropic, Gemini) alongside Ollama, strictly opt-in
+- ✅ Optional cloud AI providers (OpenAI, Anthropic, Gemini) alongside Ollama, strictly opt-in —
+  `STOCKWISE_AI_PROVIDER`, see [docs/ai.md](docs/ai.md)
 
 ## 💡 Later — depth (0.5+)
 
@@ -73,15 +74,19 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - 💡 Pluggable strategy system for `backtest` and the intraday bot (TOML rules or WASM)
 - ✅ F&O: option chains, greeks, IV, PCR, max pain — NSE index options and F&O stocks, US
   options via Yahoo (`options chain`, `options pcr`, `options maxpain`); BSE options not yet
-- 💡 Crypto and forex as first-class markets (quotes already work: `BTC-USD`, `USDINR=X`)
+- ✅ Crypto and forex as first-class markets — `-m crypto` (`--quote-currency inr` for `BTC-INR`),
+  `-m fx`, `markets --crypto --fx`
 - ✅ Mutual-fund / ETF screening and overlap analysis — `mf screen` ranks Indian schemes by
   category and returns (no expense-ratio data in AMFI's feed); `mf overlap` covers funds with
   Yahoo holdings data (mainly US ETFs/funds, top 10 holdings)
 - 💡 Mixed-currency portfolios with INR/USD conversion
-- 💡 Data-provider abstraction (official NSE feeds, Alpha Vantage, Polygon) beyond Yahoo
+- ✅ Data-provider abstraction beyond Yahoo — Alpha Vantage, Massive (Polygon), Twelve Data via
+  `STOCKWISE_DATA_PROVIDER`, see [docs/data-providers.md](docs/data-providers.md)
+- 💡 Official NSE feeds as a data provider
 - 💡 Web/REST mode for remote dashboards; Prometheus metrics for the daemon
 - ✅ Docker image and Nix flake
-- 💡 Hindi localization
+- 🛠️ Hindi localization (partial) — `--lang hi`: help groups, `quote`, `markets`, `dashboard`,
+  `portfolio`, `search`, `doctor`; other commands next
 
 ## Non-goals
 

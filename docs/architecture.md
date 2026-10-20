@@ -20,12 +20,14 @@ src/
     worker.rs        daemon intraday / longterm loops
     trade.rs         Angel One orders: instrument resolution, preview, confirmation
   store.rs           Atomic JSON persistence, data directory (STOCKWISE_HOME)
-  api.rs             Yahoo Finance client (session, quotes, charts, search, cache, retries)
+  api.rs             Yahoo Finance client (session, quotes, charts, search, cache, retries); routes to a provider
+  providers/         MarketData trait + opt-in Alpha Vantage, Massive (Polygon), Twelve Data; Yahoo fills gaps
+  i18n.rs            Typed English/Hindi message catalog, --lang / STOCKWISE_LANG / locale detection
   angel.rs           Angel One SmartAPI (login, TOTP, exact instrument lookup, orders)
   funds.rs           AMFI NAV file + api.mfapi.in history (cached), returns, SIP, ETF holdings overlap
   derivatives.rs     Option chains from NSE / Yahoo, PCR, max pain, per-contract IV and greeks
   greeks.rs          Black-Scholes pricing, greeks, implied-volatility solver
-  ai.rs              Ollama integration (prompts, opt-in flag, model checks)
+  ai.rs              AI: Ollama (default) or opt-in OpenAI / Anthropic / Gemini; prompts, opt-in flag, model checks
   daemon.rs          Worker state: market phases, positions, risk manager
   technical.rs       Indicators and statistics (SMA, EMA, RSI, MACD, BB, ATR, VWAP, OBV, VaR, Sharpe, XIRR, ...)
   backtest.rs        Backtesting engine (6 strategies, equity curves)
@@ -34,8 +36,8 @@ src/
   simulator.rs       Paper-trading sessions and confidence rating
   insights.rs        Rule-based plain-English insights
   charts.rs          Braille line charts, volume bars, gauges
-  display.rs         Currency-aware formatting (₹/$/£), colours
-  market.rs          Market enum, symbol resolution, index/sector lists
+  display.rs         Currency- and asset-aware formatting (₹/$/€/£/¥, FX and crypto decimals), width-aware padding
+  market.rs          Market enum (in/us/crypto/fx), asset classes, symbol resolution, index/sector/coin/pair lists
   portfolio.rs, watchlist.rs, alerts.rs, wealth.rs   Data models persisted via store.rs
 ```
 
@@ -49,8 +51,9 @@ help table — a test enforces this), write `cmd_<name>` in the matching
 User Input → clap CLI → commands/* → api.rs → Yahoo Finance
                                    → funds.rs → AMFI NAVAll.txt, api.mfapi.in
                                    → derivatives.rs → NSE option chain (India), Yahoo (US)
+                                            → providers/* → Alpha Vantage / Massive / Twelve Data (opt-in)
                                    → angel.rs → Angel One
-                                   → ai.rs → Local Ollama
+                                   → ai.rs → Local Ollama (or opt-in OpenAI / Anthropic / Gemini)
                                    → technical.rs (indicators)
                                    → intraday.rs / longterm.rs (bots)
                                    → charts.rs (visualization)

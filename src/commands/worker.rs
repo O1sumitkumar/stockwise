@@ -3,10 +3,9 @@
 use super::*;
 
 pub async fn cmd_daemon(mode: &str, amount: Option<f64>, market: Market) -> Result<()> {
-    let csym = match market {
-        Market::In => "₹",
-        Market::Us => "$",
-    };
+    // Both loops follow exchange sessions; crypto and FX have none.
+    market.require_stocks("daemon")?;
+    let csym = market.currency_symbol();
 
     match mode {
         "intraday" => {
@@ -460,11 +459,8 @@ pub async fn cmd_daemon(mode: &str, amount: Option<f64>, market: Market) -> Resu
 
             // 1. Score all stocks
             println!("  [1/5] Scoring stocks...");
-            let symbols = match market {
-                Market::In => market::INDIA_POPULAR,
-                Market::Us => market::US_POPULAR,
-            };
-            let sym_refs: Vec<&str> = symbols.to_vec();
+            let symbols = market.universe();
+            let sym_refs: Vec<&str> = symbols.iter().map(String::as_str).collect();
             let quotes = client.get_quote(&sym_refs).await?;
             let mut scores: Vec<crate::longterm::LongTermScore> = Vec::new();
             for q in &quotes {
