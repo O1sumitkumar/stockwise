@@ -79,10 +79,13 @@ network), `2` invalid arguments.
 
 | Command | Description |
 |---------|-------------|
-| `backtest <SYMBOL> [-s STRATEGY] [-p]` | `rsi` (default), `macd`, `sma`, `bb`, `vwap`, `mr`. Equity curve, alpha, per-trade Sharpe, drawdown. Default `2y`. No commissions or slippage are modelled |
+| `backtest <SYMBOL> [-s STRATEGY] [-P NAME=VALUE] [-p] [--json]` | Backtest one stock after costs: net and gross return, buy & hold, CAGR, drawdown, Sharpe/Sortino, exposure, trades. Fills at the next bar's open. Strategies: `rsi` (default), `macd`, `sma`, `bb`, `vwap`, `mr`, or your own TOML file. Default `2y` |
+| `backtest portfolio <SYMBOLS...> [-s] [--weights equal\|inverse-vol\|0.5,0.3,...] [--rebalance none\|monthly\|quarterly]` | One strategy across several stocks sharing the capital; combined equity curve and per-symbol contribution |
+| `backtest walkforward <SYMBOL> [-s] [--train 1y] [--test 3mo]` (`wf`) | Tunes the strategy's `[grid]` on rolling train windows and reports only the unseen test windows, with an overfitting verdict. Default `5y` |
+| `backtest strategies [FILES...] [--json]` | List built-in and your own strategies, or check strategy files (exit 1 on errors) |
 | `sip <SYMBOL> <AMOUNT> [-p]` | Monthly SIP/DCA simulation with value-vs-invested chart and XIRR. Default `5y` |
 | `whatif <SYMBOL> <AMOUNT> <YYYY-MM-DD>` | What a lump sum on a past date is worth today |
-| `intraday <CAPITAL> <TARGET%>` (`bot`) | 9-strategy intraday ideas with Kelly sizing and dual targets. Signals only |
+| `intraday <CAPITAL> <TARGET%> [-s STRATEGY]` (`bot`) | 9-strategy intraday ideas with Kelly sizing and dual targets. `-s` adds a strategy file's rules as a tenth signal. Signals only |
 | `longterm [MONTHLY_BUDGET]` | 6-pillar scoring, Monte Carlo, SIP allocation |
 | `daemon intraday [CAPITAL]` | Paper-trading loop, 9:00–15:30 IST: scan, enter, trail stops every 60s, book half at T1, square off 15:15, settle into `sim` history. **Never sends broker orders** |
 | `daemon longterm` | Post-market scan: scores, portfolio check, alerts, tax-harvest ideas |
@@ -90,6 +93,22 @@ network), `2` invalid arguments.
 | `sim status` / `settle` / `history` | Live P&L / close at current prices / record + confidence rating |
 | `sim reset [--yes]` | Delete simulator history after confirmation (a timestamped backup is kept) |
 | `report <intraday\|longterm\|portfolio\|SYMBOL>` | AI report via local Ollama |
+
+Every `backtest` form also takes:
+
+| Option | Default | |
+|--------|---------|---|
+| `-s, --strategy` | `rsi` | A built-in, a file in your strategies folder, or `file:PATH.toml` |
+| `-P, --param NAME=VALUE` | | Override a strategy parameter (repeatable) |
+| `--costs` | `auto` | `auto`, `in-delivery`, `in-intraday`, `us`, `none`. `auto` = India delivery for INR stocks, US otherwise |
+| `--brokerage` | preset | Per order: `20` (flat), `0.03%`, or `20,0.03%` (whichever is lower) |
+| `--slippage-bps` | `5` | Slippage per fill, in basis points |
+| `--fill` | `next-open` | `next-open` or `close` (fills at the signal bar's close — look-ahead) |
+| `--capital` | `100000` | Starting capital in the stock's currency |
+| `--json` | | Print JSON instead of a report |
+
+Costs, fills, the metrics, walk-forward and the strategy file format are in
+[backtesting.md](backtesting.md).
 
 ## Portfolio
 

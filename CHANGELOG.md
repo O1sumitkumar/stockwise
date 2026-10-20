@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Trading costs in backtests**, on by default: `--costs in-delivery`
+  (brokerage, STT, exchange and SEBI fees, GST, stamp duty, DP charge),
+  `in-intraday`, `us`, or `none`, plus `--slippage-bps` and `--brokerage`.
+  Reports show net and gross returns and the money paid in costs.
+- `backtest portfolio SYMBOLS...` — one strategy across several stocks with
+  `--weights equal|inverse-vol|0.5,0.3,...` and `--rebalance monthly|quarterly`;
+  combined equity curve, CAGR, drawdown, Sharpe/Sortino, exposure and
+  per-symbol contribution.
+- `backtest walkforward SYMBOL --train 1y --test 3mo` — tunes parameters on
+  rolling train windows, reports only out-of-sample results, and flags
+  likely overfitting.
+- **Strategy files**: entry/exit rules in TOML over the built-in indicators
+  (`and`/`or`/`not`, crossovers, arithmetic, stop-loss and take-profit,
+  parameters and a walk-forward grid). Load with `-s NAME` from
+  `~/.config/stockwise/strategies/` or `-s file:PATH`; override parameters
+  with `-P name=value`. The six built-ins ship as files in
+  `examples/strategies/`, with two more examples.
+- `backtest strategies` lists and checks strategy files.
+- `intraday -s STRATEGY` adds a strategy file as an extra signal.
+- `--json` on every form of `backtest`.
+- Docs: [docs/backtesting.md](docs/backtesting.md).
+
+### Changed
+- **Backtests fill at the next bar's open** instead of the signal bar's close,
+  which used a price not yet known when the signal fired. `--fill close`
+  restores the old behaviour.
+- Backtests trade whole shares from a starting capital (`--capital`, default
+  100,000), and Sharpe/Sortino are annualised from daily returns instead of
+  a per-trade ratio. Max drawdown uses the daily equity curve.
+- Backtest bars with any missing price are dropped together; before, a gap in
+  one series could misalign opens, highs, lows and closes.
+- `backtest` with too little history is an error (exit 1).
+
 ## [0.3.0] - 2026-10-21
 
 Usability and safety release. Command-line forms from 0.2 keep working.

@@ -67,8 +67,8 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 ## 💡 Later — depth (0.5+)
 
 - 💡 Interactive TUI dashboard (ratatui) — live quotes, positions, P&L, alerts
-- 💡 Portfolio-level and walk-forward backtesting with Indian costs (STT, brokerage, slippage)
-- 💡 Pluggable strategy system for `backtest` and the intraday bot (TOML rules or WASM)
+- ✅ Portfolio-level and walk-forward backtesting with Indian costs (STT, brokerage, slippage)
+- ✅ Pluggable strategy system for `backtest` and the intraday bot (TOML rules; WASM not planned for now)
 - 💡 F&O: option chains, greeks, IV, PCR, max pain
 - 💡 Crypto and forex as first-class markets (quotes already work: `BTC-USD`, `USDINR=X`)
 - 💡 Mutual-fund / ETF screening and overlap analysis

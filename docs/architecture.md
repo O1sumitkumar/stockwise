@@ -12,7 +12,8 @@ src/
     technicals.rs    technical, history, chart, timeframes, patterns, support, fibs, volume, gaps, stoploss
     risk.rs          risk, correlate, returns, forecast, options
     markets.rs       movers, sectors, news, sentiment, screen, picks, earnings, rotation, matrix, surprise, heatmap, sectorcmp, ipo
-    strategies.rs    backtest, sip, whatif, intraday, longterm, report
+    backtests.rs     backtest (single, portfolio, walkforward, strategies)
+    strategies.rs    sip, whatif, intraday, longterm, report
     holdings.rs      portfolio, watch, alert, import, export, wealth, rebalance, harvest, tax, divcal, pcorr
     sim.rs           paper-trading simulator
     worker.rs        daemon intraday / longterm loops
@@ -23,7 +24,13 @@ src/
   ai.rs              Ollama integration (prompts, opt-in flag, model checks)
   daemon.rs          Worker state: market phases, positions, risk manager
   technical.rs       Indicators and statistics (SMA, EMA, RSI, MACD, BB, ATR, VWAP, OBV, VaR, Sharpe, XIRR, ...)
-  backtest.rs        Backtesting engine (6 strategies, equity curves)
+  backtest/          Backtesting engine (see docs/backtesting.md)
+    mod.rs           Daily bars from Yahoo charts
+    rules.rs         TOML strategy rules: parser, validation, signals; built-ins from examples/strategies/
+    indicators.rs    Whole-series indicators matching technical.rs
+    costs.rs         Indian delivery/intraday and US cost models, slippage
+    engine.rs        Simulator (single symbol or portfolio, fills, stops, rebalancing) and metrics
+    walkforward.rs   Rolling train/test optimisation and the overfitting verdict
   intraday.rs        Intraday bot (9 strategies, regime detection, Kelly sizing)
   longterm.rs        Long-term bot (6-pillar scoring, Monte Carlo, DRIP)
   simulator.rs       Paper-trading sessions and confidence rating
