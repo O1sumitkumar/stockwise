@@ -2,68 +2,116 @@
 
 use super::*;
 
-pub async fn cmd_movers(market: Market) -> Result<()> {
+/// One stock in `movers --json/--csv`. `side` is `gainer` or `loser`;
+/// `rank` starts at 1 within each side.
+#[derive(Debug, Serialize)]
+pub(crate) struct MoverRow {
+    pub(crate) side: &'static str,
+    pub(crate) rank: usize,
+    pub(crate) symbol: String,
+    pub(crate) price: f64,
+    pub(crate) change_percent: f64,
+    pub(crate) volume: Option<u64>,
+    pub(crate) currency: Option<String>,
+}
+
+impl CsvRow for MoverRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "side",
+        "rank",
+        "symbol",
+        "price",
+        "change_percent",
+        "volume",
+        "currency",
+    ];
+}
+
+/// Top and bottom `n` by today's change. Quotes without a price or change
+/// are left out rather than ranked as 0%.
+pub(crate) fn mover_rows(quotes: &[crate::api::Quote], n: usize) -> (Vec<MoverRow>, Vec<MoverRow>) {
+    let mut ranked: Vec<(&crate::api::Quote, f64, f64)> = quotes
+        .iter()
+        .filter_map(|q| Some((q, q.regular_market_price?, q.regular_market_change_percent?)))
+        .collect();
+    ranked.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    let row = |side, rank, (q, price, pct): &(&crate::api::Quote, f64, f64)| MoverRow {
+        side,
+        rank,
+        symbol: q.symbol.clone().unwrap_or_default(),
+        price: *price,
+        change_percent: *pct,
+        volume: q.regular_market_volume,
+        currency: q.currency.clone(),
+    };
+    let gainers = ranked
+        .iter()
+        .take(n)
+        .enumerate()
+        .map(|(i, r)| row("gainer", i + 1, r))
+        .collect();
+    let losers = ranked
+        .iter()
+        .rev()
+        .take(n)
+        .enumerate()
+        .map(|(i, r)| row("loser", i + 1, r))
+        .collect();
+    (gainers, losers)
+}
+
+pub async fn cmd_movers(market: Market, fmt: Format) -> Result<()> {
     let client = YahooClient::new().await?;
     let symbols = match market {
         Market::Us => market::US_POPULAR,
         Market::In => market::INDIA_POPULAR,
     };
     let sym_refs: Vec<&str> = symbols.to_vec();
-    let mut quotes = client.get_quote(&sym_refs).await?;
-    quotes.sort_by(|a, b| {
-        b.regular_market_change_percent
-            .unwrap_or(0.0)
-            .partial_cmp(&a.regular_market_change_percent.unwrap_or(0.0))
-            .unwrap()
-    });
+    let quotes = client.get_quote(&sym_refs).await?;
+    let (gainers, losers) = mover_rows(&quotes, 10);
+    match fmt {
+        Format::Json => {
+            return output::print_json(&serde_json::json!({
+                "gainers": gainers,
+                "losers": losers,
+            }));
+        }
+        Format::Csv => {
+            let all: Vec<MoverRow> = gainers.into_iter().chain(losers).collect();
+            return output::print_csv(&all);
+        }
+        Format::Table => {}
+    }
 
     let market_name = match market {
         Market::Us => "US",
         Market::In => "India",
     };
 
-    print_header(&format!("Top Gainers — {}", market_name));
-    println!(
-        "  {:<14} {:>10} {:>10} {:>14}",
-        "Symbol".bold(),
-        "Price".bold(),
-        "Change %".bold(),
-        "Volume".bold()
-    );
-    println!("  {}", "─".repeat(52).dimmed());
-    for q in quotes.iter().take(10) {
-        let sym = q.symbol.as_deref().unwrap_or("???");
-        let cur = q.currency.as_deref();
-        let pct = q.regular_market_change_percent.unwrap_or(0.0);
+    for (title, rows) in [("Top Gainers", &gainers), ("Top Losers", &losers)] {
+        print_header(&format!("{} — {}", title, market_name));
         println!(
             "  {:<14} {:>10} {:>10} {:>14}",
-            sym.cyan(),
-            format_price(q.regular_market_price.unwrap_or(0.0), cur),
-            format!("{:+.2}%", pct).green(),
-            format_volume(q.regular_market_volume.unwrap_or(0))
+            "Symbol".bold(),
+            "Price".bold(),
+            "Change %".bold(),
+            "Volume".bold()
         );
-    }
-
-    print_header(&format!("Top Losers — {}", market_name));
-    println!(
-        "  {:<14} {:>10} {:>10} {:>14}",
-        "Symbol".bold(),
-        "Price".bold(),
-        "Change %".bold(),
-        "Volume".bold()
-    );
-    println!("  {}", "─".repeat(52).dimmed());
-    for q in quotes.iter().rev().take(10) {
-        let sym = q.symbol.as_deref().unwrap_or("???");
-        let cur = q.currency.as_deref();
-        let pct = q.regular_market_change_percent.unwrap_or(0.0);
-        println!(
-            "  {:<14} {:>10} {:>10} {:>14}",
-            sym.cyan(),
-            format_price(q.regular_market_price.unwrap_or(0.0), cur),
-            format!("{:+.2}%", pct).red(),
-            format_volume(q.regular_market_volume.unwrap_or(0))
-        );
+        println!("  {}", "─".repeat(52).dimmed());
+        for r in rows.iter() {
+            let pct = format!("{:+.2}%", r.change_percent);
+            println!(
+                "  {:<14} {:>10} {:>10} {:>14}",
+                r.symbol.cyan(),
+                format_price(r.price, r.currency.as_deref()),
+                if r.side == "gainer" {
+                    pct.green()
+                } else {
+                    pct.red()
+                },
+                r.volume.map_or("N/A".to_string(), format_volume)
+            );
+        }
     }
     println!();
     Ok(())
@@ -71,7 +119,22 @@ pub async fn cmd_movers(market: Market) -> Result<()> {
 
 // ── Sectors ──
 
-pub async fn cmd_sectors(market: Market) -> Result<()> {
+/// One sector in `sectors --json/--csv`, best performer first.
+#[derive(Debug, Serialize)]
+pub(crate) struct SectorRow {
+    pub(crate) sector: String,
+    pub(crate) symbol: String,
+    pub(crate) price: Option<f64>,
+    pub(crate) change_percent: Option<f64>,
+    pub(crate) currency: Option<String>,
+}
+
+impl CsvRow for SectorRow {
+    const COLUMNS: &'static [&'static str] =
+        &["sector", "symbol", "price", "change_percent", "currency"];
+}
+
+pub async fn cmd_sectors(market: Market, fmt: Format) -> Result<()> {
     let client = YahooClient::new().await?;
     let (sectors, title) = match market {
         Market::Us => (market::US_SECTOR_ETFS, "US Sector Performance"),
@@ -79,12 +142,36 @@ pub async fn cmd_sectors(market: Market) -> Result<()> {
     };
     let symbols: Vec<&str> = sectors.iter().map(|(s, _)| *s).collect();
     let mut quotes = client.get_quote(&symbols).await?;
+    // Best first; sectors without a change today go last.
     quotes.sort_by(|a, b| {
-        b.regular_market_change_percent
-            .unwrap_or(0.0)
-            .partial_cmp(&a.regular_market_change_percent.unwrap_or(0.0))
-            .unwrap()
+        let key = |q: &crate::api::Quote| q.regular_market_change_percent.unwrap_or(f64::MIN);
+        key(b)
+            .partial_cmp(&key(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
+    if !fmt.is_table() {
+        let rows: Vec<SectorRow> = quotes
+            .iter()
+            .map(|q| {
+                let sym = q.symbol.clone().unwrap_or_default();
+                let name = sectors
+                    .iter()
+                    .find(|(s, _)| *s == sym)
+                    .map_or(sym.clone(), |(_, n)| n.to_string());
+                SectorRow {
+                    sector: name,
+                    symbol: sym,
+                    price: q.regular_market_price,
+                    change_percent: q.regular_market_change_percent,
+                    currency: q.currency.clone(),
+                }
+            })
+            .collect();
+        return match fmt {
+            Format::Csv => output::print_csv(&rows),
+            _ => output::print_json(&rows),
+        };
+    }
 
     print_header(title);
     println!(
@@ -542,7 +629,33 @@ pub async fn cmd_sentiment() -> Result<()> {
 
 // ── Tax Harvest ──
 
-pub async fn cmd_screen(category: &str, market: Market) -> Result<()> {
+/// One match in `screen --json/--csv`.
+#[derive(Debug, Serialize)]
+pub(crate) struct ScreenRow {
+    pub(crate) symbol: String,
+    pub(crate) name: Option<String>,
+    pub(crate) price: Option<f64>,
+    pub(crate) change_percent: Option<f64>,
+    pub(crate) pe: Option<f64>,
+    pub(crate) market_cap: Option<f64>,
+    pub(crate) dividend_yield: Option<f64>,
+    pub(crate) currency: Option<String>,
+}
+
+impl CsvRow for ScreenRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "symbol",
+        "name",
+        "price",
+        "change_percent",
+        "pe",
+        "market_cap",
+        "dividend_yield",
+        "currency",
+    ];
+}
+
+pub async fn cmd_screen(category: &str, market: Market, fmt: Format) -> Result<()> {
     let client = YahooClient::new().await?;
     let symbols = match market {
         Market::Us => market::US_POPULAR,
@@ -560,7 +673,8 @@ pub async fn cmd_screen(category: &str, market: Market) -> Result<()> {
             quotes.iter().filter(|q| q.trailing_annual_dividend_yield.is_some_and(|d| d > 0.02)).collect()),
         "momentum" => {
             let mut s: Vec<&crate::api::Quote> = quotes.iter().collect();
-            s.sort_by(|a, b| b.regular_market_change_percent.unwrap_or(0.0).partial_cmp(&a.regular_market_change_percent.unwrap_or(0.0)).unwrap());
+            s.retain(|q| q.regular_market_change_percent.is_some());
+            s.sort_by(|a, b| b.regular_market_change_percent.partial_cmp(&a.regular_market_change_percent).unwrap_or(std::cmp::Ordering::Equal));
             s.truncate(15);
             ("Momentum Leaders (top daily gainers)".into(), s)
         }
@@ -580,6 +694,26 @@ pub async fn cmd_screen(category: &str, market: Market) -> Result<()> {
                 .partial_cmp(&a.market_cap.unwrap_or(0.0))
                 .unwrap()
         });
+    }
+
+    if !fmt.is_table() {
+        let rows: Vec<ScreenRow> = filtered
+            .iter()
+            .map(|q| ScreenRow {
+                symbol: q.symbol.clone().unwrap_or_default(),
+                name: q.short_name.clone().or_else(|| q.long_name.clone()),
+                price: q.regular_market_price,
+                change_percent: q.regular_market_change_percent,
+                pe: q.trailing_pe,
+                market_cap: q.market_cap,
+                dividend_yield: q.trailing_annual_dividend_yield,
+                currency: q.currency.clone(),
+            })
+            .collect();
+        return match fmt {
+            Format::Csv => output::print_csv(&rows),
+            _ => output::print_json(&rows),
+        };
     }
 
     print_header(&title);

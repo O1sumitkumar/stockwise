@@ -2,11 +2,90 @@
 
 use super::*;
 
+/// One closed trade in `backtest --json/--csv`, oldest first. Dates are the
+/// bar dates (UTC) of the entry and exit closes.
+#[derive(Debug, Serialize)]
+pub(crate) struct TradeRow {
+    pub(crate) number: usize,
+    pub(crate) entry_date: Option<String>,
+    pub(crate) exit_date: Option<String>,
+    pub(crate) entry_price: f64,
+    pub(crate) exit_price: f64,
+    pub(crate) pnl_percent: f64,
+}
+
+impl CsvRow for TradeRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "number",
+        "entry_date",
+        "exit_date",
+        "entry_price",
+        "exit_price",
+        "pnl_percent",
+    ];
+}
+
+/// Trades with dates looked up in `close_times` (one timestamp per close).
+pub(crate) fn trade_rows(result: &backtest::BacktestResult, close_times: &[i64]) -> Vec<TradeRow> {
+    let date = |i: usize| {
+        close_times
+            .get(i)
+            .and_then(|&ts| chrono::DateTime::from_timestamp(ts, 0))
+            .map(|d| d.format("%Y-%m-%d").to_string())
+    };
+    result
+        .trades
+        .iter()
+        .enumerate()
+        .map(|(i, t)| TradeRow {
+            number: i + 1,
+            entry_date: date(t.entry_idx),
+            exit_date: date(t.exit_idx),
+            entry_price: t.entry_price,
+            exit_price: t.exit_price,
+            pnl_percent: round(t.pnl_pct, 2),
+        })
+        .collect()
+}
+
+/// `backtest --json`: summary statistics, every trade, and the equity curve
+/// (starting at 100). Percentages are rounded to 2 decimals.
+pub(crate) fn backtest_json(
+    symbol: &str,
+    currency: Option<&str>,
+    strategy: &str,
+    period: &str,
+    bars: usize,
+    result: &backtest::BacktestResult,
+    trades: &[TradeRow],
+) -> serde_json::Value {
+    serde_json::json!({
+        "symbol": symbol,
+        "currency": currency,
+        "strategy": strategy,
+        "period": period,
+        "interval": "1d",
+        "bars": bars,
+        "total_return_percent": round(result.total_return, 2),
+        "buy_hold_return_percent": round(result.buy_hold_return, 2),
+        "alpha_percent": round(result.total_return - result.buy_hold_return, 2),
+        "trade_count": result.trades.len(),
+        "win_rate_percent": round(result.win_rate, 2),
+        "avg_win_percent": round(result.avg_win, 2),
+        "avg_loss_percent": round(result.avg_loss, 2),
+        "max_drawdown_percent": round(result.max_drawdown, 2),
+        "sharpe": round_opt(result.sharpe, 3),
+        "trades": trades,
+        "equity_curve": result.equity_curve.iter().map(|v| round(*v, 4)).collect::<Vec<_>>(),
+    })
+}
+
 pub async fn cmd_backtest(
     symbol: &str,
     strategy: &str,
     period: &str,
     market: Market,
+    fmt: Format,
 ) -> Result<()> {
     let resolved = market::resolve_symbol(symbol, market);
     let client = YahooClient::new().await?;
@@ -43,11 +122,11 @@ pub async fn cmd_backtest(
         .unwrap_or_default();
 
     if closes.len() < 50 {
-        println!(
-            "{}",
-            "Not enough data for backtesting. Use a longer period.".red()
+        bail!(
+            "Not enough price data to backtest {} ({} bars) — try a longer period, e.g. -p 5y",
+            resolved,
+            closes.len()
         );
-        return Ok(());
     }
 
     let result = backtest::run_backtest(strategy, &closes, &highs, &lows, &volumes);
@@ -58,6 +137,38 @@ pub async fn cmd_backtest(
             strategy
         ),
     };
+
+    if !fmt.is_table() {
+        // Timestamp of each non-null close, so trade indexes map to dates.
+        let close_times: Vec<i64> = chart
+            .timestamp
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .zip(
+                chart
+                    .indicators
+                    .quote
+                    .first()
+                    .and_then(|q| q.close.as_deref())
+                    .unwrap_or_default(),
+            )
+            .filter_map(|(&ts, c)| c.map(|_| ts))
+            .collect();
+        let trades = trade_rows(&result, &close_times);
+        if fmt == Format::Csv {
+            return output::print_csv(&trades);
+        }
+        return output::print_json(&backtest_json(
+            &resolved,
+            cur,
+            strategy,
+            period,
+            closes.len(),
+            &result,
+            &trades,
+        ));
+    }
 
     print_header(&format!(
         "Backtest: {} — {} strategy ({})",
@@ -185,7 +296,13 @@ pub async fn cmd_backtest(
 
 // ── SIP/DCA Simulator ──
 
-pub async fn cmd_sip(symbol: &str, amount: f64, period: &str, market: Market) -> Result<()> {
+pub async fn cmd_sip(
+    symbol: &str,
+    amount: f64,
+    period: &str,
+    market: Market,
+    fmt: Format,
+) -> Result<()> {
     let resolved = market::resolve_symbol(symbol, market);
     let client = YahooClient::new().await?;
     let chart = client.get_chart(&resolved, period, "1mo").await?;
@@ -225,6 +342,25 @@ pub async fn cmd_sip(symbol: &str, amount: f64, period: &str, market: Market) ->
     // XIRR: each instalment earns only from its own date, not the whole period.
     cashflows.push(((n - 1) as f64 / 12.0, final_value));
     let xirr = technical::xirr(&cashflows).map(|r| r * 100.0);
+
+    if fmt == Format::Json {
+        return output::print_json(&serde_json::json!({
+            "symbol": resolved,
+            "currency": cur,
+            "period": period,
+            "interval": "1mo",
+            "monthly_amount": amount,
+            "months": n,
+            "total_invested": round(total_invested, 2),
+            "final_value": round(final_value, 2),
+            "profit": round(final_value - total_invested, 2),
+            "total_return_percent": round(total_return, 2),
+            "xirr_percent": round_opt(xirr, 2),
+            "total_units": round(total_units, 4),
+            "avg_cost": round(total_invested / total_units, 2),
+            "current_price": closes[n - 1],
+        }));
+    }
 
     print_header(&format!(
         "SIP Simulator: {} — {}{}/month for {}",
@@ -284,7 +420,13 @@ pub async fn cmd_sip(symbol: &str, amount: f64, period: &str, market: Market) ->
 
 // ── Forecast ──
 
-pub async fn cmd_whatif(symbol: &str, amount: f64, date_str: &str, market: Market) -> Result<()> {
+pub async fn cmd_whatif(
+    symbol: &str,
+    amount: f64,
+    date_str: &str,
+    market: Market,
+    fmt: Format,
+) -> Result<()> {
     let resolved = market::resolve_symbol(symbol, market);
     let client = YahooClient::new().await?;
 
@@ -346,7 +488,9 @@ pub async fn cmd_whatif(symbol: &str, amount: f64, date_str: &str, market: Marke
     }
 
     let buy_price = series[best_idx].1;
-    let current = series.last().map(|(_, p)| *p).unwrap_or(0.0);
+    let Some(current) = series.last().map(|(_, p)| *p) else {
+        bail!("No price data available for that range");
+    };
     if buy_price <= 0.0 {
         bail!("Could not find a price for that date (use YYYY-MM-DD on or after the listing date)");
     }
@@ -363,6 +507,28 @@ pub async fn cmd_whatif(symbol: &str, amount: f64, date_str: &str, market: Marke
     } else {
         pnl_pct
     };
+
+    if fmt == Format::Json {
+        let buy_date = chrono::DateTime::from_timestamp(series[best_idx].0, 0)
+            .map(|d| d.format("%Y-%m-%d").to_string());
+        return output::print_json(&serde_json::json!({
+            "symbol": resolved,
+            "currency": cur,
+            "amount": amount,
+            "date": date_str,
+            "buy_date": buy_date,
+            "buy_price": buy_price,
+            "shares": shares,
+            "invested": round(invested, 2),
+            "current_price": current,
+            "value": round(value, 2),
+            "pnl": round(pnl, 2),
+            "pnl_percent": round(pnl_pct, 2),
+            "cagr_percent": round(cagr, 2),
+            "days": days,
+            "years": round(years, 2),
+        }));
+    }
 
     print_header(&format!(
         "What If: {}{:.0} in {} on {}",

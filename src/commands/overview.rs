@@ -2,7 +2,76 @@
 
 use super::*;
 
-pub async fn cmd_quote(symbols: &[String], market: Market, json: bool) -> Result<()> {
+/// One quote as `quote --csv` prints it (`quote --json` keeps Yahoo's
+/// camelCase fields).
+#[derive(Debug, Serialize)]
+pub(crate) struct QuoteRow {
+    pub(crate) symbol: Option<String>,
+    pub(crate) name: Option<String>,
+    pub(crate) currency: Option<String>,
+    pub(crate) price: Option<f64>,
+    pub(crate) change: Option<f64>,
+    pub(crate) change_percent: Option<f64>,
+    pub(crate) open: Option<f64>,
+    pub(crate) day_low: Option<f64>,
+    pub(crate) day_high: Option<f64>,
+    pub(crate) year_low: Option<f64>,
+    pub(crate) year_high: Option<f64>,
+    pub(crate) volume: Option<u64>,
+    pub(crate) avg_volume_3m: Option<u64>,
+    pub(crate) market_cap: Option<f64>,
+    pub(crate) pe_ttm: Option<f64>,
+    pub(crate) eps_ttm: Option<f64>,
+    pub(crate) dividend_yield: Option<f64>,
+}
+
+impl CsvRow for QuoteRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "symbol",
+        "name",
+        "currency",
+        "price",
+        "change",
+        "change_percent",
+        "open",
+        "day_low",
+        "day_high",
+        "year_low",
+        "year_high",
+        "volume",
+        "avg_volume_3m",
+        "market_cap",
+        "pe_ttm",
+        "eps_ttm",
+        "dividend_yield",
+    ];
+}
+
+impl From<&crate::api::Quote> for QuoteRow {
+    fn from(q: &crate::api::Quote) -> Self {
+        Self {
+            symbol: q.symbol.clone(),
+            name: q.long_name.clone().or_else(|| q.short_name.clone()),
+            currency: q.currency.clone(),
+            price: q.regular_market_price,
+            change: q.regular_market_change,
+            change_percent: q.regular_market_change_percent,
+            open: q.regular_market_open,
+            day_low: q.regular_market_day_low,
+            day_high: q.regular_market_day_high,
+            year_low: q.fifty_two_week_low,
+            year_high: q.fifty_two_week_high,
+            volume: q.regular_market_volume,
+            avg_volume_3m: q.average_daily_volume_3_month,
+            market_cap: q.market_cap,
+            pe_ttm: q.trailing_pe,
+            eps_ttm: q.eps_trailing_twelve_months,
+            dividend_yield: q.trailing_annual_dividend_yield,
+        }
+    }
+}
+
+pub async fn cmd_quote(symbols: &[String], market: Market, fmt: Format) -> Result<()> {
     let resolved = resolve_symbols(symbols, market);
     let client = YahooClient::new().await?;
     let sym_refs: Vec<&str> = resolved.iter().map(|s| s.as_str()).collect();
@@ -32,8 +101,13 @@ pub async fn cmd_quote(symbols: &[String], market: Market, json: bool) -> Result
         return Err(missing_err());
     }
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&quotes)?);
+    if !fmt.is_table() {
+        if fmt == Format::Json {
+            output::print_json(&quotes)?;
+        } else {
+            let rows: Vec<QuoteRow> = quotes.iter().map(QuoteRow::from).collect();
+            output::print_csv(&rows)?;
+        }
         return if missing.is_empty() {
             Ok(())
         } else {
@@ -123,7 +197,31 @@ pub async fn cmd_quote(symbols: &[String], market: Market, json: bool) -> Result
     }
 }
 
-pub async fn cmd_markets(market: Market, json: bool) -> Result<()> {
+/// One index as `markets --json/--csv` prints it.
+#[derive(Debug, Serialize)]
+pub(crate) struct IndexRow {
+    pub(crate) region: &'static str,
+    pub(crate) symbol: String,
+    pub(crate) name: String,
+    pub(crate) price: Option<f64>,
+    pub(crate) change: Option<f64>,
+    pub(crate) change_percent: Option<f64>,
+    pub(crate) currency: Option<String>,
+}
+
+impl CsvRow for IndexRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "region",
+        "symbol",
+        "name",
+        "price",
+        "change",
+        "change_percent",
+        "currency",
+    ];
+}
+
+pub async fn cmd_markets(market: Market, fmt: Format) -> Result<()> {
     let client = YahooClient::new().await?;
 
     let sections: Vec<(&str, &[(&str, &str)])> = match market {
@@ -142,7 +240,7 @@ pub async fn cmd_markets(market: Market, json: bool) -> Result<()> {
         let symbols: Vec<&str> = indices.iter().map(|(sym, _)| *sym).collect();
         let quotes = client.get_quote(&symbols).await?;
 
-        if json {
+        if !fmt.is_table() {
             for q in &quotes {
                 let q_sym = q.symbol.as_deref().unwrap_or("");
                 let label = indices
@@ -150,15 +248,15 @@ pub async fn cmd_markets(market: Market, json: bool) -> Result<()> {
                     .find(|(sym, _)| *sym == q_sym)
                     .map(|(_, name)| *name)
                     .unwrap_or(q_sym);
-                rows.push(serde_json::json!({
-                    "region": title,
-                    "symbol": q_sym,
-                    "name": label,
-                    "price": q.regular_market_price,
-                    "change": q.regular_market_change,
-                    "change_percent": q.regular_market_change_percent,
-                    "currency": q.currency,
-                }));
+                rows.push(IndexRow {
+                    region: title,
+                    symbol: q_sym.to_string(),
+                    name: label.to_string(),
+                    price: q.regular_market_price,
+                    change: q.regular_market_change,
+                    change_percent: q.regular_market_change_percent,
+                    currency: q.currency.clone(),
+                });
             }
             continue;
         }
@@ -188,12 +286,14 @@ pub async fn cmd_markets(market: Market, json: bool) -> Result<()> {
         }
     }
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&rows)?);
-        return Ok(());
+    match fmt {
+        Format::Json => output::print_json(&rows),
+        Format::Csv => output::print_csv(&rows),
+        Format::Table => {
+            println!();
+            Ok(())
+        }
     }
-    println!();
-    Ok(())
 }
 
 // ── Watchlist ──
@@ -351,12 +451,38 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
 
 // ── Search ──
 
-pub async fn cmd_search(query: &str, json: bool) -> Result<()> {
+/// One search hit as `search --csv` prints it (`search --json` keeps
+/// Yahoo's field names).
+#[derive(Debug, Serialize)]
+pub(crate) struct SearchRow {
+    pub(crate) symbol: Option<String>,
+    pub(crate) name: Option<String>,
+    pub(crate) quote_type: Option<String>,
+    pub(crate) exchange: Option<String>,
+}
+
+impl CsvRow for SearchRow {
+    const COLUMNS: &'static [&'static str] = &["symbol", "name", "quote_type", "exchange"];
+}
+
+pub async fn cmd_search(query: &str, fmt: Format) -> Result<()> {
     let client = YahooClient::new().await?;
     let results = client.search(query).await?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&results)?);
-        return Ok(());
+    match fmt {
+        Format::Json => return output::print_json(&results),
+        Format::Csv => {
+            let rows: Vec<SearchRow> = results
+                .iter()
+                .map(|r| SearchRow {
+                    symbol: r.symbol.clone(),
+                    name: r.long_name.clone().or_else(|| r.short_name.clone()),
+                    quote_type: r.quote_type.clone(),
+                    exchange: r.exchange.clone(),
+                })
+                .collect();
+            return output::print_csv(&rows);
+        }
+        Format::Table => {}
     }
     if results.is_empty() {
         bail!("No tickers match '{}'", query);
@@ -389,18 +515,51 @@ pub async fn cmd_search(query: &str, json: bool) -> Result<()> {
 // ── Intraday Bot ──
 
 /// `stockwise doctor` — one screen that answers "is my setup working?".
-pub async fn cmd_doctor(market: Market) -> Result<()> {
+pub async fn cmd_doctor(market: Market, sources: crate::config::CliSources) -> Result<()> {
     let ok = |s: &str| format!("{} {}", "✓".green(), s);
     let warn = |s: &str| format!("{} {}", "!".yellow(), s);
     let bad = |s: &str| format!("{} {}", "✗".red(), s);
 
     print_header(&format!("StockWise {} — doctor", env!("CARGO_PKG_VERSION")));
 
-    // Defaults
-    let market_src = if std::env::var_os("STOCKWISE_MARKET").is_some() {
-        "from STOCKWISE_MARKET"
-    } else {
-        "default; change with -m or STOCKWISE_MARKET"
+    // Config file and defaults
+    let cfg = crate::config::state();
+    let cfg_path = cfg
+        .and_then(|s| s.path.as_ref())
+        .map_or("unknown (no config directory)".to_string(), |p| {
+            p.display().to_string()
+        });
+    let cfg_invalid = match cfg.map(|s| &s.status) {
+        Some(crate::config::Status::Loaded) => {
+            print_kv("Config file", &ok(&format!("{} (loaded)", cfg_path)));
+            None
+        }
+        Some(crate::config::Status::Invalid(msg)) => {
+            print_kv("Config file", &bad(&format!("{} (invalid)", cfg_path)));
+            for line in msg.lines() {
+                println!("  {:<28} {}", "", line.red());
+            }
+            Some(cfg_path)
+        }
+        _ => {
+            print_kv(
+                "Config file",
+                &format!(
+                    "{} {}",
+                    cfg_path,
+                    "(none; optional — `stockwise config init` creates one)".dimmed()
+                ),
+            );
+            None
+        }
+    };
+    let market_src = match sources.market {
+        crate::config::Source::Flag => "from -m/--market".to_string(),
+        crate::config::Source::Env => "from STOCKWISE_MARKET".to_string(),
+        crate::config::Source::File => "from the config file".to_string(),
+        crate::config::Source::Default => {
+            "default; change with -m, STOCKWISE_MARKET or the config file".to_string()
+        }
     };
     let market_name = match market {
         Market::In => "in (India, NSE)",
@@ -505,6 +664,12 @@ pub async fn cmd_doctor(market: Market) -> Result<()> {
     print_kv("Angel One", &broker);
     println!();
 
+    if let Some(path) = cfg_invalid {
+        bail!(
+            "Config file {} is invalid — fix it, or replace it with `stockwise config init --force`",
+            path
+        );
+    }
     if !yahoo {
         bail!("Market data is unreachable");
     }

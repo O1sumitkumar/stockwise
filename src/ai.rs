@@ -6,11 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
-/// Ollama server URL. Honours the standard `OLLAMA_HOST` variable
-/// (`host:port` or a full URL), defaulting to the local server.
-fn ollama_url() -> String {
-    match std::env::var("OLLAMA_HOST") {
-        Ok(h) if !h.trim().is_empty() => {
+/// Ollama server URL. Honours the standard `OLLAMA_HOST` variable, then
+/// `ollama_host` in the config file (`host:port` or a full URL), defaulting
+/// to the local server.
+pub(crate) fn ollama_url() -> String {
+    match crate::config::setting("OLLAMA_HOST", |c| c.ollama_host.as_ref()) {
+        Some(h) if !h.trim().is_empty() => {
             let h = h.trim().trim_end_matches('/');
             if h.starts_with("http://") || h.starts_with("https://") {
                 h.to_string()
@@ -22,6 +23,12 @@ fn ollama_url() -> String {
     }
 }
 const DEFAULT_MODEL: &str = "qwen3:14b";
+
+/// Ollama model: `STOCKWISE_MODEL`, then `model` in the config file.
+pub(crate) fn model_name() -> String {
+    crate::config::setting("STOCKWISE_MODEL", |c| c.model.as_ref())
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string())
+}
 const AI_CACHE_PREFIX: &str = "stockwise:ai:";
 const AI_CACHE_TTL_SECS: i64 = 3600; // 1 hour for AI responses
 
@@ -67,7 +74,7 @@ pub struct AiClient {
 
 impl AiClient {
     pub async fn connect() -> Self {
-        let model = std::env::var("STOCKWISE_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+        let model = model_name();
         let redis = crate::api::connect_redis().await;
         Self {
             client: reqwest::Client::builder()
@@ -81,7 +88,7 @@ impl AiClient {
 
     // Sync constructor for backward compat (no Redis)
     pub fn new() -> Self {
-        let model = std::env::var("STOCKWISE_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+        let model = model_name();
         Self {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))

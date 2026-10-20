@@ -37,175 +37,271 @@ pub async fn cmd_portfolio(
                 bail!("{} is not in your portfolio", resolved);
             }
         }
-        "show" | "list" => {
-            if portfolio.holdings.is_empty() {
-                println!(
-                    "\n  {}",
-                    "Portfolio is empty. Use 'stockwise portfolio add <SYMBOL> <SHARES> <COST>' to add holdings."
-                        .dimmed()
-                );
-                return Ok(());
-            }
-
-            // Fetch current prices for all holdings
-            let symbols: Vec<String> = portfolio
-                .holdings
-                .iter()
-                .map(|h| h.symbol.clone())
-                .collect();
-            let sym_refs: Vec<&str> = symbols.iter().map(|s| s.as_str()).collect();
-            let client = YahooClient::new().await?;
-            let quotes = client.get_quote(&sym_refs).await?;
-
-            print_header("Your Portfolio");
-            println!(
-                "  {:<12} {:>8} {:>10} {:>10} {:>12} {:>10} {:>10}",
-                "Symbol".bold(),
-                "Shares".bold(),
-                "Avg Cost".bold(),
-                "Price".bold(),
-                "Value".bold(),
-                "P&L".bold(),
-                "P&L %".bold(),
-            );
-            println!("  {}", "─".repeat(76).dimmed());
-
-            let mut total_cost = 0.0;
-            let mut total_value = 0.0;
-
-            let mut unpriced: Vec<String> = Vec::new();
-            for holding in &portfolio.holdings {
-                let quote = quotes
-                    .iter()
-                    .find(|q| q.symbol.as_deref() == Some(&holding.symbol));
-                let current_price = quote.and_then(|q| q.regular_market_price);
-                let cur = quote.and_then(|q| q.currency.as_deref());
-                let csym = market::currency_symbol(cur);
-
-                // No live price (delisted, renamed, or a bad symbol): show N/A
-                // and leave it out of the totals rather than valuing it at 0.
-                let Some(price) = current_price else {
-                    println!(
-                        "  {:<12} {:>8.2} {:>10} {:>10} {:>12} {:>10} {:>10}",
-                        holding.symbol.yellow(),
-                        holding.shares,
-                        format_price(holding.avg_cost, cur),
-                        "N/A",
-                        "N/A",
-                        "—",
-                        "—",
-                    );
-                    unpriced.push(holding.symbol.clone());
-                    continue;
-                };
-                let value = holding.shares * price;
-                let cost_basis = holding.shares * holding.avg_cost;
-                let pnl = value - cost_basis;
-                let pnl_pct = if cost_basis > 0.0 {
-                    (pnl / cost_basis) * 100.0
-                } else {
-                    0.0
-                };
-
-                total_cost += cost_basis;
-                total_value += value;
-
-                let pnl_str = if pnl >= 0.0 {
-                    format!("+{}{:.2}", csym, pnl).green().to_string()
-                } else {
-                    format!("-{}{:.2}", csym, pnl.abs()).red().to_string()
-                };
-                let pnl_pct_str = if pnl_pct >= 0.0 {
-                    format!("+{:.2}%", pnl_pct).green().to_string()
-                } else {
-                    format!("{:.2}%", pnl_pct).red().to_string()
-                };
-
-                println!(
-                    "  {:<12} {:>8.2} {:>10} {:>10} {:>12} {:>10} {:>10}",
-                    holding.symbol.cyan(),
-                    holding.shares,
-                    format_price(holding.avg_cost, cur),
-                    format_price(price, cur),
-                    format_price(value, cur),
-                    pnl_str,
-                    pnl_pct_str,
-                );
-            }
-
-            let total_pnl = total_value - total_cost;
-            let total_pnl_pct = if total_cost > 0.0 {
-                (total_pnl / total_cost) * 100.0
-            } else {
-                0.0
-            };
-
-            // Use first holding's currency for totals (mixed-currency portfolios just show numbers)
-            let total_cur = quotes.first().and_then(|q| q.currency.as_deref());
-            let tcsym = market::currency_symbol(total_cur);
-
-            println!("  {}", "─".repeat(76).dimmed());
-            let total_pnl_str = if total_pnl >= 0.0 {
-                format!("+{}{:.2}", tcsym, total_pnl)
-                    .green()
-                    .bold()
-                    .to_string()
-            } else {
-                format!("-{}{:.2}", tcsym, total_pnl.abs())
-                    .red()
-                    .bold()
-                    .to_string()
-            };
-            let total_pnl_pct_str = if total_pnl_pct >= 0.0 {
-                format!("+{:.2}%", total_pnl_pct).green().bold().to_string()
-            } else {
-                format!("{:.2}%", total_pnl_pct).red().bold().to_string()
-            };
-            println!(
-                "  {:<12} {:>8} {:>10} {:>10} {:>12} {:>10} {:>10}",
-                "TOTAL".bold(),
-                "",
-                format_price(total_cost, total_cur),
-                "",
-                format_price(total_value, total_cur).bold(),
-                total_pnl_str,
-                total_pnl_pct_str,
-            );
-            if !unpriced.is_empty() {
-                println!(
-                    "\n  {} No live price for {} — excluded from totals. Check the symbol with `stockwise search`.",
-                    "!".yellow(),
-                    unpriced.join(", ")
-                );
-            }
-
-            // Allocation chart
-            if portfolio.holdings.len() > 1 {
-                print_section("Allocation");
-                let alloc_items: Vec<(&str, f64)> = portfolio
-                    .holdings
-                    .iter()
-                    .map(|h| {
-                        let price = quotes
-                            .iter()
-                            .find(|q| q.symbol.as_deref() == Some(&h.symbol))
-                            .and_then(|q| q.regular_market_price)
-                            .unwrap_or(0.0);
-                        (h.symbol.as_str(), h.shares * price)
-                    })
-                    .collect();
-                for line in charts::allocation_chart(&alloc_items) {
-                    println!("{}", line);
-                }
-            }
-            println!();
-        }
+        "show" | "list" => return cmd_portfolio_show(Format::Table).await,
         _ => bail!(
             "Unknown portfolio action '{}'. Use add, remove, or show",
             action
         ),
     }
 
+    Ok(())
+}
+
+/// One holding as `portfolio --json/--csv` prints it. Price-derived fields
+/// are null when there is no live price.
+#[derive(Debug, Serialize)]
+pub(crate) struct HoldingRow {
+    pub(crate) symbol: String,
+    pub(crate) shares: f64,
+    pub(crate) avg_cost: f64,
+    pub(crate) cost_basis: f64,
+    pub(crate) price: Option<f64>,
+    pub(crate) value: Option<f64>,
+    pub(crate) pnl: Option<f64>,
+    pub(crate) pnl_percent: Option<f64>,
+    pub(crate) weight_percent: Option<f64>,
+    pub(crate) currency: Option<String>,
+}
+
+impl CsvRow for HoldingRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "symbol",
+        "shares",
+        "avg_cost",
+        "cost_basis",
+        "price",
+        "value",
+        "pnl",
+        "pnl_percent",
+        "weight_percent",
+        "currency",
+    ];
+}
+
+/// Portfolio totals over the holdings that have a live price.
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct PortfolioTotals {
+    pub(crate) cost_basis: f64,
+    pub(crate) value: f64,
+    pub(crate) pnl: f64,
+    pub(crate) pnl_percent: f64,
+    pub(crate) currency: Option<String>,
+}
+
+fn pct_of(part: f64, whole: f64) -> f64 {
+    if whole > 0.0 {
+        part / whole * 100.0
+    } else {
+        0.0
+    }
+}
+
+/// Price each holding from `quotes`. Holdings without a live price stay in
+/// the rows (with null price fields) but are left out of the totals.
+pub(crate) fn holding_rows(
+    holdings: &[crate::portfolio::Holding],
+    quotes: &[crate::api::Quote],
+) -> (Vec<HoldingRow>, PortfolioTotals) {
+    let mut totals = PortfolioTotals {
+        // First holding's currency for totals (mixed-currency portfolios just show numbers).
+        currency: quotes.first().and_then(|q| q.currency.clone()),
+        ..Default::default()
+    };
+    let mut rows: Vec<HoldingRow> = holdings
+        .iter()
+        .map(|h| {
+            let quote = quotes
+                .iter()
+                .find(|q| q.symbol.as_deref() == Some(&h.symbol));
+            let price = quote.and_then(|q| q.regular_market_price);
+            let cost_basis = h.shares * h.avg_cost;
+            let value = price.map(|p| h.shares * p);
+            if let Some(v) = value {
+                totals.cost_basis += cost_basis;
+                totals.value += v;
+            }
+            HoldingRow {
+                symbol: h.symbol.clone(),
+                shares: h.shares,
+                avg_cost: h.avg_cost,
+                cost_basis: round(cost_basis, 2),
+                price,
+                value: round_opt(value, 2),
+                pnl: value.map(|v| round(v - cost_basis, 2)),
+                pnl_percent: value.map(|v| round(pct_of(v - cost_basis, cost_basis), 2)),
+                weight_percent: None,
+                currency: quote.and_then(|q| q.currency.clone()),
+            }
+        })
+        .collect();
+    for row in &mut rows {
+        row.weight_percent = row.value.map(|v| round(pct_of(v, totals.value), 2));
+    }
+    totals.pnl = round(totals.value - totals.cost_basis, 2);
+    totals.pnl_percent = round(
+        pct_of(totals.value - totals.cost_basis, totals.cost_basis),
+        2,
+    );
+    totals.cost_basis = round(totals.cost_basis, 2);
+    totals.value = round(totals.value, 2);
+    (rows, totals)
+}
+
+/// `portfolio [show]`: holdings with live P&L.
+pub async fn cmd_portfolio_show(fmt: Format) -> Result<()> {
+    let portfolio = Portfolio::load()?;
+    if portfolio.holdings.is_empty() && fmt.is_table() {
+        println!(
+            "\n  {}",
+            "Portfolio is empty. Use 'stockwise portfolio add <SYMBOL> <SHARES> <COST>' to add holdings."
+                .dimmed()
+        );
+        return Ok(());
+    }
+
+    let quotes = if portfolio.holdings.is_empty() {
+        Vec::new()
+    } else {
+        let symbols: Vec<&str> = portfolio
+            .holdings
+            .iter()
+            .map(|h| h.symbol.as_str())
+            .collect();
+        YahooClient::new().await?.get_quote(&symbols).await?
+    };
+    let (rows, totals) = holding_rows(&portfolio.holdings, &quotes);
+    let unpriced: Vec<&str> = rows
+        .iter()
+        .filter(|r| r.price.is_none())
+        .map(|r| r.symbol.as_str())
+        .collect();
+
+    match fmt {
+        Format::Json => {
+            return output::print_json(&serde_json::json!({
+                "holdings": rows,
+                "totals": totals,
+                "unpriced": unpriced,
+            }));
+        }
+        Format::Csv => return output::print_csv(&rows),
+        Format::Table => {}
+    }
+
+    print_header("Your Portfolio");
+    println!(
+        "  {:<12} {:>8} {:>10} {:>10} {:>12} {:>10} {:>10}",
+        "Symbol".bold(),
+        "Shares".bold(),
+        "Avg Cost".bold(),
+        "Price".bold(),
+        "Value".bold(),
+        "P&L".bold(),
+        "P&L %".bold(),
+    );
+    println!("  {}", "─".repeat(76).dimmed());
+
+    for row in &rows {
+        let cur = row.currency.as_deref();
+        let csym = market::currency_symbol(cur);
+
+        // No live price (delisted, renamed, or a bad symbol): show N/A
+        // and leave it out of the totals rather than valuing it at 0.
+        let (Some(price), Some(value), Some(pnl), Some(pnl_pct)) =
+            (row.price, row.value, row.pnl, row.pnl_percent)
+        else {
+            println!(
+                "  {:<12} {:>8.2} {:>10} {:>10} {:>12} {:>10} {:>10}",
+                row.symbol.yellow(),
+                row.shares,
+                format_price(row.avg_cost, cur),
+                "N/A",
+                "N/A",
+                "—",
+                "—",
+            );
+            continue;
+        };
+
+        let pnl_str = if pnl >= 0.0 {
+            format!("+{}{:.2}", csym, pnl).green().to_string()
+        } else {
+            format!("-{}{:.2}", csym, pnl.abs()).red().to_string()
+        };
+        let pnl_pct_str = if pnl_pct >= 0.0 {
+            format!("+{:.2}%", pnl_pct).green().to_string()
+        } else {
+            format!("{:.2}%", pnl_pct).red().to_string()
+        };
+
+        println!(
+            "  {:<12} {:>8.2} {:>10} {:>10} {:>12} {:>10} {:>10}",
+            row.symbol.cyan(),
+            row.shares,
+            format_price(row.avg_cost, cur),
+            format_price(price, cur),
+            format_price(value, cur),
+            pnl_str,
+            pnl_pct_str,
+        );
+    }
+
+    let total_cur = totals.currency.as_deref();
+    let tcsym = market::currency_symbol(total_cur);
+
+    println!("  {}", "─".repeat(76).dimmed());
+    let total_pnl_str = if totals.pnl >= 0.0 {
+        format!("+{}{:.2}", tcsym, totals.pnl)
+            .green()
+            .bold()
+            .to_string()
+    } else {
+        format!("-{}{:.2}", tcsym, totals.pnl.abs())
+            .red()
+            .bold()
+            .to_string()
+    };
+    let total_pnl_pct_str = if totals.pnl_percent >= 0.0 {
+        format!("+{:.2}%", totals.pnl_percent)
+            .green()
+            .bold()
+            .to_string()
+    } else {
+        format!("{:.2}%", totals.pnl_percent)
+            .red()
+            .bold()
+            .to_string()
+    };
+    println!(
+        "  {:<12} {:>8} {:>10} {:>10} {:>12} {:>10} {:>10}",
+        "TOTAL".bold(),
+        "",
+        format_price(totals.cost_basis, total_cur),
+        "",
+        format_price(totals.value, total_cur).bold(),
+        total_pnl_str,
+        total_pnl_pct_str,
+    );
+    if !unpriced.is_empty() {
+        println!(
+            "\n  {} No live price for {} — excluded from totals. Check the symbol with `stockwise search`.",
+            "!".yellow(),
+            unpriced.join(", ")
+        );
+    }
+
+    // Allocation chart
+    if rows.len() > 1 {
+        print_section("Allocation");
+        let alloc_items: Vec<(&str, f64)> = rows
+            .iter()
+            .map(|r| (r.symbol.as_str(), r.value.unwrap_or(0.0)))
+            .collect();
+        for line in charts::allocation_chart(&alloc_items) {
+            println!("{}", line);
+        }
+    }
+    println!();
     Ok(())
 }
 
@@ -235,63 +331,125 @@ pub async fn cmd_watchlist(action: &str, symbols: &[String], market: Market) -> 
             }
             wl.save()?;
         }
-        "show" | "list" | "" => {
-            if wl.symbols.is_empty() {
-                println!(
-                    "\n  {}",
-                    "Watchlist is empty. Use 'stockwise watch add <SYMBOL>' to add.".dimmed()
-                );
-                return Ok(());
-            }
-
-            let client = YahooClient::new().await?;
-            let sym_refs: Vec<&str> = wl.symbols.iter().map(|s| s.as_str()).collect();
-            let quotes = client.get_quote(&sym_refs).await?;
-
-            print_header("Watchlist");
-            println!(
-                "  {:<12} {:>10} {:>12} {:>10} {:>14}",
-                "Symbol".bold(),
-                "Price".bold(),
-                "Change".bold(),
-                "Change %".bold(),
-                "Volume".bold(),
-            );
-            println!("  {}", "─".repeat(62).dimmed());
-
-            for q in &quotes {
-                let sym = q.symbol.as_deref().unwrap_or("???");
-                let cur = q.currency.as_deref();
-                let price = q.regular_market_price.unwrap_or(0.0);
-                let change = q.regular_market_change.unwrap_or(0.0);
-                let pct = q.regular_market_change_percent.unwrap_or(0.0);
-                let vol = q.regular_market_volume.unwrap_or(0);
-                let change_str = if change >= 0.0 {
-                    format!("+{:.2}", change).green().to_string()
-                } else {
-                    format!("{:.2}", change).red().to_string()
-                };
-                let pct_str = if pct >= 0.0 {
-                    format!("+{:.2}%", pct).green().to_string()
-                } else {
-                    format!("{:.2}%", pct).red().to_string()
-                };
-                println!(
-                    "  {:<12} {:>10} {:>12} {:>10} {:>14}",
-                    sym.cyan(),
-                    format_price(price, cur),
-                    change_str,
-                    pct_str,
-                    format_volume(vol),
-                );
-            }
-            println!();
-        }
+        "show" | "list" | "" => return cmd_watchlist_show(Format::Table).await,
         _ => bail!(
             "Unknown watch action '{}'. Use add, remove, or show",
             action
         ),
     }
+    Ok(())
+}
+
+/// One watchlist entry as `watch --json/--csv` prints it.
+#[derive(Debug, Serialize)]
+pub(crate) struct WatchRow {
+    pub(crate) symbol: String,
+    pub(crate) price: Option<f64>,
+    pub(crate) change: Option<f64>,
+    pub(crate) change_percent: Option<f64>,
+    pub(crate) volume: Option<u64>,
+    pub(crate) currency: Option<String>,
+}
+
+impl CsvRow for WatchRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "symbol",
+        "price",
+        "change",
+        "change_percent",
+        "volume",
+        "currency",
+    ];
+}
+
+/// One row per watched symbol, in watchlist order; nulls when Yahoo has no quote.
+pub(crate) fn watch_rows(symbols: &[String], quotes: &[crate::api::Quote]) -> Vec<WatchRow> {
+    symbols
+        .iter()
+        .map(|sym| {
+            let q = quotes.iter().find(|q| q.symbol.as_deref() == Some(sym));
+            WatchRow {
+                symbol: sym.clone(),
+                price: q.and_then(|q| q.regular_market_price),
+                change: q.and_then(|q| q.regular_market_change),
+                change_percent: q.and_then(|q| q.regular_market_change_percent),
+                volume: q.and_then(|q| q.regular_market_volume),
+                currency: q.and_then(|q| q.currency.clone()),
+            }
+        })
+        .collect()
+}
+
+/// `watch [show]`: the watchlist with live prices.
+pub async fn cmd_watchlist_show(fmt: Format) -> Result<()> {
+    let wl = Watchlist::load()?;
+    if wl.symbols.is_empty() && fmt.is_table() {
+        println!(
+            "\n  {}",
+            "Watchlist is empty. Use 'stockwise watch add <SYMBOL>' to add.".dimmed()
+        );
+        return Ok(());
+    }
+
+    let quotes = if wl.symbols.is_empty() {
+        Vec::new()
+    } else {
+        let sym_refs: Vec<&str> = wl.symbols.iter().map(|s| s.as_str()).collect();
+        YahooClient::new().await?.get_quote(&sym_refs).await?
+    };
+    let rows = watch_rows(&wl.symbols, &quotes);
+    match fmt {
+        Format::Json => return output::print_json(&rows),
+        Format::Csv => return output::print_csv(&rows),
+        Format::Table => {}
+    }
+
+    print_header("Watchlist");
+    println!(
+        "  {:<12} {:>10} {:>12} {:>10} {:>14}",
+        "Symbol".bold(),
+        "Price".bold(),
+        "Change".bold(),
+        "Change %".bold(),
+        "Volume".bold(),
+    );
+    println!("  {}", "─".repeat(62).dimmed());
+
+    for row in &rows {
+        let cur = row.currency.as_deref();
+        let Some(price) = row.price else {
+            println!(
+                "  {:<12} {:>10} {:>12} {:>10} {:>14}",
+                row.symbol.yellow(),
+                "N/A",
+                "—",
+                "—",
+                "—"
+            );
+            continue;
+        };
+        let change = row.change.unwrap_or(0.0);
+        let pct = row.change_percent.unwrap_or(0.0);
+        let change_str = if change >= 0.0 {
+            format!("+{:.2}", change).green().to_string()
+        } else {
+            format!("{:.2}", change).red().to_string()
+        };
+        let pct_str = if pct >= 0.0 {
+            format!("+{:.2}%", pct).green().to_string()
+        } else {
+            format!("{:.2}%", pct).red().to_string()
+        };
+        println!(
+            "  {:<12} {:>10} {:>12} {:>10} {:>14}",
+            row.symbol.cyan(),
+            format_price(price, cur),
+            change_str,
+            pct_str,
+            row.volume.map_or("N/A".to_string(), format_volume),
+        );
+    }
+    println!();
     Ok(())
 }
 
@@ -339,88 +497,192 @@ pub async fn cmd_alert(
                 bail!("No alert #{} — see `stockwise alert list`", idx);
             }
         }
-        "check" => {
-            if store.alerts.is_empty() {
-                println!("  {}", "No alerts configured.".dimmed());
-                return Ok(());
-            }
-            let a_syms: Vec<String> = store.alerts.iter().map(|a| a.symbol.clone()).collect();
-            let mut unique: Vec<&str> = a_syms.iter().map(|s| s.as_str()).collect();
-            unique.sort();
-            unique.dedup();
-            let client = YahooClient::new().await?;
-            let quotes = client.get_quote(&unique).await?;
-            print_header("Alert Check");
-            let mut triggered = 0;
-            for alert in &store.alerts {
-                let Some(price) = quotes
-                    .iter()
-                    .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()))
-                    .and_then(|q| q.regular_market_price)
-                else {
-                    println!(
-                        "  {} {} — no live price, skipped",
-                        "?".yellow(),
-                        alert.symbol.cyan()
-                    );
-                    continue;
-                };
-                let cur = quotes
-                    .iter()
-                    .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()))
-                    .and_then(|q| q.currency.as_deref());
-                let is_hit = match alert.condition {
-                    AlertCondition::Above => price >= alert.target,
-                    AlertCondition::Below => price <= alert.target,
-                };
-                let status = if is_hit {
-                    triggered += 1;
-                    "TRIGGERED".red().bold().to_string()
-                } else {
-                    "waiting".dimmed().to_string()
-                };
-                println!(
-                    "  {} {} {:.2} | Now: {} | {}",
-                    alert.symbol.cyan(),
-                    alert.condition,
-                    alert.target,
-                    format_price(price, cur),
-                    status
-                );
-            }
-            if triggered == 0 {
-                println!("\n  {}", "No alerts triggered.".dimmed());
-            } else {
-                println!("\n  {} {} alert(s) triggered!", "⚠".yellow(), triggered);
-            }
-            println!();
-        }
-        "list" | "show" | "" => {
-            if store.alerts.is_empty() {
-                println!(
-                    "\n  {}",
-                    "No alerts. Use 'stockwise alert add <SYMBOL> above/below <PRICE>'.".dimmed()
-                );
-                return Ok(());
-            }
-            print_header("Price Alerts");
-            for (i, a) in store.alerts.iter().enumerate() {
-                println!(
-                    "  #{} {} {} {:.2}  (set {})",
-                    i,
-                    a.symbol.cyan(),
-                    a.condition,
-                    a.target,
-                    a.created_at.dimmed()
-                );
-            }
-            println!();
-        }
+        "check" => return cmd_alert_check(Format::Table).await,
+        "list" | "show" | "" => return cmd_alert_list(Format::Table),
         _ => bail!(
             "Unknown alert action '{}'. Use add, remove, check, or list",
             action
         ),
     }
+    Ok(())
+}
+
+/// One alert as `alert list --json/--csv` prints it. `index` is the number
+/// `alert remove` takes.
+#[derive(Debug, Serialize)]
+pub(crate) struct AlertRow {
+    pub(crate) index: usize,
+    pub(crate) symbol: String,
+    pub(crate) condition: String,
+    pub(crate) target: f64,
+    pub(crate) created_at: String,
+}
+
+impl CsvRow for AlertRow {
+    const COLUMNS: &'static [&'static str] =
+        &["index", "symbol", "condition", "target", "created_at"];
+}
+
+fn alert_rows(store: &AlertStore) -> Vec<AlertRow> {
+    store
+        .alerts
+        .iter()
+        .enumerate()
+        .map(|(i, a)| AlertRow {
+            index: i,
+            symbol: a.symbol.clone(),
+            condition: a.condition.to_string(),
+            target: a.target,
+            created_at: a.created_at.clone(),
+        })
+        .collect()
+}
+
+/// `alert [list]`.
+pub fn cmd_alert_list(fmt: Format) -> Result<()> {
+    let store = AlertStore::load()?;
+    let rows = alert_rows(&store);
+    match fmt {
+        Format::Json => return output::print_json(&rows),
+        Format::Csv => return output::print_csv(&rows),
+        Format::Table => {}
+    }
+    if rows.is_empty() {
+        println!(
+            "\n  {}",
+            "No alerts. Use 'stockwise alert add <SYMBOL> above/below <PRICE>'.".dimmed()
+        );
+        return Ok(());
+    }
+    print_header("Price Alerts");
+    for a in &rows {
+        println!(
+            "  #{} {} {} {:.2}  (set {})",
+            a.index,
+            a.symbol.cyan(),
+            a.condition,
+            a.target,
+            a.created_at.dimmed()
+        );
+    }
+    println!();
+    Ok(())
+}
+
+/// One alert checked against its live price, as `alert check --json/--csv`
+/// prints it. `status` is `triggered`, `waiting`, or `no_price`.
+#[derive(Debug, Serialize)]
+pub(crate) struct AlertCheckRow {
+    pub(crate) index: usize,
+    pub(crate) symbol: String,
+    pub(crate) condition: String,
+    pub(crate) target: f64,
+    pub(crate) price: Option<f64>,
+    pub(crate) currency: Option<String>,
+    pub(crate) status: &'static str,
+}
+
+impl CsvRow for AlertCheckRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "index",
+        "symbol",
+        "condition",
+        "target",
+        "price",
+        "currency",
+        "status",
+    ];
+}
+
+pub(crate) fn alert_check_rows(
+    alerts: &[crate::alerts::Alert],
+    quotes: &[crate::api::Quote],
+) -> Vec<AlertCheckRow> {
+    alerts
+        .iter()
+        .enumerate()
+        .map(|(i, alert)| {
+            let quote = quotes
+                .iter()
+                .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()));
+            let price = quote.and_then(|q| q.regular_market_price);
+            // No live price: never report it as triggered.
+            let status = match price {
+                None => "no_price",
+                Some(p) => {
+                    let hit = match alert.condition {
+                        AlertCondition::Above => p >= alert.target,
+                        AlertCondition::Below => p <= alert.target,
+                    };
+                    if hit { "triggered" } else { "waiting" }
+                }
+            };
+            AlertCheckRow {
+                index: i,
+                symbol: alert.symbol.clone(),
+                condition: alert.condition.to_string(),
+                target: alert.target,
+                price,
+                currency: quote.and_then(|q| q.currency.clone()),
+                status,
+            }
+        })
+        .collect()
+}
+
+/// `alert check`: every alert against its live price.
+pub async fn cmd_alert_check(fmt: Format) -> Result<()> {
+    let store = AlertStore::load()?;
+    if store.alerts.is_empty() && fmt.is_table() {
+        println!("  {}", "No alerts configured.".dimmed());
+        return Ok(());
+    }
+    let quotes = if store.alerts.is_empty() {
+        Vec::new()
+    } else {
+        let mut unique: Vec<&str> = store.alerts.iter().map(|a| a.symbol.as_str()).collect();
+        unique.sort();
+        unique.dedup();
+        YahooClient::new().await?.get_quote(&unique).await?
+    };
+    let rows = alert_check_rows(&store.alerts, &quotes);
+    match fmt {
+        Format::Json => return output::print_json(&rows),
+        Format::Csv => return output::print_csv(&rows),
+        Format::Table => {}
+    }
+
+    print_header("Alert Check");
+    for row in &rows {
+        let Some(price) = row.price else {
+            println!(
+                "  {} {} — no live price, skipped",
+                "?".yellow(),
+                row.symbol.cyan()
+            );
+            continue;
+        };
+        let status = if row.status == "triggered" {
+            "TRIGGERED".red().bold().to_string()
+        } else {
+            "waiting".dimmed().to_string()
+        };
+        println!(
+            "  {} {} {:.2} | Now: {} | {}",
+            row.symbol.cyan(),
+            row.condition,
+            row.target,
+            format_price(price, row.currency.as_deref()),
+            status
+        );
+    }
+    let triggered = rows.iter().filter(|r| r.status == "triggered").count();
+    if triggered == 0 {
+        println!("\n  {}", "No alerts triggered.".dimmed());
+    } else {
+        println!("\n  {} {} alert(s) triggered!", "⚠".yellow(), triggered);
+    }
+    println!();
     Ok(())
 }
 
@@ -1143,39 +1405,183 @@ pub(super) fn tax_year_label(country: &str, today: chrono::NaiveDate) -> String 
     }
 }
 
-pub async fn cmd_tax(country: &str, _market: Market) -> Result<()> {
+/// Tax rules per country: (name, STCG %, LTCG %, LTCG exemption, months for
+/// long-term, currency code, currency symbol).
+fn tax_rules(
+    country: &str,
+) -> Result<(&'static str, f64, f64, f64, u32, &'static str, &'static str)> {
+    Ok(match country.to_lowercase().as_str() {
+        "in" | "india" => ("India", 20.0, 12.5, 125000.0, 12, "INR", "₹"),
+        "us" | "usa" => ("United States", 37.0, 20.0, 0.0, 12, "USD", "$"),
+        "uk" => ("United Kingdom", 20.0, 20.0, 3000.0, 12, "GBP", "£"),
+        _ => bail!("Unsupported country '{}'. Use in, us, or uk", country),
+    })
+}
+
+/// One holding in the tax estimate, as `tax --json/--csv` prints it.
+/// `term` is `short` or `long`.
+#[derive(Debug, Serialize)]
+pub(crate) struct TaxRow {
+    pub(crate) symbol: String,
+    pub(crate) bought: String,
+    pub(crate) term: &'static str,
+    pub(crate) cost: f64,
+    pub(crate) value: f64,
+    pub(crate) gain: f64,
+    pub(crate) tax_rate_percent: f64,
+    pub(crate) tax: f64,
+}
+
+impl CsvRow for TaxRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "symbol",
+        "bought",
+        "term",
+        "cost",
+        "value",
+        "gain",
+        "tax_rate_percent",
+        "tax",
+    ];
+}
+
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct TaxSummary {
+    pub(crate) short_term_gains: f64,
+    pub(crate) short_term_losses: f64,
+    pub(crate) long_term_gains: f64,
+    pub(crate) long_term_losses: f64,
+    pub(crate) stcg_rate_percent: f64,
+    pub(crate) ltcg_rate_percent: f64,
+    pub(crate) ltcg_exemption: f64,
+    pub(crate) stcg_tax: f64,
+    pub(crate) ltcg_tax: f64,
+    pub(crate) total_tax: f64,
+    pub(crate) tax_saved_by_losses: f64,
+}
+
+/// Per-holding gains and the tax estimate. Holdings without a live price are
+/// returned by symbol and left out — a missing price is not a 100% loss.
+pub(crate) fn tax_report(
+    country: &str,
+    holdings: &[crate::portfolio::Holding],
+    quotes: &[crate::api::Quote],
+    today: chrono::NaiveDate,
+) -> Result<(Vec<TaxRow>, TaxSummary, Vec<String>)> {
+    let (_, stcg_rate, ltcg_rate, ltcg_exempt, holding_months, _, _) = tax_rules(country)?;
+    let mut sum = TaxSummary {
+        stcg_rate_percent: stcg_rate,
+        ltcg_rate_percent: ltcg_rate,
+        ltcg_exemption: ltcg_exempt,
+        ..Default::default()
+    };
+    let mut rows = Vec::new();
+    let mut unpriced = Vec::new();
+    for h in holdings {
+        let Some(price) = quotes
+            .iter()
+            .find(|q| q.symbol.as_deref() == Some(&h.symbol))
+            .and_then(|q| q.regular_market_price)
+        else {
+            unpriced.push(h.symbol.clone());
+            continue;
+        };
+        let cost = h.shares * h.avg_cost;
+        let value = h.shares * price;
+        let gain = value - cost;
+
+        // Long-term = held strictly longer than the holding period. Compare
+        // real dates so the day-of-month is respected.
+        let is_longterm = chrono::NaiveDate::parse_from_str(&h.added_at, "%Y-%m-%d")
+            .ok()
+            .map(|d| {
+                let threshold = d
+                    .checked_add_months(chrono::Months::new(holding_months))
+                    .unwrap_or(d);
+                today > threshold
+            })
+            .unwrap_or(false);
+        let tax_rate = if is_longterm { ltcg_rate } else { stcg_rate };
+
+        match (gain >= 0.0, is_longterm) {
+            (true, true) => sum.long_term_gains += gain,
+            (true, false) => sum.short_term_gains += gain,
+            (false, true) => sum.long_term_losses += gain.abs(),
+            (false, false) => sum.short_term_losses += gain.abs(),
+        }
+        let tax = if gain > 0.0 {
+            gain * tax_rate / 100.0
+        } else {
+            0.0
+        };
+        rows.push(TaxRow {
+            symbol: h.symbol.clone(),
+            bought: h.added_at.clone(),
+            term: if is_longterm { "long" } else { "short" },
+            cost: round(cost, 2),
+            value: round(value, 2),
+            gain: round(gain, 2),
+            tax_rate_percent: tax_rate,
+            tax: round(tax, 2),
+        });
+    }
+
+    // Net gains after offsetting losses
+    let net_stcg = (sum.short_term_gains - sum.short_term_losses).max(0.0);
+    let net_ltcg = (sum.long_term_gains - sum.long_term_losses - ltcg_exempt).max(0.0);
+    sum.stcg_tax = round(net_stcg * stcg_rate / 100.0, 2);
+    sum.ltcg_tax = round(net_ltcg * ltcg_rate / 100.0, 2);
+    sum.total_tax = round(sum.stcg_tax + sum.ltcg_tax, 2);
+    sum.tax_saved_by_losses = round(
+        sum.short_term_losses * stcg_rate / 100.0 + sum.long_term_losses * ltcg_rate / 100.0,
+        2,
+    );
+    sum.short_term_gains = round(sum.short_term_gains, 2);
+    sum.short_term_losses = round(sum.short_term_losses, 2);
+    sum.long_term_gains = round(sum.long_term_gains, 2);
+    sum.long_term_losses = round(sum.long_term_losses, 2);
+    Ok((rows, sum, unpriced))
+}
+
+pub async fn cmd_tax(country: &str, _market: Market, fmt: Format) -> Result<()> {
+    let (country_name, _, _, ltcg_exempt, _, currency_code, currency_sym) = tax_rules(country)?;
+    let today = chrono::Local::now().date_naive();
     let portfolio = Portfolio::load()?;
-    if portfolio.holdings.is_empty() {
+    if portfolio.holdings.is_empty() && fmt.is_table() {
         println!("\n  {}", "Portfolio is empty.".dimmed());
         return Ok(());
     }
 
-    let symbols: Vec<String> = portfolio
-        .holdings
-        .iter()
-        .map(|h| h.symbol.clone())
-        .collect();
-    let sym_refs: Vec<&str> = symbols.iter().map(|s| s.as_str()).collect();
-    let client = YahooClient::new().await?;
-    let quotes = client.get_quote(&sym_refs).await?;
-
-    let mut total_stcg = 0.0_f64; // short-term capital gains
-    let mut total_ltcg = 0.0_f64; // long-term capital gains
-    let mut total_stcl = 0.0_f64;
-    let mut total_ltcl = 0.0_f64;
-
-    let (country_name, stcg_rate, ltcg_rate, ltcg_exempt, holding_months, currency_sym) =
-        match country.to_lowercase().as_str() {
-            "in" | "india" => ("India", 20.0, 12.5, 125000.0, 12, "₹"),
-            "us" | "usa" => ("United States", 37.0, 20.0, 0.0, 12, "$"),
-            "uk" => ("United Kingdom", 20.0, 20.0, 3000.0, 12, "£"),
-            _ => bail!("Unsupported country '{}'. Use in, us, or uk", country),
-        };
+    let quotes = if portfolio.holdings.is_empty() {
+        Vec::new()
+    } else {
+        let sym_refs: Vec<&str> = portfolio
+            .holdings
+            .iter()
+            .map(|h| h.symbol.as_str())
+            .collect();
+        YahooClient::new().await?.get_quote(&sym_refs).await?
+    };
+    let (rows, sum, unpriced) = tax_report(country, &portfolio.holdings, &quotes, today)?;
+    match fmt {
+        Format::Json => {
+            return output::print_json(&serde_json::json!({
+                "country": country_name,
+                "tax_year": tax_year_label(country, today),
+                "currency": currency_code,
+                "holdings": rows,
+                "summary": sum,
+                "unpriced": unpriced,
+            }));
+        }
+        Format::Csv => return output::print_csv(&rows),
+        Format::Table => {}
+    }
 
     print_header(&format!(
         "Tax Report — {} ({})",
         country_name,
-        tax_year_label(country, chrono::Local::now().date_naive())
+        tax_year_label(country, today)
     ));
 
     println!(
@@ -1189,70 +1595,28 @@ pub async fn cmd_tax(country: &str, _market: Market) -> Result<()> {
     );
     println!("  {}", "─".repeat(68).dimmed());
 
-    let mut unpriced = Vec::new();
-    for h in &portfolio.holdings {
-        // A missing price must not count as a 100% capital loss.
-        let Some(price) = quotes
-            .iter()
-            .find(|q| q.symbol.as_deref() == Some(&h.symbol))
-            .and_then(|q| q.regular_market_price)
-        else {
-            unpriced.push(h.symbol.as_str());
-            continue;
-        };
-        let cost = h.shares * h.avg_cost;
-        let value = h.shares * price;
-        let gain = value - cost;
-
-        // Determine holding period from added_at
-        let is_longterm = chrono::NaiveDate::parse_from_str(&h.added_at, "%Y-%m-%d")
-            .ok()
-            .map(|d| {
-                let now = chrono::Local::now().date_naive();
-                // Long-term = held strictly longer than the holding period.
-                // Compare real dates so the day-of-month is respected.
-                let threshold = d
-                    .checked_add_months(chrono::Months::new(holding_months as u32))
-                    .unwrap_or(d);
-                now > threshold
-            })
-            .unwrap_or(false);
-
-        let hold_type = if is_longterm { "LTCG" } else { "STCG" };
-        let tax_rate = if is_longterm { ltcg_rate } else { stcg_rate };
-
-        match (gain >= 0.0, is_longterm) {
-            (true, true) => total_ltcg += gain,
-            (true, false) => total_stcg += gain,
-            (false, true) => total_ltcl += gain.abs(),
-            (false, false) => total_stcl += gain.abs(),
-        }
-
-        let gain_str = if gain >= 0.0 {
-            format!("+{}{:.2}", currency_sym, gain).green().to_string()
+    for row in &rows {
+        let gain_str = if row.gain >= 0.0 {
+            format!("+{}{:.2}", currency_sym, row.gain)
+                .green()
+                .to_string()
         } else {
-            format!("-{}{:.2}", currency_sym, gain.abs())
+            format!("-{}{:.2}", currency_sym, row.gain.abs())
                 .red()
                 .to_string()
         };
-        let tax = if gain > 0.0 {
-            gain * tax_rate / 100.0
-        } else {
-            0.0
-        };
-        let tax_str = if tax > 0.0 {
-            format!("{}{:.0}", currency_sym, tax)
+        let tax_str = if row.tax > 0.0 {
+            format!("{}{:.0}", currency_sym, row.tax)
         } else {
             "—".dimmed().to_string()
         };
-
         println!(
             "  {:<14} {:>10} {:>10} {:>12} {:>8} {:>8}",
-            h.symbol.cyan(),
-            format!("{}{:.0}", currency_sym, cost),
-            format!("{}{:.0}", currency_sym, value),
+            row.symbol.cyan(),
+            format!("{}{:.0}", currency_sym, row.cost),
+            format!("{}{:.0}", currency_sym, row.value),
             gain_str,
-            hold_type,
+            if row.term == "long" { "LTCG" } else { "STCG" },
             tax_str
         );
     }
@@ -1262,33 +1626,25 @@ pub async fn cmd_tax(country: &str, _market: Market) -> Result<()> {
     print_section("Tax Summary");
     print_kv(
         "Short-Term Gains",
-        &format!("{}{:.2}", currency_sym, total_stcg),
+        &format!("{}{:.2}", currency_sym, sum.short_term_gains),
     );
     print_kv(
         "Short-Term Losses",
-        &format!("{}{:.2}", currency_sym, total_stcl),
+        &format!("{}{:.2}", currency_sym, sum.short_term_losses),
     );
     print_kv(
         "Long-Term Gains",
-        &format!("{}{:.2}", currency_sym, total_ltcg),
+        &format!("{}{:.2}", currency_sym, sum.long_term_gains),
     );
     print_kv(
         "Long-Term Losses",
-        &format!("{}{:.2}", currency_sym, total_ltcl),
+        &format!("{}{:.2}", currency_sym, sum.long_term_losses),
     );
-
-    // Net gains after offsetting losses
-    let net_stcg = (total_stcg - total_stcl).max(0.0);
-    let net_ltcg = (total_ltcg - total_ltcl - ltcg_exempt).max(0.0);
-
-    let stcg_tax = net_stcg * stcg_rate / 100.0;
-    let ltcg_tax = net_ltcg * ltcg_rate / 100.0;
-    let total_tax = stcg_tax + ltcg_tax;
 
     print_section("Estimated Tax Liability");
     print_kv(
-        &format!("STCG Tax ({}%)", stcg_rate),
-        &format!("{}{:.2}", currency_sym, stcg_tax),
+        &format!("STCG Tax ({}%)", sum.stcg_rate_percent),
+        &format!("{}{:.2}", currency_sym, sum.stcg_tax),
     );
     if ltcg_exempt > 0.0 {
         print_kv(
@@ -1297,33 +1653,29 @@ pub async fn cmd_tax(country: &str, _market: Market) -> Result<()> {
         );
     }
     print_kv(
-        &format!("LTCG Tax ({}%)", ltcg_rate),
-        &format!("{}{:.2}", currency_sym, ltcg_tax),
+        &format!("LTCG Tax ({}%)", sum.ltcg_rate_percent),
+        &format!("{}{:.2}", currency_sym, sum.ltcg_tax),
     );
     println!("  {}", "─".repeat(40).dimmed());
-    let total_str = if total_tax > 0.0 {
-        format!("{}{:.2}", currency_sym, total_tax)
+    let total_str = if sum.total_tax > 0.0 {
+        format!("{}{:.2}", currency_sym, sum.total_tax)
             .red()
             .bold()
             .to_string()
     } else {
-        format!("{}{:.2}", currency_sym, total_tax)
+        format!("{}{:.2}", currency_sym, sum.total_tax)
             .green()
             .to_string()
     };
     print_kv("TOTAL TAX", &total_str);
 
-    if total_stcl + total_ltcl > 0.0 {
+    if sum.short_term_losses + sum.long_term_losses > 0.0 {
         println!();
         print_kv(
             "Tax Saved (losses)",
-            &format!(
-                "{}{:.2}",
-                currency_sym,
-                (total_stcl * stcg_rate / 100.0 + total_ltcl * ltcg_rate / 100.0)
-            )
-            .green()
-            .to_string(),
+            &format!("{}{:.2}", currency_sym, sum.tax_saved_by_losses)
+                .green()
+                .to_string(),
         );
     }
 
