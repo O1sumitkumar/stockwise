@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Crypto and forex markets.** `-m crypto` resolves bare coins (`BTC` →
+  `BTC-USD`; `--quote-currency inr` / `STOCKWISE_QUOTE_CURRENCY` for `BTC-INR`)
+  and `-m fx` resolves pairs (`USDINR`, `usd/inr` → `USDINR=X`). Prices show
+  4 decimals for FX and up to 8 for low-priced coins; `quote` notes 24/7
+  (crypto) and weekday-only (FX) trading. `markets --crypto --fx` adds top
+  coins and major pairs. Session-, sector- and fundamentals-based commands
+  (`sectors`, `screen`, `intraday`, `daemon`, ...) explain that they need a
+  stock market instead of running on coins.
+- **Data providers.** `STOCKWISE_DATA_PROVIDER=alphavantage|massive|twelvedata`
+  with the provider's API key routes quotes, daily history and search through
+  Alpha Vantage, Massive (formerly Polygon.io) or Twelve Data. Yahoo fills the
+  fields and symbols a provider lacks and takes over on errors or exhausted
+  free tiers. `doctor` shows which provider answered; `quote` names it, and
+  `quote --json` adds `dataSource`. See docs/data-providers.md.
+- **Cloud AI, opt-in.** `STOCKWISE_AI_PROVIDER=openai|anthropic|gemini` with
+  `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` uses a hosted model
+  for `report` and `--ai` (same prompts as Ollama, which stays the default).
+  The first request of a run prints a notice that data is being sent;
+  `doctor` shows provider and model, never the key. `STOCKWISE_MODEL`
+  overrides the default model (`gpt-6.1-sol`, `claude-opus-5-5`,
+  `gemini-3.8-flash`). See docs/ai.md.
+- **Hindi (partial).** `--lang hi`, `STOCKWISE_LANG=hi`, or a `hi_*` locale
+  translates help group titles, the main command descriptions, `quote`,
+  `markets`, `dashboard`, `portfolio`, `search`, `doctor` and common errors.
+  Lakh/crore amounts read `₹16.27 लाख करोड़`. `--json` output is unchanged.
+- `doctor` shows the active language and where it came from.
+
+### Changed
+- `quote`, `markets` and `dashboard` show `N/A` for a missing price or range
+  instead of `0.00`.
+- AI section titles name the provider (`AI Analysis (Ollama)`) instead of
+  always saying Ollama.
+- EUR, GBP and JPY amounts show `€`, `£` and `¥` instead of `$`.
+
 ## [0.3.0] - 2026-10-21
 
 Usability and safety release. Command-line forms from 0.2 keep working.

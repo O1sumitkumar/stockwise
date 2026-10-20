@@ -137,10 +137,10 @@ pub async fn cmd_analyze(symbol: &str, market: Market) -> Result<()> {
     println!("{}", insights::overall_verdict(q));
     println!("{}", "─".repeat(60).dimmed());
 
-    // AI-powered analysis (if Ollama available)
+    // AI-powered analysis (with --ai, if the provider is available)
     let mut ai = crate::ai::AiClient::connect().await;
     if ai.auto_available().await {
-        print_section("Ollama AI Analysis");
+        print_section(&format!("AI Analysis ({})", ai.provider().name()));
         let stock_data = crate::ai::StockData::from_quote(q);
         match ai.analyze_stock(&stock_data).await {
             Ok(analysis) => {
@@ -326,7 +326,7 @@ pub async fn cmd_compare(symbols: &[String], market: Market) -> Result<()> {
                 q.regular_market_change_percent.unwrap_or(0.0)
             ));
         }
-        print_section("Ollama AI Verdict");
+        print_section(&format!("AI Verdict ({})", ai.provider().name()));
         if let Ok(verdict) = ai.compare_stocks(&data).await {
             for line in verdict.lines() {
                 println!("  {}", line);
@@ -339,6 +339,7 @@ pub async fn cmd_compare(symbols: &[String], market: Market) -> Result<()> {
 }
 
 pub async fn cmd_peers(symbol: &str, market: Market) -> Result<()> {
+    market.require_stocks("peers")?;
     let resolved = market::resolve_symbol(symbol, market);
     let client = YahooClient::new().await?;
     let quotes = client.get_quote(&[&resolved]).await?;
@@ -346,11 +347,8 @@ pub async fn cmd_peers(symbol: &str, market: Market) -> Result<()> {
     let sector = q.sector.as_deref().unwrap_or("Unknown");
 
     // Get all popular stocks and filter by same sector
-    let all_symbols = match market {
-        Market::Us => market::US_POPULAR,
-        Market::In => market::INDIA_POPULAR,
-    };
-    let all_refs: Vec<&str> = all_symbols.to_vec();
+    let all_symbols = market.universe();
+    let all_refs: Vec<&str> = all_symbols.iter().map(String::as_str).collect();
     let all_quotes = client.get_quote(&all_refs).await?;
     let mut peers: Vec<&crate::api::Quote> = all_quotes
         .iter()
@@ -898,7 +896,7 @@ pub async fn cmd_deep(symbol: &str, period: &str, market: Market) -> Result<()> 
     // ── 4. AI Analysis ──
     let mut ai = crate::ai::AiClient::connect().await;
     if ai.auto_available().await {
-        print_section("AI Analysis (Ollama)");
+        print_section(&format!("AI Analysis ({})", ai.provider().name()));
         let stock_data = crate::ai::StockData::from_quote(q);
         match ai.analyze_stock(&stock_data).await {
             Ok(analysis) => {

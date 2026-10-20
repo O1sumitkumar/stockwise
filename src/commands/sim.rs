@@ -8,13 +8,11 @@ pub async fn cmd_sim(
     target: Option<f64>,
     market: Market,
 ) -> Result<()> {
-    let csym = match market {
-        Market::In => "₹",
-        Market::Us => "$",
-    };
+    let csym = market.currency_symbol();
 
     match action {
         "start" => {
+            market.require_stocks("sim start")?;
             let capital = amount.unwrap_or(25000.0);
             let target_pct = target.unwrap_or(2.0);
             let today = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -115,6 +113,8 @@ pub async fn cmd_sim(
                 market: match market {
                     Market::In => "IN",
                     Market::Us => "US",
+                    Market::Crypto => "CRYPTO",
+                    Market::Fx => "FX",
                 }
                 .into(),
                 capital,

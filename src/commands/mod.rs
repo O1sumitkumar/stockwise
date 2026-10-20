@@ -9,6 +9,7 @@ use crate::api::YahooClient;
 use crate::backtest;
 use crate::charts;
 use crate::display::*;
+use crate::i18n::{Msg, t, tf};
 use crate::insights;
 use crate::intraday;
 use crate::longterm;

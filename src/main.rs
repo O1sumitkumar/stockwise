@@ -19,14 +19,18 @@ mod charts;
 mod commands;
 mod daemon;
 mod display;
+mod i18n;
 mod insights;
 mod intraday;
 mod longterm;
 mod market;
 mod portfolio;
+mod providers;
 mod simulator;
 mod store;
 mod technical;
+#[cfg(test)]
+mod testutil;
 mod watchlist;
 mod wealth;
 
@@ -69,7 +73,7 @@ struct Cli {
     )]
     market: Market,
 
-    /// Add a local-AI (Ollama) section to analysis commands. Slow: 30-60s per call
+    /// Add an AI section to analysis commands (local Ollama unless STOCKWISE_AI_PROVIDER picks a cloud model)
     #[arg(
         long,
         global = true,
@@ -77,6 +81,27 @@ struct Cli {
         value_parser = clap::builder::BoolishValueParser::new()
     )]
     ai: bool,
+
+    /// Language for tables and messages: `en` or `hi` (Hindi). Default: your locale
+    #[arg(
+        long,
+        global = true,
+        env = "STOCKWISE_LANG",
+        ignore_case = true,
+        value_name = "LANG"
+    )]
+    lang: Option<i18n::Lang>,
+
+    /// Currency bare crypto tickers are quoted in with `-m crypto` (BTC → BTC-INR)
+    #[arg(
+        long,
+        global = true,
+        env = "STOCKWISE_QUOTE_CURRENCY",
+        default_value = "usd",
+        value_name = "CODE",
+        value_parser = parse_currency_code
+    )]
+    quote_currency: String,
 
     #[command(subcommand)]
     command: Commands,
@@ -108,6 +133,12 @@ enum Commands {
         /// Print JSON instead of a table
         #[arg(long)]
         json: bool,
+        /// Add the largest cryptocurrencies (trade 24/7)
+        #[arg(long)]
+        crypto: bool,
+        /// Add major currency pairs (USD/INR, EUR/USD, ...)
+        #[arg(long)]
+        fx: bool,
     },
 
     /// Markets + portfolio + watchlist + alerts on one screen
@@ -630,6 +661,18 @@ enum AlertWhen {
     Below,
 }
 
+/// A 3-letter currency code such as `usd` or `INR`, upper-cased.
+fn parse_currency_code(value: &str) -> Result<String, String> {
+    let code = value.trim().to_ascii_uppercase();
+    if code.len() == 3 && code.chars().all(|c| c.is_ascii_alphabetic()) {
+        Ok(code)
+    } else {
+        Err(format!(
+            "`{value}` is not a 3-letter currency code (e.g. usd, inr)"
+        ))
+    }
+}
+
 /// The CLI spelling of a ValueEnum variant (e.g. `Strategy::Bb` → "bb"),
 /// which is what the command handlers match on.
 fn value_name<T: ValueEnum>(v: T) -> String {
@@ -714,26 +757,83 @@ const GROUPS: &[(&str, &[&str])] = &[
     ("Setup", &["completions", "help"]),
 ];
 
+/// The catalog entry for a help group title. Titles without one (e.g. a
+/// newly added group) show in English.
+fn group_msg(english: &str) -> Option<i18n::Msg> {
+    use i18n::Msg;
+    Some(match english {
+        "Start here" => Msg::GroupStartHere,
+        "Analysis" => Msg::GroupAnalysis,
+        "Market" => Msg::GroupMarket,
+        "Strategies & bots" => Msg::GroupStrategies,
+        "Portfolio" => Msg::GroupPortfolio,
+        "Live trading" => Msg::GroupLiveTrading,
+        "Setup" => Msg::GroupSetup,
+        _ => return None,
+    })
+}
+
+/// A help group title in the active language.
+fn group_title(english: &str) -> &str {
+    match group_msg(english) {
+        Some(msg) => i18n::t(msg),
+        None => english,
+    }
+}
+
+/// Translated one-line descriptions for the most-used commands; the rest
+/// show their English doc comment.
+fn localized_about(name: &str) -> Option<&'static str> {
+    use i18n::Msg;
+    if i18n::lang() == i18n::Lang::En {
+        return None;
+    }
+    let msg = match name {
+        "quote" => Msg::AboutQuote,
+        "deep" => Msg::AboutDeep,
+        "markets" => Msg::AboutMarkets,
+        "dashboard" => Msg::AboutDashboard,
+        "search" => Msg::AboutSearch,
+        "doctor" => Msg::AboutDoctor,
+        "portfolio" => Msg::AboutPortfolio,
+        "watch" => Msg::AboutWatch,
+        "alert" => Msg::AboutAlert,
+        "completions" => Msg::AboutCompletions,
+        "help" => Msg::HelpPrintHelp,
+        _ => return None,
+    };
+    Some(i18n::t(msg))
+}
+
 /// Top-level help with commands grouped by purpose (clap would otherwise list
 /// 60 commands flat). Descriptions come from the doc comments above.
 fn grouped_help_template(cmd: &clap::Command) -> String {
     use colored::Colorize;
-    let mut out = String::from("{before-help}{about-with-newline}\n{usage-heading} {usage}\n");
+    let mut out = format!(
+        "{{before-help}}{{about-with-newline}}\n{} {{usage}}\n",
+        i18n::t(i18n::Msg::HelpUsage).bold().underline()
+    );
     for (group, names) in GROUPS {
-        out.push_str(&format!("\n{}\n", format!("{}:", group).bold().underline()));
+        out.push_str(&format!(
+            "\n{}\n",
+            format!("{}:", group_title(group)).bold().underline()
+        ));
         for name in *names {
-            let about = cmd
-                .find_subcommand(name)
-                .and_then(|c| c.get_about())
-                .map(|a| a.to_string())
-                .unwrap_or_else(|| "Print help for a command".into());
+            let about = localized_about(name)
+                .map(str::to_string)
+                .or_else(|| {
+                    cmd.find_subcommand(name)
+                        .and_then(|c| c.get_about())
+                        .map(|a| a.to_string())
+                })
+                .unwrap_or_else(|| i18n::t(i18n::Msg::HelpPrintHelp).into());
             // Pad before styling so ANSI codes don't break the alignment.
             out.push_str(&format!("  {} {}\n", format!("{:<12}", name).bold(), about));
         }
     }
     out.push_str(&format!(
         "\n{}\n{{options}}{{after-help}}",
-        "Options:".bold().underline()
+        i18n::t(i18n::Msg::HelpOptions).bold().underline()
     ));
     out
 }
@@ -765,15 +865,20 @@ fn exit_quietly_on_broken_pipe() {
 #[tokio::main]
 async fn main() {
     exit_quietly_on_broken_pipe();
+    // The language is needed before parsing: the help text is built from it.
+    let args: Vec<String> = std::env::args().collect();
+    let (lang, source) = i18n::detect(&args, |k| std::env::var(k).ok());
+    i18n::set_lang(lang, source);
     let matches = build_cli().get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     let m = cli.market;
     ai::set_auto_ai(cli.ai);
+    market::set_quote_currency(&cli.quote_currency);
 
     let result = match cli.command {
         Commands::Quote { symbols, json } => commands::cmd_quote(&symbols, m, json).await,
         Commands::Deep { symbol, period } => commands::cmd_deep(&symbol, &period, m).await,
-        Commands::Markets { json } => commands::cmd_markets(m, json).await,
+        Commands::Markets { json, crypto, fx } => commands::cmd_markets(m, json, crypto, fx).await,
         Commands::Dashboard => commands::cmd_dashboard(m).await,
         Commands::Search { query, json } => commands::cmd_search(&query, json).await,
         Commands::Doctor => commands::cmd_doctor(m).await,
@@ -944,7 +1049,11 @@ async fn main() {
     };
 
     if let Err(e) = result {
-        eprintln!("\n  {} {:#}\n", colored::Colorize::red("Error:"), e);
+        eprintln!(
+            "\n  {} {:#}\n",
+            colored::Colorize::red(i18n::t(i18n::Msg::ErrorPrefix)),
+            e
+        );
         std::process::exit(1);
     }
 }
@@ -975,6 +1084,49 @@ mod tests {
         }
         let grouped: usize = GROUPS.iter().map(|(_, cmds)| cmds.len()).sum();
         assert_eq!(grouped, names.len(), "help groups list an unknown command");
+    }
+
+    #[test]
+    fn crypto_fx_lang_and_quote_currency_flags_parse() {
+        for args in [
+            vec!["stockwise", "quote", "BTC", "-m", "crypto"],
+            vec![
+                "stockwise",
+                "quote",
+                "ETH",
+                "-m",
+                "crypto",
+                "--quote-currency",
+                "inr",
+            ],
+            vec!["stockwise", "quote", "USDINR", "-m", "fx"],
+            vec!["stockwise", "quote", "USDINR", "-m", "forex"],
+            vec!["stockwise", "markets", "--crypto", "--fx"],
+            vec!["stockwise", "--lang", "hi", "dashboard"],
+            vec!["stockwise", "portfolio", "--lang", "HI"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
+        }
+        assert!(
+            Cli::try_parse_from(["stockwise", "quote", "BTC", "--quote-currency", "rupees"])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from(["stockwise", "--lang", "fr", "quote", "TCS"]).is_err());
+        let cli =
+            Cli::try_parse_from(["stockwise", "quote", "BTC", "--quote-currency", "inr"]).unwrap();
+        assert_eq!(cli.quote_currency, "INR");
+    }
+
+    #[test]
+    fn help_template_translates_group_titles() {
+        let template = grouped_help_template(&Cli::command());
+        // English unless set: tests never call i18n::set_lang.
+        assert!(template.contains("Start here"));
+        for (group, _) in GROUPS {
+            let msg = group_msg(group).unwrap_or_else(|| panic!("`{group}` has no translation"));
+            assert_eq!(msg.text(i18n::Lang::En), *group);
+        }
+        assert_eq!(group_title("Some new group"), "Some new group");
     }
 
     #[test]

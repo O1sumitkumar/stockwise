@@ -7,13 +7,30 @@ shows its arguments. This page adds detail.
 
 | Option | Env var | Description |
 |--------|---------|-------------|
-| `-m, --market <in\|us>` | `STOCKWISE_MARKET` | Market for bare tickers. Default `in`: `TCS` → `TCS.NS`. Symbols with a suffix (`RELIANCE.BO`, `VOD.L`), indices (`^NSEI`), FX (`USDINR=X`) and crypto (`BTC-USD`) pass through unchanged |
-| `--ai` | `STOCKWISE_AI` | Add a local-AI section to `analyze`, `technical`, `compare`, `screen`, `backtest`, `deep` (slow; see [ai.md](ai.md)) |
+| `-m, --market <in\|us\|crypto\|fx>` | `STOCKWISE_MARKET` | Market for bare tickers. Default `in`: `TCS` → `TCS.NS`. `crypto`: `BTC` → `BTC-USD`. `fx` (or `forex`): `USDINR`, `usd/inr` → `USDINR=X`. Symbols with a suffix (`RELIANCE.BO`, `VOD.L`), indices (`^NSEI`), FX (`USDINR=X`) and crypto pairs (`BTC-INR`) pass through unchanged |
+| `--quote-currency <CODE>` | `STOCKWISE_QUOTE_CURRENCY` | Currency bare crypto tickers are quoted in with `-m crypto`. Default `usd`; `inr` gives `BTC-INR` |
+| `--lang <en\|hi>` | `STOCKWISE_LANG` | Language for help groups, tables and messages. Default: your locale (`LC_ALL` / `LC_MESSAGES` / `LANG` starting with `hi` picks Hindi), else English. `--json` and `--csv` output is never translated |
+| `--ai` | `STOCKWISE_AI` | Add an AI section to `analyze`, `technical`, `compare`, `screen`, `backtest`, `deep` (slow with a local model; see [ai.md](ai.md)) |
 
 Other environment variables: `STOCKWISE_HOME` (data directory),
-`STOCKWISE_REDIS_URL` (cache server, or `off`), `STOCKWISE_MODEL` and
-`OLLAMA_HOST` (AI). `NO_COLOR` disables colour; colour is also off when output
+`STOCKWISE_REDIS_URL` (cache server, or `off`), `STOCKWISE_DATA_PROVIDER`
+and its API key ([data-providers.md](data-providers.md)),
+`STOCKWISE_AI_PROVIDER`, `STOCKWISE_MODEL`, `OLLAMA_HOST` and the cloud AI keys
+([ai.md](ai.md)). `NO_COLOR` disables colour; colour is also off when output
 is piped.
+
+**Crypto and FX**: prices show with the precision they need (FX pairs 4
+decimals, coins under 1 up to 8) and `quote` notes trading hours (crypto 24/7;
+FX 24 hours Monday–Friday, closed at weekends). Commands built on exchange
+sessions, sectors or fundamentals — `sectors`, `rotation`, `sectorcmp`,
+`screen`, `picks`, `matrix`, `surprise`, `peers`, `intraday`, `longterm`,
+`daemon`, `sim start` — refuse `-m crypto` / `-m fx` with an explanation;
+`movers`, `heatmap`, `history`, `technical`, `backtest` and friends work.
+
+**Hindi** (`--lang hi`): help group titles and the main command descriptions,
+`quote`, `markets`, `dashboard`, `portfolio`, `search` and `doctor` labels,
+and common errors. Other commands are still English. Indian amounts keep
+lakh/crore grouping (`₹16.27 लाख करोड़`).
 
 **Periods** (`-p`): `1d`, `5d`, `1w` (same as `5d`), `1mo`, `3mo`, `6mo`, `ytd`, `1y`, `2y`, `5y`, `10y`, `max`.
 Value names (`screen growth`, `tax in`, `-s macd`) are case-insensitive.
@@ -27,10 +44,10 @@ network), `2` invalid arguments.
 |---------|-------------|
 | `quote <SYMBOLS...> [--json]` (`q`) | Price, change, day/52-week range, volume, market cap, P/E, EPS, moving averages. Unknown symbols are named in the error |
 | `deep <SYMBOL> [-p PERIOD]` | Everything about one stock: fundamentals, technicals, support/resistance, Fibonacci, risk, gaps, volume, insights. Default `3mo` |
-| `markets [--json]` | US + India indices (S&P 500, Dow, NASDAQ, Russell, VIX, NIFTY 50, SENSEX, Bank NIFTY, NIFTY IT) |
+| `markets [--crypto] [--fx] [--json]` | US + India indices (S&P 500, Dow, NASDAQ, Russell, VIX, NIFTY 50, SENSEX, Bank NIFTY, NIFTY IT); `--crypto` adds the largest coins, `--fx` major pairs (USD/INR, EUR/USD, ...). With `-m crypto` / `-m fx` that section comes first. `--json` rows carry `region`: `Indian Markets`, `US Markets`, `Crypto` or `FX` |
 | `dashboard` (`d`) | Indices + portfolio P&L + watchlist + triggered alerts; first-run hints when empty |
 | `search <QUERY> [--json]` | Find a ticker by company name |
-| `doctor` | Check data directory, Yahoo reachability, Redis, Ollama model, broker config |
+| `doctor` | Check market and language, data directory, Yahoo reachability, the data provider that answered, Redis, AI provider and model (never the key), broker config |
 
 ## Analysis
 
@@ -137,5 +154,6 @@ stockwise history AAPL -m us -p 6mo --json | jq '.bars | map(.close) | max'
 stockwise markets --json | jq '.[] | select(.change_percent < -1)'
 ```
 
-`quote --json` returns Yahoo's quote fields (camelCase). `history --json`
+`quote --json` returns Yahoo's quote fields (camelCase), plus `dataSource` when
+another provider supplied the price. `history --json`
 returns `{symbol, currency, period, interval, bars: [{time, open, high, low, close, volume}]}`.

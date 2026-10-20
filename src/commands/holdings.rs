@@ -39,11 +39,7 @@ pub async fn cmd_portfolio(
         }
         "show" | "list" => {
             if portfolio.holdings.is_empty() {
-                println!(
-                    "\n  {}",
-                    "Portfolio is empty. Use 'stockwise portfolio add <SYMBOL> <SHARES> <COST>' to add holdings."
-                        .dimmed()
-                );
+                println!("\n  {}", t(Msg::PortfolioEmpty).dimmed());
                 return Ok(());
             }
 
@@ -57,16 +53,16 @@ pub async fn cmd_portfolio(
             let client = YahooClient::new().await?;
             let quotes = client.get_quote(&sym_refs).await?;
 
-            print_header("Your Portfolio");
+            print_header(t(Msg::YourPortfolio));
             println!(
-                "  {:<12} {:>8} {:>10} {:>10} {:>12} {:>10} {:>10}",
-                "Symbol".bold(),
-                "Shares".bold(),
-                "Avg Cost".bold(),
-                "Price".bold(),
-                "Value".bold(),
-                "P&L".bold(),
-                "P&L %".bold(),
+                "  {} {} {} {} {} {} {}",
+                pad_end(t(Msg::Symbol), 12).bold(),
+                pad_start(t(Msg::Shares), 8).bold(),
+                pad_start(t(Msg::AvgCost), 10).bold(),
+                pad_start(t(Msg::Price), 10).bold(),
+                pad_start(t(Msg::Value), 12).bold(),
+                pad_start(t(Msg::PnL), 10).bold(),
+                pad_start(t(Msg::PnLPct), 10).bold(),
             );
             println!("  {}", "─".repeat(76).dimmed());
 
@@ -162,8 +158,8 @@ pub async fn cmd_portfolio(
                 format!("{:.2}%", total_pnl_pct).red().bold().to_string()
             };
             println!(
-                "  {:<12} {:>8} {:>10} {:>10} {:>12} {:>10} {:>10}",
-                "TOTAL".bold(),
+                "  {} {:>8} {:>10} {:>10} {:>12} {:>10} {:>10}",
+                pad_end(t(Msg::Total), 12).bold(),
                 "",
                 format_price(total_cost, total_cur),
                 "",
@@ -1361,11 +1357,7 @@ pub async fn cmd_divcal(market: Market) -> Result<()> {
         }
     }
     if all.is_empty() {
-        let symbols = match market {
-            Market::In => market::INDIA_POPULAR,
-            Market::Us => market::US_POPULAR,
-        };
-        all = symbols.iter().map(|s| s.to_string()).collect();
+        all = market.universe();
     }
 
     let refs: Vec<&str> = all.iter().map(|s| s.as_str()).collect();
@@ -1391,10 +1383,7 @@ pub async fn cmd_divcal(market: Market) -> Result<()> {
         return Ok(());
     }
 
-    let csym = match market {
-        Market::In => "₹",
-        Market::Us => "$",
-    };
+    let csym = market.currency_symbol();
     println!(
         "  {:<14} {:>8} {:>12} {:>14}",
         "Symbol".bold(),

@@ -707,11 +707,8 @@ pub async fn scan_intraday(
     client: &YahooClient,
     market: market::Market,
 ) -> Result<Vec<IntradaySignal>> {
-    let symbols = match market {
-        market::Market::In => market::INDIA_POPULAR,
-        market::Market::Us => market::US_POPULAR,
-    };
-    let sym_refs: Vec<&str> = symbols.to_vec();
+    let symbols = market.universe();
+    let sym_refs: Vec<&str> = symbols.iter().map(String::as_str).collect();
     let quotes = client.get_quote(&sym_refs).await?;
     let mut signals = Vec::new();
 
