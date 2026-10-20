@@ -17,7 +17,7 @@ To re-render the PNG after editing the SVG (needs Google Chrome):
 
 ## Screenshots (README)
 
-`history.svg`, `markets.svg` and `backtest.svg` are real StockWise output
+`history.svg`, `markets.svg`, `backtest.svg` and `tui.svg` are real StockWise output
 rendered to SVG by `ansi2svg.py` (no dependencies beyond Python 3). To
 regenerate one:
 
@@ -26,6 +26,13 @@ cargo build --release
 export CLICOLOR_FORCE=1   # keep colours when piping
 (printf '$ stockwise markets\n'; ./target/release/stockwise markets) \
   | python3 assets/ansi2svg.py assets/markets.svg "stockwise — markets"
+```
+
+For the TUI, print one frame instead of running it interactively:
+
+```bash
+CLICOLOR_FORCE=1 ./target/release/stockwise tui --snapshot 100x30 \
+  | python3 assets/ansi2svg.py assets/tui.svg "stockwise tui"
 ```
 
 A first line starting with `$ ` is drawn as the typed prompt. Output depends on

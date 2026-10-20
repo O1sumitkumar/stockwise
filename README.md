@@ -50,7 +50,10 @@ stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR
 - **60 commands, one muscle memory.** Fundamentals, technicals, risk, screeners,
   sector rotation, backtests, SIP/what-if calculators, alerts, tax estimates.
 - **Scriptable.** `--json` on `quote`, `history`, `markets` and `search`; real
-  exit codes; shell completions.
+  exit codes; shell completions; a read-only JSON API with Prometheus metrics
+  (`stockwise serve`).
+- **Live dashboard.** `stockwise tui` keeps indices, watchlist, portfolio P&L,
+  alerts and a chart on one refreshing screen.
 - **Practice before money.** A paper-trading simulator and an intraday paper
   daemon with risk controls. Optional live orders via Angel One, behind a
   preview and a typed confirmation.
@@ -97,6 +100,7 @@ stockwise completions zsh > ~/.zfunc/_stockwise           # optional: tab comple
 | **Market** | `movers`, `sectors`, `heatmap`, `sentiment`, `news`, `rotation`, `sectorcmp`, `peers`, `insider`, `ipo`, `earnings`, `surprise`, `matrix`, `picks`, `screen`, `dividends` |
 | **Strategies & bots** | `backtest`, `sip`, `whatif`, `intraday`, `longterm`, `daemon`, `sim`, `report` |
 | **Portfolio** | `portfolio`, `watch`, `alert`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
+| **Interfaces** | `tui`, `serve` |
 | **Live trading** | `trade` (Angel One) |
 
 `stockwise --help` shows the same groups; [docs/commands.md](docs/commands.md)
@@ -112,13 +116,31 @@ stockwise tax in                                 # LTCG/STCG estimate for this F
 stockwise dashboard                              # indices + portfolio + watchlist + alerts
 ```
 
+### Watch it live
+
+<p align="center">
+  <img src="assets/tui.svg" alt="stockwise tui: indices, watchlist, a price chart, portfolio P&L and alerts on one screen" width="760">
+</p>
+
+```bash
+stockwise tui                # ↑↓ select · 1-6 chart period · / add to watchlist · ? help · q quit
+```
+
+Read-only: the TUI never places orders. See [docs/tui.md](docs/tui.md).
+
 ### Script it
 
 ```bash
 stockwise quote TCS INFY --json | jq '.[] | {symbol, regularMarketPrice}'
 stockwise history AAPL -m us -p 6mo --json | jq '.bars | map(.close) | max'
 stockwise quote ZZZZ || echo "lookup failed"     # non-zero exit on errors
+stockwise serve                                  # same JSON over HTTP + /metrics on 127.0.0.1:8787
+curl -s localhost:8787/api/portfolio | jq '{total_value, total_pnl_percent}'
 ```
+
+`serve` has no trading endpoints and refuses non-loopback addresses unless you
+pass `--allow-remote` with a `STOCKWISE_API_TOKEN`. See
+[docs/server.md](docs/server.md).
 
 ### Paper trade, then decide
 
@@ -162,11 +184,13 @@ Everything works with no config. Optional environment variables:
 | `STOCKWISE_AI` | `1` to add AI sections by default |
 | `STOCKWISE_MODEL` / `OLLAMA_HOST` | Ollama model (default `qwen3:14b`) and server |
 | `STOCKWISE_REDIS_URL` | Optional shared cache (`redis://…`), or `off` |
+| `STOCKWISE_BIND` / `STOCKWISE_API_TOKEN` | `serve` address and bearer token |
 | `NO_COLOR` | Disable colours (also automatic when piping) |
 
 ## Docs
 
 - [Commands reference](docs/commands.md)
+- [Terminal dashboard](docs/tui.md) and [HTTP API & metrics](docs/server.md)
 - [Trading bots](docs/bots.md) and [bot design](docs/bot-design.md)
 - [Angel One setup](docs/angel-one.md)
 - [AI & Ollama](docs/ai.md)

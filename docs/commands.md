@@ -12,7 +12,7 @@ shows its arguments. This page adds detail.
 
 Other environment variables: `STOCKWISE_HOME` (data directory),
 `STOCKWISE_REDIS_URL` (cache server, or `off`), `STOCKWISE_MODEL` and
-`OLLAMA_HOST` (AI). `NO_COLOR` disables colour; colour is also off when output
+`OLLAMA_HOST` (AI), `STOCKWISE_BIND` and `STOCKWISE_API_TOKEN` (`serve`). `NO_COLOR` disables colour; colour is also off when output
 is piped.
 
 **Periods** (`-p`): `1d`, `5d`, `1w` (same as `5d`), `1mo`, `3mo`, `6mo`, `ytd`, `1y`, `2y`, `5y`, `10y`, `max`.
@@ -111,6 +111,17 @@ Data lives in the directory shown by `stockwise doctor`.
 | `divcal` | Dividend ranking and income for portfolio + watchlist |
 | `pcorr` | Correlation between holdings, diversification warnings |
 
+## Interfaces
+
+Both are read-only and share the data layer with the commands above, so they
+show the same numbers. They are on by default and can be left out of a build
+with `--no-default-features` (cargo features `tui` and `server`).
+
+| Command | Description |
+|---------|-------------|
+| `tui [-i SECONDS]` | Full-screen live dashboard: indices, watchlist, portfolio P&L, alerts and a chart of the selected symbol. Refreshes every 30s by default (10-3600). `?` shows the keys. See [tui.md](tui.md) |
+| `serve [--bind ADDR] [--allow-remote]` | JSON API (`/api/quote`, `/api/history/{symbol}`, `/api/markets`, `/api/search`, `/api/portfolio`, `/api/watchlist`, `/api/alerts`), `/healthz` and Prometheus `/metrics`. Listens on `127.0.0.1:8787`; other addresses need `--allow-remote` and `STOCKWISE_API_TOKEN`. See [server.md](server.md) |
+
 ## Live trading (Angel One)
 
 See [angel-one.md](angel-one.md). Orders are previewed and need a typed `yes`.
@@ -139,3 +150,5 @@ stockwise markets --json | jq '.[] | select(.change_percent < -1)'
 
 `quote --json` returns Yahoo's quote fields (camelCase). `history --json`
 returns `{symbol, currency, period, interval, bars: [{time, open, high, low, close, volume}]}`.
+`stockwise serve` answers with the same shapes over HTTP — see
+[server.md](server.md).

@@ -17,6 +17,13 @@ src/
     sim.rs           paper-trading simulator
     worker.rs        daemon intraday / longterm loops
     trade.rs         Angel One orders: instrument resolution, preview, confirmation
+    interfaces.rs    tui and serve (behind the `tui` / `server` cargo features)
+  views.rs           Data behind quote/history/markets/portfolio/watchlist/alerts as structs,
+                     shared by the CLI printers, the TUI and the server; `DataSource` trait
+  tui/               `stockwise tui`: app.rs (state + key handling, no I/O), ui.rs (ratatui
+                     drawing), mod.rs (event loop, fetches)
+  server/            `stockwise serve`: axum routes, bearer auth, Prometheus metrics
+  daemon_status.rs   Reads the intraday daemon's daemon_state.json for /metrics
   store.rs           Atomic JSON persistence, data directory (STOCKWISE_HOME)
   api.rs             Yahoo Finance client (session, quotes, charts, search, cache, retries)
   angel.rs           Angel One SmartAPI (login, TOTP, exact instrument lookup, orders)
@@ -41,7 +48,8 @@ help table — a test enforces this), write `cmd_<name>` in the matching
 ## Data Flow
 
 ```
-User Input → clap CLI → commands/* → api.rs → Yahoo Finance
+User Input → clap CLI → commands/* → views.rs → api.rs → Yahoo Finance
+              tui/, server/ ───────────↗
                                    → angel.rs → Angel One
                                    → ai.rs → Local Ollama
                                    → technical.rs (indicators)
@@ -110,6 +118,11 @@ Location: `~/Library/Application Support/stockwise/` (macOS), `~/.local/share/st
 | `chrono` | Date handling |
 | `dirs` | Platform-specific data directories |
 | `anyhow` | Error handling |
+| `ratatui` | Terminal UI for `tui` (re-exports crossterm; `tui` feature) |
+| `axum` | HTTP server for `serve` (`server` feature) |
+
+Both features are on by default; `cargo build --no-default-features` leaves
+them out. CI-style checks should run clippy for both builds.
 
 ## Testing
 

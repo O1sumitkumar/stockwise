@@ -66,7 +66,7 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 
 ## 💡 Later — depth (0.5+)
 
-- 💡 Interactive TUI dashboard (ratatui) — live quotes, positions, P&L, alerts
+- ✅ Interactive TUI dashboard (ratatui) — live quotes, positions, P&L, alerts (`stockwise tui`)
 - 💡 Portfolio-level and walk-forward backtesting with Indian costs (STT, brokerage, slippage)
 - 💡 Pluggable strategy system for `backtest` and the intraday bot (TOML rules or WASM)
 - 💡 F&O: option chains, greeks, IV, PCR, max pain
@@ -74,7 +74,7 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - 💡 Mutual-fund / ETF screening and overlap analysis
 - 💡 Mixed-currency portfolios with INR/USD conversion
 - 💡 Data-provider abstraction (official NSE feeds, Alpha Vantage, Polygon) beyond Yahoo
-- 💡 Web/REST mode for remote dashboards; Prometheus metrics for the daemon
+- ✅ Web/REST mode for remote dashboards; Prometheus metrics for the daemon (`stockwise serve`)
 - 💡 Docker image and Nix flake
 - 💡 Hindi localization
 

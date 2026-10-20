@@ -43,11 +43,12 @@ are pure functions with unit tests.
 
 ## Before you open a PR
 
-Run the same checks CI does — all three must pass:
+Run the same checks CI does — all of them must pass:
 
 ```bash
 cargo fmt --all            # format
 cargo clippy --all-targets -- -D warnings   # lint (must be clean)
+cargo clippy --all-targets --no-default-features -- -D warnings   # minimal build (no tui/serve)
 cargo test                 # all tests green
 ```
 

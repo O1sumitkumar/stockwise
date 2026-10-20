@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `stockwise tui` — a full-screen, read-only live dashboard: indices,
+  watchlist, portfolio P&L, triggered alerts and a chart of the selected
+  symbol (periods 1d–5y), with symbol search to add to the watchlist. Refresh
+  interval with `-i` (default 30s); works at 80×24 and degrades on smaller
+  terminals; honours `NO_COLOR`. See [docs/tui.md](docs/tui.md).
+- `stockwise serve` — a read-only JSON API (`/api/quote`, `/api/history/{symbol}`,
+  `/api/markets`, `/api/search`, `/api/portfolio`, `/api/watchlist`,
+  `/api/alerts`), `/healthz`, and Prometheus `/metrics` (request counts and
+  latency, Yahoo errors, cache hits, and the intraday daemon's open paper
+  positions, day P&L and kill switch). Loopback only unless `--allow-remote`
+  with a `STOCKWISE_API_TOKEN` bearer token. See [docs/server.md](docs/server.md).
+- Cargo features `tui` and `server` (both default); `--no-default-features`
+  builds without ratatui and axum.
+
+### Changed
+- `quote`, `history`, `markets` and `portfolio` gather their data through a
+  shared layer that the TUI and the server also use; their output, including
+  `--json`, is unchanged (tests pin the JSON shapes).
+
 ## [0.3.0] - 2026-10-21
 
 Usability and safety release. Command-line forms from 0.2 keep working.
