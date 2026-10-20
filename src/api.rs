@@ -271,6 +271,35 @@ pub struct ChartData {
     pub meta: Option<ChartMeta>,
     pub timestamp: Option<Vec<i64>>,
     pub indicators: Indicators,
+    /// Present when requested with `events=div,splits`.
+    #[serde(default)]
+    pub events: Option<ChartEvents>,
+}
+
+/// Dividends and splits from the chart API, keyed by an opaque bucket
+/// timestamp — use each event's own `date`.
+#[derive(Debug, Default, Deserialize)]
+pub struct ChartEvents {
+    #[serde(default)]
+    pub dividends: HashMap<String, DividendEvent>,
+    #[serde(default)]
+    pub splits: HashMap<String, SplitEvent>,
+}
+
+/// Cash dividend per share. Yahoo adjusts past amounts for later splits
+/// (RELIANCE's ₹9 in 2023 shows as ₹4.50 after its 2024 1:1 bonus).
+#[derive(Debug, Deserialize)]
+pub struct DividendEvent {
+    pub amount: f64,
+    pub date: i64,
+}
+
+/// A split, or a bonus issue (Yahoo reports a 1:1 bonus as a 2:1 split).
+#[derive(Debug, Deserialize)]
+pub struct SplitEvent {
+    pub date: i64,
+    pub numerator: f64,
+    pub denominator: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -582,6 +611,35 @@ impl YahooClient {
                 }
             })
             .context("No chart data returned")
+    }
+
+    /// Dividends and splits for `symbol` from `since` (Unix seconds) to today.
+    pub async fn get_corporate_actions(&self, symbol: &str, since: i64) -> Result<ChartEvents> {
+        // End at the next midnight so the URL (and its cache entry) is stable for the day.
+        let day = 86_400;
+        let until = (chrono::Utc::now().timestamp() / day + 1) * day;
+        // At least a month back, so the range always has a monthly bar.
+        let since = since.min(until - 40 * day);
+        let (from, to) = (since.to_string(), until.to_string());
+        let url = build_url(
+            "https://query1.finance.yahoo.com/v8/finance/chart",
+            Some(symbol),
+            &[
+                ("period1", from.as_str()),
+                ("period2", to.as_str()),
+                ("interval", "1mo"),
+                ("events", "div,splits"),
+            ],
+        );
+        let body = self.fetch(&url, Duration::from_secs(600)).await?;
+        let resp: ChartResponse =
+            serde_json::from_str(&body).context("Failed to parse chart response")?;
+        let data = resp
+            .chart
+            .result
+            .and_then(|mut r| (!r.is_empty()).then(|| r.remove(0)))
+            .with_context(|| format!("No data for {}", symbol))?;
+        Ok(data.events.unwrap_or_default())
     }
 
     pub fn crumb(&self) -> &str {

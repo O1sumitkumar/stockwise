@@ -236,28 +236,14 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
             .iter()
             .map(|h| h.symbol.clone())
             .collect();
-        let p_refs: Vec<&str> = p_syms.iter().map(|s| s.as_str()).collect();
-        let p_quotes = client.get_quote(&p_refs).await?;
-        let mut total_cost = 0.0_f64;
-        let mut total_value = 0.0_f64;
-        for h in &portfolio.holdings {
-            // Skip holdings without a live price instead of valuing them at 0.
-            if let Some(price) = p_quotes
-                .iter()
-                .find(|q| q.symbol.as_deref() == Some(&h.symbol))
-                .and_then(|q| q.regular_market_price)
-            {
-                total_cost += h.shares * h.avg_cost;
-                total_value += h.shares * price;
-            }
-        }
+        // Totals in one currency; holdings without a price or rate are skipped
+        // instead of being valued at 0 or added in the wrong currency.
+        let val = super::portfolio::value_holdings(&client, &p_syms, market, None).await?;
+        let totals = val.totals(&portfolio);
+        let (total_cost, total_value) = (totals.cost, totals.value);
         let pnl = total_value - total_cost;
-        let pnl_pct = if total_cost > 0.0 {
-            (pnl / total_cost) * 100.0
-        } else {
-            0.0
-        };
-        let cur = p_quotes.first().and_then(|q| q.currency.as_deref());
+        let pnl_pct = totals.pnl_pct();
+        let cur = Some(val.base());
         let csym = market::currency_symbol(cur);
         print_section(&format!(
             "Portfolio ({} holdings)",
@@ -276,6 +262,10 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
                 .to_string()
         };
         print_kv("P&L", &pnl_str);
+        if let Some(note) = val.fx_note() {
+            println!("  {}", note.dimmed());
+        }
+        totals.print_exclusions();
     }
 
     let wl = Watchlist::load()?;

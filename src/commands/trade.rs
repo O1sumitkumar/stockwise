@@ -294,6 +294,7 @@ pub async fn cmd_trade(
 
             // Also sync to stockwise portfolio
             let mut portfolio = Portfolio::load()?;
+            let mut reduced = Vec::new();
             for h in &holdings {
                 let sym = h.tradingsymbol.as_deref().unwrap_or("");
                 let qty = h.quantity.unwrap_or(0) as f64;
@@ -307,8 +308,13 @@ pub async fn cmd_trade(
                     } else {
                         format!("{}.NS", base)
                     };
-                    // Overwrite quantity/cost but keep the original added date.
-                    portfolio.set(&resolved, qty, avg);
+                    // Keep existing lots and their purchase dates; only the
+                    // quantity follows the broker.
+                    if let crate::portfolio::SyncChange::Reduced(n) =
+                        portfolio.sync_quantity(&resolved, qty, avg, "broker:angel")
+                    {
+                        reduced.push(format!("{} (-{})", resolved, n));
+                    }
                 }
             }
             portfolio.save()?;
@@ -316,6 +322,15 @@ pub async fn cmd_trade(
                 "\n  {} Holdings synced to StockWise portfolio.",
                 "✓".green()
             );
+            if !reduced.is_empty() {
+                println!(
+                    "  {} Fewer shares than StockWise had: {} — taken from the oldest lots, not \
+                     recorded as sales. To keep a sale's P&L for `tax`, record it with \
+                     `stockwise portfolio sell` before syncing.",
+                    "!".yellow(),
+                    reduced.join(", ")
+                );
+            }
             println!();
             Ok(())
         }

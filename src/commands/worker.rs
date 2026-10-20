@@ -502,24 +502,13 @@ pub async fn cmd_daemon(mode: &str, amount: Option<f64>, market: Market) -> Resu
                     .iter()
                     .map(|h| h.symbol.clone())
                     .collect();
-                let p_refs: Vec<&str> = p_syms.iter().map(|s| s.as_str()).collect();
-                let p_quotes = client.get_quote(&p_refs).await?;
-                let mut total_value = 0.0_f64;
-                let mut total_cost = 0.0_f64;
-                let mut unpriced = 0;
-                for h in &portfolio.holdings {
-                    match p_quotes
-                        .iter()
-                        .find(|q| q.symbol.as_deref() == Some(&h.symbol))
-                        .and_then(|q| q.regular_market_price)
-                    {
-                        Some(price) => {
-                            total_value += h.shares * price;
-                            total_cost += h.shares * h.avg_cost;
-                        }
-                        None => unpriced += 1,
-                    }
-                }
+                // Totals in one currency; holdings without a price or an
+                // exchange rate are left out (and skip the wealth snapshot).
+                let val = super::portfolio::value_holdings(&client, &p_syms, market, None).await?;
+                let totals = val.totals(&portfolio);
+                let (total_value, total_cost) = (totals.value, totals.cost);
+                let unpriced = totals.unpriced.len() + totals.unconverted.len();
+                let csym = market::currency_symbol(Some(val.base()));
                 let pnl = total_value - total_cost;
                 let pnl_str = if pnl >= 0.0 {
                     format!("+{}{:.0}", csym, pnl).green().to_string()

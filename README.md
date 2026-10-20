@@ -105,12 +105,18 @@ has every option.
 ### Track a portfolio
 
 ```bash
-stockwise import kite ~/Downloads/holdings.csv   # or: portfolio add TCS 10 3500
-stockwise portfolio                              # live P&L + allocation
-stockwise alert add RELIANCE below 1200
-stockwise tax in                                 # LTCG/STCG estimate for this FY
+stockwise import kite ~/Downloads/holdings.csv   # or: portfolio add TCS 10 3500 --date 2023-04-12
+stockwise portfolio                              # live P&L, XIRR + allocation
+stockwise portfolio sell TCS 5 3900              # FIFO sale, realized P&L kept for tax
+stockwise portfolio actions --apply              # splits, bonuses and dividends since you bought
+stockwise tax in                                 # LTCG/STCG per lot, set-off, realized vs unrealized
+stockwise --portfolio us portfolio add AAPL 3 190 -m us   # a second, named portfolio
 stockwise dashboard                              # indices + portfolio + watchlist + alerts
 ```
+
+Every purchase is a lot with its own date, so holding periods, FIFO sales and
+XIRR are exact. Holdings in INR and USD are totalled in one currency
+(`portfolio --base usd`) at the live `USDINR=X` rate.
 
 ### Script it
 
@@ -159,6 +165,7 @@ Everything works with no config. Optional environment variables:
 |----------|---------|
 | `STOCKWISE_MARKET` | Default market: `in` (default) or `us` |
 | `STOCKWISE_HOME` | Where portfolio, watchlist, alerts and history are stored |
+| `STOCKWISE_PORTFOLIO` | Named portfolio to use (same as `--portfolio NAME`) |
 | `STOCKWISE_AI` | `1` to add AI sections by default |
 | `STOCKWISE_MODEL` / `OLLAMA_HOST` | Ollama model (default `qwen3:14b`) and server |
 | `STOCKWISE_REDIS_URL` | Optional shared cache (`redis://…`), or `off` |

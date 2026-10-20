@@ -36,8 +36,8 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 
 **Correctness**
 - 📋 Daemon resilience — survive network blips, square off on Ctrl+C, IST clock + exchange holidays
-- 📋 Lot-level holdings with purchase dates, for accurate LTCG/STCG after imports
-- 📋 Portfolio XIRR (money-weighted return) from lots
+- ✅ Lot-level holdings with purchase dates, for accurate LTCG/STCG after imports
+- ✅ Portfolio XIRR (money-weighted return) from lots
 - 📋 `sim settle` from intraday bars (did the stop or target hit first?) instead of the closing price
 - 📋 Intraday plans capped at total capital across positions
 
@@ -48,7 +48,7 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
   through the same preview → confirm flow as Angel One
 - 📋 CAS import (CAMS / KFintech consolidated statements) for stocks + mutual funds
 - 📋 Groww and Upstox CSV import
-- 📋 Corporate actions — splits, bonuses, dividends adjust cost basis automatically
+- ✅ Corporate actions — splits, bonuses, dividends adjust cost basis (`portfolio actions --apply`)
 
 **Mutual funds & India specifics**
 - 📋 Mutual funds via AMFI NAVs — `mf search`, `mf nav`, `mf sip` with XIRR
@@ -56,7 +56,7 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - 📋 GTT / stop-loss orders with the same safety flow
 
 **Portfolio & alerts**
-- 📋 Named portfolios (`--portfolio long-term`)
+- ✅ Named portfolios (`--portfolio long-term`)
 - 📋 Secure credential storage via the OS keyring (no plaintext broker secrets)
 - 📋 `alert watch` — a lightweight loop that checks alerts during market hours
 - 📋 Notifications — Telegram, Slack, Discord, email, and desktop, for alerts and daemon events
@@ -72,7 +72,7 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - 💡 F&O: option chains, greeks, IV, PCR, max pain
 - 💡 Crypto and forex as first-class markets (quotes already work: `BTC-USD`, `USDINR=X`)
 - 💡 Mutual-fund / ETF screening and overlap analysis
-- 💡 Mixed-currency portfolios with INR/USD conversion
+- ✅ Mixed-currency portfolios with INR/USD conversion
 - 💡 Data-provider abstraction (official NSE feeds, Alpha Vantage, Polygon) beyond Yahoo
 - 💡 Web/REST mode for remote dashboards; Prometheus metrics for the daemon
 - 💡 Docker image and Nix flake

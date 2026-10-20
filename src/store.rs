@@ -57,6 +57,11 @@ pub fn load_from<T: DeserializeOwned + Default>(path: &Path) -> Result<T> {
 /// Unix) — used for broker credentials.
 pub fn save_to<T: Serialize>(path: &Path, value: &T, private: bool) -> Result<()> {
     let data = serde_json::to_string_pretty(value)?;
+    // Named portfolios live in a subdirectory (`portfolios/NAME.json`).
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("Cannot create directory {}", dir.display()))?;
+    }
     // Per-process temp name so a concurrent writer (e.g. the daemon) can't
     // rename our half-written file or delete it from under us.
     let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));

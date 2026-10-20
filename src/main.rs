@@ -26,6 +26,7 @@ mod market;
 mod portfolio;
 mod simulator;
 mod store;
+mod tax;
 mod technical;
 mod watchlist;
 mod wealth;
@@ -78,8 +79,24 @@ struct Cli {
     )]
     ai: bool,
 
+    /// Portfolio to use: `default` (portfolio.json) or a name such as `long-term`
+    #[arg(
+        long,
+        global = true,
+        env = "STOCKWISE_PORTFOLIO",
+        value_name = "NAME",
+        value_parser = portfolio_name
+    )]
+    portfolio: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
+}
+
+fn portfolio_name(s: &str) -> Result<String, String> {
+    portfolio::normalize_name(Some(s))
+        .map(|n| n.unwrap_or_else(|| "default".into()))
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Subcommand)]
@@ -348,9 +365,12 @@ enum Commands {
     },
 
     // ── Portfolio ──
-    /// Track holdings and P&L (default: show)
+    /// Track holdings, lots and P&L (default: show)
     #[command(alias = "p")]
     Portfolio {
+        /// Currency for totals when holdings mix INR and USD (default: the market's)
+        #[arg(long, global = true, value_enum, ignore_case = true)]
+        base: Option<BaseCurrency>,
         #[command(subcommand)]
         action: Option<PortfolioCmd>,
     },
@@ -415,20 +435,61 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum PortfolioCmd {
-    /// Add shares (averages into an existing holding)
+    /// Add a purchase as a new lot
     Add {
         symbol: String,
         /// Number of shares
         shares: f64,
         /// Price paid per share
         cost: f64,
+        /// Purchase date, YYYY-MM-DD (default: today) — used for LTCG/STCG and XIRR
+        #[arg(long)]
+        date: Option<String>,
     },
-    /// Remove a holding
+    /// Record a sale: oldest lots first (FIFO), realized P&L kept for `tax`
+    Sell {
+        symbol: String,
+        /// Number of shares sold
+        shares: f64,
+        /// Sale price per share (default: the live price; required with a past --date)
+        price: Option<f64>,
+        /// Sale date, YYYY-MM-DD (default: today)
+        #[arg(long)]
+        date: Option<String>,
+    },
+    /// A holding's lots, sales and dividends; --lot N --date fixes a purchase date
+    Lots {
+        symbol: String,
+        /// Lot number (from the list) whose purchase date to correct
+        #[arg(long, requires = "date")]
+        lot: Option<usize>,
+        /// Correct purchase date for --lot, YYYY-MM-DD
+        #[arg(long, requires = "lot")]
+        date: Option<String>,
+    },
+    /// Splits, bonuses and dividends since you bought; --apply records them
+    Actions {
+        /// Only this holding (default: all)
+        symbol: Option<String>,
+        /// Adjust lots and record dividends (otherwise only shows them)
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Remove a holding and its lots without recording a sale
     #[command(alias = "rm")]
     Remove { symbol: String },
-    /// Show holdings with live P&L
-    #[command(alias = "list")]
+    /// Show holdings with live P&L and XIRR
     Show,
+    /// List your portfolios (see --portfolio)
+    List,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum BaseCurrency {
+    /// Indian rupee
+    Inr,
+    /// US dollar
+    Usd,
 }
 
 #[derive(Subcommand)]
@@ -769,6 +830,10 @@ async fn main() {
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     let m = cli.market;
     ai::set_auto_ai(cli.ai);
+    if let Err(e) = portfolio::select(cli.portfolio.as_deref()) {
+        eprintln!("\n  {} {:#}\n", colored::Colorize::red("Error:"), e);
+        std::process::exit(2);
+    }
 
     let result = match cli.command {
         Commands::Quote { symbols, json } => commands::cmd_quote(&symbols, m, json).await,
@@ -861,17 +926,32 @@ async fn main() {
         },
         Commands::Report { what } => commands::cmd_report(&what, m).await,
 
-        Commands::Portfolio { action } => match action {
+        Commands::Portfolio { base, action } => match action {
             Some(PortfolioCmd::Add {
                 symbol,
                 shares,
                 cost,
-            }) => commands::cmd_portfolio("add", Some(&symbol), Some(shares), Some(cost), m).await,
-            Some(PortfolioCmd::Remove { symbol }) => {
-                commands::cmd_portfolio("remove", Some(&symbol), None, None, m).await
+                date,
+            }) => commands::cmd_portfolio_add(&symbol, shares, cost, date.as_deref(), m).await,
+            Some(PortfolioCmd::Sell {
+                symbol,
+                shares,
+                price,
+                date,
+            }) => commands::cmd_portfolio_sell(&symbol, shares, price, date.as_deref(), m).await,
+            Some(PortfolioCmd::Lots { symbol, lot, date }) => {
+                commands::cmd_portfolio_lots(&symbol, lot, date.as_deref(), m).await
             }
+            Some(PortfolioCmd::Actions { symbol, apply }) => {
+                commands::cmd_portfolio_actions(symbol.as_deref(), apply, m).await
+            }
+            Some(PortfolioCmd::Remove { symbol }) => {
+                commands::cmd_portfolio_remove(&symbol, m).await
+            }
+            Some(PortfolioCmd::List) => commands::cmd_portfolio_list(),
             Some(PortfolioCmd::Show) | None => {
-                commands::cmd_portfolio("show", None, None, None, m).await
+                let base = base.map(|b| value_name(b).to_uppercase());
+                commands::cmd_portfolio_show(m, base.as_deref()).await
             }
         },
         Commands::Watch { action } => match action {
@@ -1019,6 +1099,65 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
         }
+    }
+
+    #[test]
+    fn portfolio_lot_commands_parse() {
+        for args in [
+            vec![
+                "stockwise",
+                "portfolio",
+                "add",
+                "TCS",
+                "10",
+                "3500",
+                "--date",
+                "2023-04-12",
+            ],
+            vec!["stockwise", "portfolio", "sell", "TCS", "5"],
+            vec![
+                "stockwise",
+                "portfolio",
+                "sell",
+                "TCS",
+                "5",
+                "3900",
+                "--date",
+                "2024-01-02",
+            ],
+            vec!["stockwise", "portfolio", "lots", "TCS"],
+            vec![
+                "stockwise",
+                "portfolio",
+                "lots",
+                "TCS",
+                "--lot",
+                "1",
+                "--date",
+                "2022-01-03",
+            ],
+            vec!["stockwise", "portfolio", "actions"],
+            vec!["stockwise", "portfolio", "actions", "RELIANCE", "--apply"],
+            vec!["stockwise", "portfolio", "list"],
+            vec!["stockwise", "portfolio", "--base", "usd"],
+            vec!["stockwise", "portfolio", "show", "--base", "INR"],
+            vec!["stockwise", "--portfolio", "long-term", "portfolio"],
+            vec!["stockwise", "tax", "in", "--portfolio", "us"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
+        }
+        // --lot and --date only make sense together.
+        assert!(
+            Cli::try_parse_from(["stockwise", "portfolio", "lots", "TCS", "--lot", "1"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["stockwise", "portfolio", "--base", "eur"]).is_err());
+        assert!(Cli::try_parse_from(["stockwise", "--portfolio", "../x", "portfolio"]).is_err());
+    }
+
+    #[test]
+    fn portfolio_name_flag_is_normalized() {
+        let cli = Cli::try_parse_from(["stockwise", "--portfolio", "Long-Term", "doctor"]).unwrap();
+        assert_eq!(cli.portfolio.as_deref(), Some("long-term"));
     }
 
     #[test]
