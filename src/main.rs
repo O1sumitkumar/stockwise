@@ -12,9 +12,9 @@
 
 mod ai;
 mod alerts;
-mod angel;
 mod api;
 mod backtest;
+mod brokers;
 mod charts;
 mod clock;
 mod commands;
@@ -508,11 +508,11 @@ stockwise options TCS                     expected moves (same as `options moves
         what: ExportWhat,
     },
 
-    /// Import holdings from a broker CSV export
+    /// Import holdings from a broker CSV export or a CAS statement
     Import {
         #[arg(value_enum, ignore_case = true)]
         source: ImportSource,
-        /// Path to the exported CSV file
+        /// Path to the exported CSV file (or casparser JSON/CSV for `cas`)
         file: String,
         /// Rebuild holdings from a dated file even if that replaces lots or
         /// sales recorded another way (manual entries, another import)
@@ -539,8 +539,19 @@ stockwise options TCS                     expected moves (same as `options moves
     Pcorr,
 
     // ── Live trading ──
-    /// Live trading via Angel One (real money — try `sim` first)
+    /// Live orders: Angel One; Zerodha/Upstox/Dhan/Fyers experimental (real money — try `sim` first)
     Trade {
+        /// Broker to use. angel is the original integration; zerodha, upstox, dhan and
+        /// fyers are experimental — untested against a live account
+        #[arg(
+            long,
+            global = true,
+            value_enum,
+            env = "STOCKWISE_BROKER",
+            default_value = "angel",
+            ignore_case = true
+        )]
+        broker: brokers::BrokerKind,
         #[command(subcommand)]
         action: TradeCmd,
     },
@@ -992,31 +1003,53 @@ impl From<OrderFlags> for commands::OrderOpts {
     }
 }
 
+/// Order-type prices for `trade buy` / `trade sell`: none = MARKET,
+/// `--limit` = LIMIT, `--trigger` = SL-M, both = SL.
+#[derive(Args, Clone, Copy)]
+struct PriceFlags {
+    /// Limit price (a LIMIT order; with --trigger, an SL order)
+    #[arg(long)]
+    limit: Option<f64>,
+    /// Stop-loss trigger price (an SL-M order; with --limit, an SL order)
+    #[arg(long, alias = "stop")]
+    trigger: Option<f64>,
+}
+
 #[derive(Subcommand)]
 enum TradeCmd {
-    /// How to connect your Angel One account
+    /// How to connect your broker account
     Setup,
     /// Create the credentials file, or show whether it is configured
-    Config,
+    Config {
+        /// Move secrets from the file into the OS keyring now
+        #[arg(long)]
+        keyring: bool,
+    },
+    /// Log in and save today's session (Zerodha, Upstox, Fyers; paste a Dhan token)
+    Login,
     /// Live holdings (also synced into `portfolio`)
     Holdings,
     /// Open intraday positions
     Positions,
     /// Today's order book
     Orders,
-    /// Market BUY on NSE (asks for confirmation)
+    /// BUY on NSE: market, or --limit / --trigger for LIMIT, SL, SL-M (asks for confirmation)
     Buy {
         symbol: String,
         /// Number of shares
         qty: u32,
         #[command(flatten)]
+        prices: PriceFlags,
+        #[command(flatten)]
         flags: OrderFlags,
     },
-    /// Market SELL on NSE (asks for confirmation)
+    /// SELL on NSE: market, or --limit / --trigger for LIMIT, SL, SL-M (asks for confirmation)
     Sell {
         symbol: String,
         /// Number of shares
         qty: u32,
+        #[command(flatten)]
+        prices: PriceFlags,
         #[command(flatten)]
         flags: OrderFlags,
     },
@@ -1027,6 +1060,53 @@ enum TradeCmd {
         qty: u32,
         /// Limit price
         price: f64,
+        #[command(flatten)]
+        flags: OrderFlags,
+    },
+    /// GTT (good-till-triggered) orders: buy, sell, list, cancel
+    Gtt {
+        #[command(subcommand)]
+        action: GttCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum GttCmd {
+    /// GTT BUY: place a LIMIT buy once the trigger trades (asks for confirmation)
+    Buy {
+        symbol: String,
+        /// Number of shares
+        qty: u32,
+        /// Price that activates the GTT
+        #[arg(long)]
+        trigger: f64,
+        /// Limit price of the order placed when it triggers
+        #[arg(long)]
+        limit: f64,
+        #[command(flatten)]
+        flags: OrderFlags,
+    },
+    /// GTT SELL: a stop-loss below the market or a target above it (asks for confirmation)
+    Sell {
+        symbol: String,
+        /// Number of shares
+        qty: u32,
+        /// Price that activates the GTT
+        #[arg(long)]
+        trigger: f64,
+        /// Limit price of the order placed when it triggers
+        #[arg(long)]
+        limit: f64,
+        #[command(flatten)]
+        flags: OrderFlags,
+    },
+    /// Your GTT orders
+    #[command(alias = "show")]
+    List,
+    /// Cancel a GTT by id (asks for confirmation)
+    Cancel {
+        /// GTT id from `trade gtt list`
+        id: String,
         #[command(flatten)]
         flags: OrderFlags,
     },
@@ -1086,6 +1166,13 @@ enum ImportSource {
     Kite,
     /// INDmoney holdings CSV
     Indmoney,
+    /// Groww stocks holdings export, saved as CSV
+    Groww,
+    /// Upstox holdings export (CSV)
+    Upstox,
+    /// CAMS / KFintech consolidated account statement (casparser JSON or CSV)
+    #[value(alias = "cams", alias = "kfintech")]
+    Cas,
     /// Any CSV with symbol, quantity and average-price columns
     Csv,
 }
@@ -1704,28 +1791,82 @@ async fn main() {
         Commands::Divcal => commands::cmd_divcal(m).await,
         Commands::Pcorr => commands::cmd_pcorr(m).await,
 
-        Commands::Trade { action } => {
-            let (name, symbol, qty, price, flags) = match action {
-                TradeCmd::Setup => ("setup", None, None, None, None),
-                TradeCmd::Config => ("config", None, None, None, None),
-                TradeCmd::Holdings => ("holdings", None, None, None, None),
-                TradeCmd::Positions => ("positions", None, None, None, None),
-                TradeCmd::Orders => ("orders", None, None, None, None),
-                TradeCmd::Buy { symbol, qty, flags } => {
-                    ("buy", Some(symbol), Some(qty), None, Some(flags))
-                }
-                TradeCmd::Sell { symbol, qty, flags } => {
-                    ("sell", Some(symbol), Some(qty), None, Some(flags))
-                }
+        Commands::Trade { broker, action } => {
+            use brokers::Side;
+            use commands::TradeAction as A;
+            let order = |side, symbol, qty, prices: PriceFlags, flags: OrderFlags| A::Order {
+                side,
+                symbol,
+                qty,
+                limit: prices.limit,
+                trigger: prices.trigger,
+                opts: flags.into(),
+            };
+            let gtt = |side, symbol, qty, trigger, limit, flags: OrderFlags| A::GttCreate {
+                side,
+                symbol,
+                qty,
+                trigger,
+                limit,
+                opts: flags.into(),
+            };
+            let action = match action {
+                TradeCmd::Setup => A::Setup,
+                TradeCmd::Config { keyring } => A::Config { keyring },
+                TradeCmd::Login => A::Login,
+                TradeCmd::Holdings => A::Holdings,
+                TradeCmd::Positions => A::Positions,
+                TradeCmd::Orders => A::Orders,
+                TradeCmd::Buy {
+                    symbol,
+                    qty,
+                    prices,
+                    flags,
+                } => order(Side::Buy, symbol, qty, prices, flags),
+                TradeCmd::Sell {
+                    symbol,
+                    qty,
+                    prices,
+                    flags,
+                } => order(Side::Sell, symbol, qty, prices, flags),
                 TradeCmd::Limit {
                     symbol,
                     qty,
                     price,
                     flags,
-                } => ("limit", Some(symbol), Some(qty), Some(price), Some(flags)),
+                } => order(
+                    Side::Buy,
+                    symbol,
+                    qty,
+                    PriceFlags {
+                        limit: Some(price),
+                        trigger: None,
+                    },
+                    flags,
+                ),
+                TradeCmd::Gtt { action } => match action {
+                    GttCmd::Buy {
+                        symbol,
+                        qty,
+                        trigger,
+                        limit,
+                        flags,
+                    } => gtt(Side::Buy, symbol, qty, trigger, limit, flags),
+                    GttCmd::Sell {
+                        symbol,
+                        qty,
+                        trigger,
+                        limit,
+                        flags,
+                    } => gtt(Side::Sell, symbol, qty, trigger, limit, flags),
+                    GttCmd::List => A::GttList,
+                    GttCmd::Cancel { id, flags } => A::GttCancel {
+                        id,
+                        opts: flags.into(),
+                    },
+                },
             };
-            let opts = flags.map(Into::into).unwrap_or_default();
-            commands::cmd_trade(name, symbol.as_deref(), qty, price, opts, m).await
+            commands::cmd_trade(broker, action, m).await
         }
 
         Commands::Tui { interval, snapshot } => {
@@ -1896,6 +2037,8 @@ mod tests {
             vec!["stockwise", "sim", "start", "100000", "2"],
             vec!["stockwise", "trade", "buy", "RELIANCE", "10"],
             vec!["stockwise", "trade", "limit", "RELIANCE", "10", "1300"],
+            vec!["stockwise", "trade", "config"],
+            vec!["stockwise", "trade", "holdings"],
             vec!["stockwise", "import", "zerodha", "holdings.csv"],
             vec!["stockwise", "tax", "india"],
             vec!["stockwise", "daemon", "intraday", "25000"],
@@ -2285,9 +2428,110 @@ mod tests {
     }
 
     #[test]
+    fn trade_broker_flag_and_order_types_parse() {
+        for args in [
+            vec!["stockwise", "trade", "--broker", "zerodha", "holdings"],
+            vec!["stockwise", "trade", "holdings", "--broker", "kite"],
+            vec!["stockwise", "trade", "orders", "--broker", "Upstox"],
+            vec!["stockwise", "trade", "login", "--broker", "fyers"],
+            vec![
+                "stockwise",
+                "trade",
+                "config",
+                "--keyring",
+                "--broker",
+                "dhan",
+            ],
+            vec![
+                "stockwise",
+                "trade",
+                "sell",
+                "TCS",
+                "5",
+                "--trigger",
+                "3400",
+            ],
+            vec![
+                "stockwise",
+                "trade",
+                "sell",
+                "TCS",
+                "5",
+                "--trigger",
+                "3400",
+                "--limit",
+                "3390",
+            ],
+            vec![
+                "stockwise",
+                "trade",
+                "buy",
+                "TCS",
+                "5",
+                "--limit",
+                "3300",
+                "--dry-run",
+            ],
+            vec![
+                "stockwise",
+                "trade",
+                "gtt",
+                "sell",
+                "TCS",
+                "5",
+                "--trigger",
+                "3400",
+                "--limit",
+                "3390",
+            ],
+            vec!["stockwise", "trade", "gtt", "list"],
+            vec!["stockwise", "trade", "gtt", "cancel", "12345", "--yes"],
+            vec!["stockwise", "import", "groww", "h.csv"],
+            vec!["stockwise", "import", "upstox", "h.csv"],
+            vec!["stockwise", "import", "cas", "cas.json"],
+            vec!["stockwise", "import", "cams", "cas.json"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
+        }
+        // GTT needs both prices; unknown brokers are rejected.
+        assert!(
+            Cli::try_parse_from([
+                "stockwise",
+                "trade",
+                "gtt",
+                "sell",
+                "TCS",
+                "5",
+                "--trigger",
+                "1"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["stockwise", "trade", "--broker", "robinhood", "holdings"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn trade_defaults_to_angel() {
+        // SAFETY of the default: an unset STOCKWISE_BROKER keeps 0.3 behaviour.
+        if std::env::var_os("STOCKWISE_BROKER").is_some() {
+            return;
+        }
+        let cli = Cli::try_parse_from(["stockwise", "trade", "holdings"]).unwrap();
+        let Commands::Trade { broker, .. } = cli.command else {
+            panic!("expected trade");
+        };
+        assert_eq!(broker, brokers::BrokerKind::Angel);
+    }
+
+    #[test]
     fn value_names_match_handler_strings() {
         assert_eq!(value_name(Strategy::Bb), "bb");
         assert_eq!(value_name(ImportSource::Kite), "kite");
+        assert_eq!(value_name(ImportSource::Groww), "groww");
+        assert_eq!(value_name(ImportSource::Cas), "cas");
         assert_eq!(value_name(TaxCountry::In), "in");
         assert_eq!(value_name(AlertWhen::Above), "above");
         assert_eq!(value_name(DaemonMode::Longterm), "longterm");

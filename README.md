@@ -129,7 +129,7 @@ Homebrew, AUR and Nix install the man pages and completions for you.
 | **Strategies & bots** | `backtest`, `sip`, `whatif`, `intraday`, `longterm`, `daemon`, `sim`, `report` |
 | **Portfolio** | `portfolio`, `watch`, `alert`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
 | **Interfaces** | `tui`, `serve` |
-| **Live trading** | `trade` (Angel One) |
+| **Live trading** | `trade` (Angel One; Zerodha, Upstox, Dhan, Fyers experimental) |
 
 `stockwise --help` shows the same groups; [docs/commands.md](docs/commands.md)
 has every option.
@@ -137,7 +137,7 @@ has every option.
 ### Track a portfolio
 
 ```bash
-stockwise import kite ~/Downloads/holdings.csv   # or: portfolio add TCS 10 3500 --date 2023-04-12
+stockwise import kite ~/Downloads/holdings.csv   # also groww, upstox, cas; or: portfolio add TCS 10 3500 --date 2023-04-12
 stockwise portfolio                              # live P&L, XIRR + allocation
 stockwise portfolio sell TCS 5 3900              # FIFO sale, realized P&L kept for tax
 stockwise portfolio actions --apply              # splits, bonuses and dividends since you bought
@@ -227,17 +227,21 @@ stockwise alert watch               # checks during market hours, notifies once 
 
 See [notifications](docs/bots.md#notifications) for every channel.
 
-### Live orders (optional, Angel One)
+### Live orders (optional)
 
 ```bash
-stockwise trade setup                          # how to create owner-only credentials
+stockwise trade setup                          # how to connect Angel One
 stockwise trade buy RELIANCE 10 --dry-run      # resolve + preview, send nothing
 stockwise trade buy RELIANCE 10                # preview, then type "yes" to send
+stockwise trade sell RELIANCE 10 --trigger 1250            # stop-loss (SL-M)
+stockwise trade holdings --broker zerodha      # also: upstox, dhan, fyers (experimental)
 ```
 
 Orders resolve the exact NSE instrument, show the estimated value, respect an
 optional `max_order_value` cap, and refuse to run unattended without `--yes`.
-See [docs/angel-one.md](docs/angel-one.md).
+Broker secrets live in the OS keyring when one is available. Zerodha Kite,
+Upstox, Dhan and Fyers are **experimental — untested against a live account**:
+read-only until you opt in. See [docs/brokers.md](docs/brokers.md).
 
 ### Local AI (optional)
 
@@ -295,6 +299,8 @@ Precedence: **flag > environment variable > config file > built-in default.**
 | `redis_url` | `STOCKWISE_REDIS_URL` | | Optional shared cache (`redis://…`), or `off` |
 | `[periods] <command>` | | `-p` | Default period for `technical`, `history`, `risk`, `backtest`, `sip`, ... |
 | `[notify] telegram_token`, ... | `STOCKWISE_TELEGRAM_TOKEN`, `STOCKWISE_SLACK_WEBHOOK`, … | | Notification channels — see [docs/bots.md](docs/bots.md#notifications) |
+| | `STOCKWISE_BROKER` | `trade --broker` | Default broker for `trade`: `angel` (default), `zerodha`, `upstox`, `dhan`, `fyers` |
+| | `STOCKWISE_KEYRING` | | `off` keeps broker secrets in the owner-only file instead of the OS keyring |
 | | `STOCKWISE_BIND` / `STOCKWISE_API_TOKEN` | `serve --bind` | `serve` address and bearer token |
 | | `STOCKWISE_CONFIG` | | Use another config file |
 | | `NO_COLOR` | | Disable colours (also automatic when piping) |
@@ -311,14 +317,14 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 - [Commands reference](docs/commands.md)
 - [Terminal dashboard](docs/tui.md) and [HTTP API & metrics](docs/server.md)
 - [Trading bots](docs/bots.md) and [bot design](docs/bot-design.md)
-- [Angel One setup](docs/angel-one.md)
+- [Brokers: live trading, keyring, imports](docs/brokers.md)
 - [AI: Ollama and cloud providers](docs/ai.md)
 - [Data providers](docs/data-providers.md)
 - [Architecture](docs/architecture.md)
 
 ## Roadmap & contributing
 
-Next up: more brokers (Zerodha, Upstox) and Hindi for every command — see the
+Next up: Hindi for every command, official NSE data, and live-tested broker integrations — see the
 [ROADMAP](ROADMAP.md). Ideas and bug reports are
 welcome in [Discussions](https://github.com/iamsaquib8/stockwise/discussions) and
 [Issues](https://github.com/iamsaquib8/stockwise/issues); start with

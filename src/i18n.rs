@@ -303,6 +303,13 @@ messages! {
     DoctorAngelConfigured => "configured for {0}{1}", "{0} के लिए कॉन्फ़िगर{1}";
     DoctorAngelMaxOrder => ", max order ₹{0}", ", अधिकतम ऑर्डर ₹{0}";
     DoctorAngelNotConfigured => "not configured (optional; `trade setup` for live trading)", "कॉन्फ़िगर नहीं (वैकल्पिक; लाइव ट्रेडिंग के लिए `trade setup`)";
+    DoctorKeyring => "Keyring", "कीरिंग";
+    DoctorKeyringAvailable => "{0} available for broker secrets", "ब्रोकर सीक्रेट्स के लिए {0} उपलब्ध";
+    DoctorKeyringNotUsed => "not used ({0}); broker secrets stay in owner-only files", "उपयोग में नहीं ({0}); ब्रोकर सीक्रेट्स केवल आपकी पढ़ी जा सकने वाली फ़ाइलों में रहते हैं";
+    DoctorBrokerPlaceholder => "placeholder values in {0} — `trade config --broker {1}`", "{0} में अभी नमूना मान हैं — `trade config --broker {1}`";
+    DoctorBrokerOrdersOn => "live orders enabled", "लाइव ऑर्डर चालू";
+    DoctorBrokerOrdersOff => "live orders off (read-only)", "लाइव ऑर्डर बंद (केवल देखना)";
+    DoctorAngelStopGttOn => "SL/SL-M and GTT enabled", "SL/SL-M और GTT चालू";
     DoctorMarketDataDown => "Market data is unreachable", "मार्केट डेटा तक पहुँच नहीं हो पा रही";
 
     // ── Errors ──

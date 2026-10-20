@@ -18,10 +18,11 @@ src/
     strategies.rs    backtest, sip, whatif, intraday, longterm, report
     portfolio.rs     portfolio (show, add, sell, lots, actions, list) and valuation in a base currency
     holdings.rs      watch, alert, import, export, wealth, rebalance, harvest, tax, divcal, pcorr
+    imports.rs       Groww / Upstox CSV and CAS (casparser JSON/CSV) import parsers
     sim.rs           paper-trading simulator (settle replays intraday bars)
     worker.rs        daemon intraday / longterm loops
     alerting.rs      alert watch loop, notify status/test
-    trade.rs         Angel One orders: instrument resolution, preview, confirmation
+    trade.rs         Live orders for every broker: place_live_order (validation, preview, cap, confirmation)
     interfaces.rs    tui and serve (behind the `tui` / `server` cargo features)
   views.rs           Data behind quote/history/markets/portfolio/watchlist/alerts as structs,
                      shared by the CLI printers, the TUI and the server; `DataSource` trait
@@ -37,7 +38,8 @@ src/
   api.rs             Yahoo Finance client (session, quotes, charts, search, cache, retries); routes to a provider
   providers/         MarketData trait + opt-in Alpha Vantage, Massive (Polygon), Twelve Data; Yahoo fills gaps
   i18n.rs            Typed English/Hindi message catalog, --lang / STOCKWISE_LANG / locale detection
-  angel.rs           Angel One SmartAPI (login, TOTP, exact instrument lookup, orders)
+  brokers/           Broker trait + clients: angel (SmartAPI, TOTP), zerodha, upstox, dhan, fyers
+                     (experimental), secrets.rs (OS keyring / owner-only file), mock.rs (test HTTP server)
   funds.rs           AMFI NAV file + api.mfapi.in history (cached), returns, SIP, ETF holdings overlap
   derivatives.rs     Option chains from NSE / Yahoo, PCR, max pain, per-contract IV and greeks
   greeks.rs          Black-Scholes pricing, greeks, implied-volatility solver
@@ -81,7 +83,7 @@ User Input → clap CLI → commands/* → views.rs → api.rs → Yahoo Finance
                                    → funds.rs → AMFI NAVAll.txt, api.mfapi.in
                                    → derivatives.rs → NSE option chain (India), Yahoo (US)
                                             → providers/* → Alpha Vantage / Massive / Twelve Data (opt-in)
-                                   → angel.rs → Angel One
+                                   → brokers/* → Angel One, Kite, Upstox, Dhan, Fyers
                                    → ai.rs → Local Ollama (or opt-in OpenAI / Anthropic / Gemini)
                                    → technical.rs (indicators)
                                    → intraday.rs / longterm.rs (bots)
@@ -125,7 +127,8 @@ Rate limiting: 200ms minimum between requests (5 req/sec). Retry: 3 attempts wit
 Location: `~/Library/Application Support/stockwise/` (macOS), `~/.local/share/stockwise/` (Linux), or
 `%LOCALAPPDATA%\stockwise\` (Windows). Set `STOCKWISE_HOME` (or `home` in the config file) to use another directory;
 `stockwise doctor` prints the active path. Files are written atomically (temp file + rename), and
-`angel_config.json` is readable only by you (0600 on Unix).
+broker config files are readable only by you (0600 on Unix). Broker secrets move into
+the OS keyring when one is available (`STOCKWISE_KEYRING=off` keeps them in the file).
 
 | File | Purpose |
 |------|---------|
@@ -138,7 +141,8 @@ Location: `~/Library/Application Support/stockwise/` (macOS), `~/.local/share/st
 | `sim_history.json` | Paper trading sessions and results |
 | `daemon_state.json` / `daemon_state_us.json` | The intraday daemon's current day (positions, risk), saved every tick |
 | `alert_watch.json` | Which alerts `alert watch` already announced |
-| `angel_config.json` | Angel One API credentials |
+| `angel_config.json` | Angel One API credentials (secrets in the OS keyring when available) |
+| `zerodha_config.json`, `upstox_config.json`, `dhan_config.json`, `fyers_config.json` | Experimental broker apps and daily sessions (secrets in the keyring when available) |
 | `cache/` | AMFI NAV file and per-scheme NAV history, re-downloaded after 12 hours (safe to delete) |
 
 ## Dependencies
@@ -147,7 +151,11 @@ Location: `~/Library/Application Support/stockwise/` (macOS), `~/.local/share/st
 |-------|---------|
 | `clap` | CLI argument parsing (derive macros) |
 | `clap_complete` / `clap_mangen` | Shell completions and man pages generated from the CLI definition |
-| `reqwest` | HTTP client (Yahoo Finance, Angel One, Ollama) |
+| `reqwest` | HTTP client (Yahoo Finance, brokers, Ollama) |
+| `keyring` | OS keyring for broker secrets |
+| `async-trait` | `dyn Broker` with async methods |
+| `sha2` / `flate2` | Kite/Fyers login checksums; gzipped instrument lists |
+| `rpassword` | Hidden prompt for pasted tokens |
 | `redis` | Redis caching (optional, falls back to in-memory) |
 | `tokio` | Async runtime |
 | `serde` / `serde_json` | JSON serialization |

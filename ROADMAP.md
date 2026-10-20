@@ -46,20 +46,24 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 ## 📋 Next — India depth, brokers & alerts (0.4)
 
 **Brokers & data in**
-- 📋 Native brokers: Zerodha Kite, Upstox, Dhan, Fyers — read-only holdings first; orders
-  through the same preview → confirm flow as Angel One
-- 📋 CAS import (CAMS / KFintech consolidated statements) for stocks + mutual funds
-- 📋 Groww and Upstox CSV import
+- ✅ Native brokers: Zerodha Kite, Upstox, Dhan, Fyers — `trade --broker`, holdings,
+  positions, orders, all through the same preview → confirm flow as Angel One
+  (**experimental** — untested against a live account; read-only until you opt in)
+- ✅ CAS import (CAMS / KFintech, NSDL / CDSL) for stocks + mutual funds, via casparser
+  JSON/CSV (the PDF itself is not read)
+- ✅ Groww and Upstox CSV import
 - ✅ Corporate actions — splits, bonuses, dividends adjust cost basis (`portfolio actions --apply`)
 
 **Mutual funds & India specifics**
 - ✅ Mutual funds via AMFI NAVs — `mf search`, `mf nav`, `mf history`, `mf sip` with XIRR
 - ✅ NSE holiday calendar and an IST market clock for every time-aware command
-- 📋 GTT / stop-loss orders with the same safety flow
+- ✅ GTT / stop-loss orders (SL, SL-M, single-leg GTT) with the same safety flow
+  (experimental)
 
 **Portfolio & alerts**
 - ✅ Named portfolios (`--portfolio long-term`)
-- 📋 Secure credential storage via the OS keyring (no plaintext broker secrets)
+- ✅ Secure credential storage via the OS keyring (no plaintext broker secrets), with an
+  owner-only file fallback on headless systems
 - ✅ `alert watch` — a lightweight loop that checks alerts during market hours
 - ✅ Notifications — Telegram, Slack, Discord, email, and desktop, for alerts and daemon events
 

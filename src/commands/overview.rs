@@ -666,21 +666,58 @@ pub async fn cmd_doctor(market: Market, sources: crate::config::CliSources) -> R
     };
     print_kv(t(Msg::DoctorAi), &ai_line);
 
-    // Broker
-    let broker = match crate::angel::AngelConfig::load() {
-        Ok(c) if c.is_configured() => ok(&tf(
-            Msg::DoctorAngelConfigured,
-            &[
-                &c.client_id,
-                &c.max_order_value
+    // Brokers: Angel One always; the others once they have a config file.
+    // Read-only: doctor never moves secrets into the keyring.
+    let backend = crate::brokers::secrets::backend();
+    print_kv(
+        t(Msg::DoctorKeyring),
+        &match backend.available() {
+            Ok(()) => ok(&tf(Msg::DoctorKeyringAvailable, &[&backend.name()])),
+            Err(reason) => tf(Msg::DoctorKeyringNotUsed, &[&reason])
+                .dimmed()
+                .to_string(),
+        },
+    );
+    for kind in crate::brokers::BrokerKind::ALL {
+        let line = match crate::brokers::config_status(kind, false) {
+            Ok(st) if !st.exists && kind != crate::brokers::BrokerKind::Angel => continue,
+            Ok(st) if st.configured => {
+                let limits = crate::brokers::order_limits(kind).unwrap_or_default();
+                let mut extra = limits
+                    .max_order_value
                     .map(|v| tf(Msg::DoctorAngelMaxOrder, &[&format!("{:.0}", v)]))
-                    .unwrap_or_default(),
-            ],
-        )),
-        Ok(_) => t(Msg::DoctorAngelNotConfigured).dimmed().to_string(),
-        Err(e) => warn(&format!("{:#}", e)),
-    };
-    print_kv(t(Msg::DoctorAngel), &broker);
+                    .unwrap_or_default();
+                if let Some(s) = &st.session {
+                    extra.push_str(&format!(", {s}"));
+                }
+                match (kind.experimental(), limits.enable_orders) {
+                    (true, true) => extra.push_str(&format!(", {}", t(Msg::DoctorBrokerOrdersOn))),
+                    (true, false) => {
+                        extra.push_str(&format!(", {}", t(Msg::DoctorBrokerOrdersOff)))
+                    }
+                    (false, true) => extra.push_str(&format!(", {}", t(Msg::DoctorAngelStopGttOn))),
+                    (false, false) => {}
+                }
+                extra.push_str(&format!(
+                    ", {}",
+                    crate::brokers::secrets::describe(&st.storage, backend)
+                ));
+                ok(&tf(Msg::DoctorAngelConfigured, &[&st.summary, &extra]))
+            }
+            Ok(st) if st.exists => warn(&tf(
+                Msg::DoctorBrokerPlaceholder,
+                &[&st.path.display(), &kind.id()],
+            )),
+            Ok(_) => t(Msg::DoctorAngelNotConfigured).dimmed().to_string(),
+            Err(e) => warn(&format!("{:#}", e)),
+        };
+        let label = if kind == crate::brokers::BrokerKind::Angel {
+            t(Msg::DoctorAngel).to_string()
+        } else {
+            kind.display()
+        };
+        print_kv(&label, &line);
+    }
     println!();
 
     if let Some(path) = cfg_invalid {

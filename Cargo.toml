@@ -46,6 +46,14 @@ notify-rust = { version = "4.11", optional = true }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache"], optional = true }
 # `server` feature: read-only JSON API and Prometheus metrics.
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "matched-path"], optional = true }
+# Broker integrations: dyn-compatible async trait, OS keyring for secrets,
+# SHA-256 for Kite/Fyers login checksums, gzip for Upstox instrument files,
+# hidden prompt for pasted access tokens.
+async-trait = "0.1"
+keyring = "4"
+sha2 = "0.10"
+flate2 = "1"
+rpassword = "7"
 
 [features]
 default = ["tui", "server"]

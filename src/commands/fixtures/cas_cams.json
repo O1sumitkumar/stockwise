@@ -1,0 +1,60 @@
+{
+  "statement_period": { "from": "01-Apr-2024", "to": "31-Mar-2025" },
+  "file_type": "CAMS",
+  "cas_type": "DETAILED",
+  "investor_info": { "name": "JOHN DOE", "email": "john@example.com", "address": "1, MAIN STREET, BENGALURU 560001", "mobile": "+919999999999" },
+  "folios": [
+    {
+      "folio": "12345678 / 90",
+      "amc": "HDFC Mutual Fund",
+      "name": "JOHN DOE",
+      "PAN": "ABCDE1234F",
+      "KYC": "OK",
+      "PANKYC": "OK",
+      "schemes": [
+        {
+          "scheme": "HDFC Flexi Cap Fund - Direct Plan - Growth",
+          "advisor": "ARN-12345", "rta_code": "H1234", "rta": "CAMS", "type": "EQUITY",
+          "isin": "INF179K01VY8", "amfi": "118834", "nominees": ["JANE DOE"],
+          "open": "0.000", "close": "23.412", "close_calculated": "23.412",
+          "valuation": { "date": "2025-03-31", "nav": "165.41", "cost": "3499.75", "value": "3872.52" },
+          "transactions": [
+            { "date": "2024-04-02", "description": "SIP Purchase - Instalment 1/12", "amount": "4999.75", "units": "33.412", "nav": "149.64", "balance": "33.412", "type": "PURCHASE_SIP", "dividend_rate": null },
+            { "date": "2024-04-02", "description": "*** Stamp Duty ***", "amount": "0.25", "units": null, "nav": null, "balance": null, "type": "STAMP_DUTY_TAX", "dividend_rate": null },
+            { "date": "2024-09-10", "description": "Redemption", "amount": "1499.00", "units": "-10.000", "nav": "149.90", "balance": "23.412", "type": "REDEMPTION", "dividend_rate": null }
+          ]
+        },
+        {
+          "scheme": "HDFC Liquid Fund - Direct Plan - Growth",
+          "advisor": null, "rta_code": "H5678", "rta": "CAMS", "type": "DEBT",
+          "isin": "INF179KB1HP9", "amfi": "119091", "nominees": [],
+          "open": "1.000", "close": "0.000", "close_calculated": "0.000",
+          "valuation": { "date": "2025-03-31", "nav": "5000.00", "cost": null, "value": "0.00" },
+          "transactions": [
+            { "date": "2024-06-01", "description": "Redemption", "amount": "4900.00", "units": "-1.000", "nav": "4900.00", "balance": "0.000", "type": "REDEMPTION", "dividend_rate": null }
+          ]
+        }
+      ]
+    },
+    {
+      "folio": "998877",
+      "amc": "Parag Parikh Mutual Fund",
+      "PAN": "ABCDE1234F",
+      "KYC": "OK",
+      "PANKYC": "OK",
+      "schemes": [
+        {
+          "scheme": "Parag Parikh Flexi Cap Fund - Direct Plan - Growth",
+          "advisor": null, "rta_code": "PP01", "rta": "KFINTECH", "type": "EQUITY",
+          "isin": "INF879O01027", "amfi": "122639",
+          "open": 0, "close": 100.5, "close_calc": 100.5,
+          "valuation": { "date": "2025-03-31", "nav": 85.1, "value": 8552.55 },
+          "transactions": [
+            { "date": "2023-05-02", "description": "Purchase", "amount": 6000, "units": 100.5, "nav": 59.7, "balance": 100.5, "type": "PURCHASE", "dividend_rate": null }
+          ]
+        }
+      ]
+    }
+  ],
+  "parse_warnings": []
+}

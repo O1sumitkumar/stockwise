@@ -62,8 +62,9 @@ cargo test                 # all tests green
 - Errors: return `anyhow` errors (`bail!`) instead of printing and returning
   `Ok(())`, so scripts see a non-zero exit code. Empty states (nothing in the
   portfolio yet) are not errors.
-- Anything that can place a live order must go through `place_live_order` in
-  `src/commands/trade.rs` — never call `AngelClient::place_order` directly.
+- Anything that can place a live order or GTT must go through `place_live_order`
+  in `src/commands/trade.rs` — never call `Broker::place_order` or
+  `Broker::gtt_create` directly.
 
 ## Good first contributions
 
@@ -79,8 +80,11 @@ cargo test                 # all tests green
 ## Adding a data source or broker
 
 Network access goes through `src/api.rs` (rate limiting, retry, caching). Broker
-integrations live alongside `src/angel.rs`. Keep secrets in config/keyring, never
-in source. See the [ROADMAP](ROADMAP.md) for the brokers we'd love help with.
+integrations implement the `Broker` trait in `src/brokers/` — see `zerodha.rs`
+for a compact example. Keep secrets in `secrets::Secret` fields (stored in the OS
+keyring via `src/brokers/secrets.rs`), never in source, logs or error messages.
+Test against `brokers::mock::MockServer` with fixtures from the broker's docs, and
+label anything not yet run against a live account "experimental".
 
 ## Commit messages
 

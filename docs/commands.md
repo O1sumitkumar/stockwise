@@ -189,7 +189,7 @@ Data lives in the directory shown by `stockwise doctor`.
 | `watch [show] [--json\|--csv]` / `watch add <SYMBOLS...>` / `watch remove <SYMBOLS...>` (`w`) | Watchlist |
 | `alert [list] [--json\|--csv]` / `alert add <SYMBOL> <above\|below> <PRICE>` / `alert check [--json\|--csv]` / `alert remove <N>` | Price alerts |
 | `alert watch [--interval 60] [--once]` | Check alerts while their market is open and notify each trigger once (see [notifications](bots.md#notifications)). `--once` checks every alert once and exits, for cron |
-| `import <kite\|indmoney\|csv> <FILE> [--replace]` | Import broker holdings, a lot list or a tradebook; re-importing updates instead of doubling (see below) |
+| `import <kite\|indmoney\|groww\|upstox\|cas\|csv> <FILE> [--replace]` | Import broker holdings, a lot list, a tradebook or a CAS (casparser JSON/CSV); re-importing updates instead of doubling (see below and [brokers.md](brokers.md#importing-holdings)) |
 | `export <portfolio\|watchlist>` | Write a CSV to the current directory |
 | `wealth` | Save today's portfolio value and show growth (run daily) |
 | `rebalance` | Trades to reach equal weight |
@@ -251,6 +251,11 @@ another import) — `--replace` rebuilds it from the file anyway. Dates may be
 `YYYY-MM-DD`, `DD-MM-YYYY`, `DD/MM/YYYY` (`MM/DD/YYYY` with `-m us`) or
 `15-Mar-2024`; a file with an unrecognized date is refused.
 
+**Groww, Upstox, CAS.** Groww and Upstox exports are snapshots (quantity
+sync, like Kite). A CAS whose transactions cover a fund's whole balance
+rebuilds it as dated lots, with redemptions as realized sales; otherwise only
+the quantity is synced. See [brokers.md](brokers.md#importing-holdings).
+
 **Upgrading.** Portfolios saved before lot tracking are upgraded on first
 load: each holding becomes one lot dated when it was added, and the original
 file is kept once as `portfolio.json.bak`.
@@ -266,17 +271,23 @@ with `--no-default-features` (cargo features `tui` and `server`).
 | `tui [-i SECONDS]` | Full-screen live dashboard: indices, watchlist, portfolio P&L, alerts and a chart of the selected symbol. Refreshes every 30s by default (10-3600). `?` shows the keys. See [tui.md](tui.md) |
 | `serve [--bind ADDR] [--allow-remote]` | JSON API (`/api/quote`, `/api/history/{symbol}`, `/api/markets`, `/api/search`, `/api/portfolio`, `/api/watchlist`, `/api/alerts`), `/healthz` and Prometheus `/metrics`. Listens on `127.0.0.1:8787`; other addresses need `--allow-remote` and `STOCKWISE_API_TOKEN`. See [server.md](server.md) |
 
-## Live trading (Angel One)
+## Live trading
 
-See [angel-one.md](angel-one.md). Orders are previewed and need a typed `yes`.
+See [brokers.md](brokers.md). Orders are previewed and need a typed `yes`.
+Every `trade` command takes `--broker angel|zerodha|upstox|dhan|fyers`
+(default `angel`, or `STOCKWISE_BROKER`); all but `angel` are experimental —
+untested against a live account.
 
 | Command | Description |
 |---------|-------------|
-| `trade setup` / `trade config` | How to connect / create the owner-only credentials file |
+| `trade setup` / `trade config [--keyring]` | How to connect / create the owner-only credentials file, move secrets into the OS keyring |
+| `trade login` | Daily login (Zerodha, Upstox, Fyers) or paste a Dhan token |
 | `trade holdings` / `positions` / `orders` | Live holdings (synced into `portfolio`, keeping your lots), open positions, order book |
-| `trade buy <SYMBOL> <QTY> [--dry-run] [--yes]` | Market buy on NSE |
-| `trade sell <SYMBOL> <QTY> [--dry-run] [--yes]` | Market sell on NSE |
+| `trade buy <SYMBOL> <QTY> [--limit P] [--trigger T] [--dry-run] [--yes]` | Buy on NSE: MARKET, LIMIT, SL-M (`--trigger`) or SL (both) |
+| `trade sell <SYMBOL> <QTY> [--limit P] [--trigger T] [--dry-run] [--yes]` | Sell on NSE, same order types |
 | `trade limit <SYMBOL> <QTY> <PRICE> [--dry-run] [--yes]` | Limit buy on NSE |
+| `trade gtt <buy\|sell> <SYMBOL> <QTY> --trigger T --limit P [--dry-run] [--yes]` | Single-leg GTT (not Upstox) |
+| `trade gtt list` / `trade gtt cancel <ID>` | List / cancel GTTs (cancel asks for confirmation) |
 
 ## Setup
 
