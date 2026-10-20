@@ -80,6 +80,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - AI section titles name the provider (`AI Analysis (Ollama)`) instead of
   always saying Ollama.
 - EUR, GBP and JPY amounts show `€`, `£` and `¥` instead of `$`.
+- `stockwise alert watch [--interval 60] [--once]` — checks alerts while
+  each alert's market is open and announces every trigger once (re-arms when
+  the price moves back, at most once a day; remembered across restarts).
+- Notifications for `alert watch` and the intraday daemon: Telegram, Slack
+  and Discord webhooks, email over SMTP (rustls), and desktop pop-ups with
+  the `desktop-notify` build feature. Configured with `STOCKWISE_*`
+  environment variables; `stockwise notify` shows them and `stockwise notify
+  test` sends a test message. Secrets are never printed or sent anywhere but
+  their own endpoint.
+- Exchange clock: IST for NSE and US Eastern (with daylight saving) for
+  NYSE, with the NSE 2026 and NYSE 2026–2028 holiday calendars and NYSE
+  early closes.
+- `sim settle --now` settles today's session before the close.
+
+### Changed
+- `sim settle` replays each session's own 5-minute bars (falling back to
+  hourly, then daily bars for old sessions): the stop or target that was hit
+  first decides each trade, otherwise it exits at the 15:15 bar. It used to
+  settle every session, from any date, at today's price. Today's session is
+  refused until the market closes.
+- `sim start` refuses to open a session when the market is closed for the
+  day (weekend, holiday, or after the close).
+- `daemon intraday` follows the exchange clock instead of the machine's time
+  zone, skips exchange holidays, and with `-m us` trades NYSE hours.
+- Intraday plans (`intraday`, `sim start`, the daemon) never need more than
+  the capital in total, and the daemon's 30% per-position limit is applied.
+
+### Fixed
+- `daemon intraday` exited on the first network error, losing the day's
+  paper positions. Errors are now logged and retried with backoff; the state
+  is saved to `daemon_state.json` (`daemon_state_us.json` for `-m us`) every
+  tick and resumed after a restart.
+- Ctrl+C in `daemon intraday` now squares off at the last prices, records
+  the day in the simulator history and exits 0, as the banner promised.
+- Positions closed at the second target were not counted by the 3% daily
+  loss kill switch; the kill switch also no longer re-fires every tick.
+- The daemon kept waiting forever after a day with no qualified trades.
+- Daemon P&L right after a first-target partial booking counted the booked
+  half at the current price instead of the target price.
+- Intraday plans could put a long's stop above the entry (support above the
+  price) or a short's below it; such levels are now ignored.
+- The daemon monitors positions from the moment it enters them, not only
+  from 15 minutes after the open, and ignores zero quotes.
 
 ## [0.3.0] - 2026-10-21
 

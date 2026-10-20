@@ -152,10 +152,11 @@ MF periods (`-p`) are `<n>mo`, `<n>y` or `max`, e.g. `6mo`, `3y`, `10y`. Expirie
 | `whatif <SYMBOL> <AMOUNT> <YYYY-MM-DD>` | What a lump sum on a past date is worth today |
 | `intraday <CAPITAL> <TARGET%>` (`bot`) | 9-strategy intraday ideas with Kelly sizing and dual targets. Signals only |
 | `longterm [MONTHLY_BUDGET]` | 6-pillar scoring, Monte Carlo, SIP allocation |
-| `daemon intraday [CAPITAL]` | Paper-trading loop, 9:00–15:30 IST: scan, enter, trail stops every 60s, book half at T1, square off 15:15, settle into `sim` history. **Never sends broker orders** |
+| `daemon intraday [CAPITAL]` | Paper-trading loop on the NSE clock (IST, holidays included; `-m us` uses NYSE hours in ET): scan, enter at the open, trail stops every 60s, book half at T1, square off 15 minutes before the close, settle into `sim` history. Survives network blips, resumes the day after a restart, and squares off on Ctrl+C. **Never sends broker orders** |
 | `daemon longterm` | Post-market scan: scores, portfolio check, alerts, tax-harvest ideas |
-| `sim start [CAPITAL] [TARGET%]` | Start a paper session with the bot's picks (default ₹25,000, 2%) |
-| `sim status` / `settle` / `history` | Live P&L / close at current prices / record + confidence rating |
+| `sim start [CAPITAL] [TARGET%]` | Start a paper session with the bot's picks (default ₹25,000, 2%) on a trading day before the close |
+| `sim status` / `history` | Live P&L / record + confidence rating |
+| `sim settle [--now]` | Settle open sessions from that day's 5-minute bars: stop or target first, else exit at the 15:15 bar. Today's session waits for the close unless `--now` |
 | `sim reset [--yes]` | Delete simulator history after confirmation (a timestamped backup is kept) |
 | `report <intraday\|longterm\|portfolio\|SYMBOL>` | AI report via local Ollama |
 
@@ -170,6 +171,7 @@ Data lives in the directory shown by `stockwise doctor`.
 | `portfolio remove <SYMBOL>` | Remove a holding |
 | `watch [show]` / `watch add <SYMBOLS...>` / `watch remove <SYMBOLS...>` (`w`) | Watchlist |
 | `alert [list]` / `alert add <SYMBOL> <above\|below> <PRICE>` / `alert check` / `alert remove <N>` | Price alerts |
+| `alert watch [--interval 60] [--once]` | Check alerts while their market is open and notify each trigger once (see [notifications](bots.md#notifications)). `--once` checks every alert once and exits, for cron |
 | `import <kite\|indmoney\|csv> <FILE>` | Import broker holdings; re-importing updates instead of doubling |
 | `export <portfolio\|watchlist>` | Write a CSV to the current directory |
 | `wealth` | Save today's portfolio value and show growth (run daily) |
@@ -195,6 +197,7 @@ See [angel-one.md](angel-one.md). Orders are previewed and need a typed `yes`.
 
 | Command | Description |
 |---------|-------------|
+| `notify [status]` / `notify test` | Show the configured notification channels (Telegram, Slack, Discord, email, desktop) / send a test message. See [notifications](bots.md#notifications) |
 | `completions <bash\|zsh\|fish\|powershell\|elvish>` | Print a completion script, e.g. `stockwise completions zsh > ~/.zfunc/_stockwise` |
 | `man [--dir <DIR>]` | Print the `stockwise.1` man page, or write it plus one `stockwise-<command>.1` page per command into `DIR`, e.g. `stockwise man --dir ~/.local/share/man/man1` |
 

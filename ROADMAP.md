@@ -37,11 +37,11 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - 📋 `--csv` output for tables, for spreadsheets
 
 **Correctness**
-- 📋 Daemon resilience — survive network blips, square off on Ctrl+C, IST clock + exchange holidays
+- ✅ Daemon resilience — survive network blips, square off on Ctrl+C, IST clock + exchange holidays
 - 📋 Lot-level holdings with purchase dates, for accurate LTCG/STCG after imports
 - 📋 Portfolio XIRR (money-weighted return) from lots
-- 📋 `sim settle` from intraday bars (did the stop or target hit first?) instead of the closing price
-- 📋 Intraday plans capped at total capital across positions
+- ✅ `sim settle` from intraday bars (did the stop or target hit first?) instead of the closing price
+- ✅ Intraday plans capped at total capital across positions
 
 ## 📋 Next — India depth, brokers & alerts (0.4)
 
@@ -54,14 +54,14 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 
 **Mutual funds & India specifics**
 - ✅ Mutual funds via AMFI NAVs — `mf search`, `mf nav`, `mf history`, `mf sip` with XIRR
-- 📋 NSE holiday calendar and an IST market clock for every time-aware command
+- ✅ NSE holiday calendar and an IST market clock for every time-aware command
 - 📋 GTT / stop-loss orders with the same safety flow
 
 **Portfolio & alerts**
 - 📋 Named portfolios (`--portfolio long-term`)
 - 📋 Secure credential storage via the OS keyring (no plaintext broker secrets)
-- 📋 `alert watch` — a lightweight loop that checks alerts during market hours
-- 📋 Notifications — Telegram, Slack, Discord, email, and desktop, for alerts and daemon events
+- ✅ `alert watch` — a lightweight loop that checks alerts during market hours
+- ✅ Notifications — Telegram, Slack, Discord, email, and desktop, for alerts and daemon events
 
 **AI**
 - ✅ Optional cloud AI providers (OpenAI, Anthropic, Gemini) alongside Ollama, strictly opt-in —

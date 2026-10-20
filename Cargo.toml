@@ -37,6 +37,14 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 redis = { version = "0.27", features = ["tokio-comp"] }
 clap_mangen = { version = "0.3", features = ["env"] }
+# Email notifications over SMTP (rustls, no OpenSSL).
+lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1-rustls-tls"] }
+# Desktop notifications, behind the `desktop-notify` feature.
+notify-rust = { version = "4.11", optional = true }
+
+[features]
+# `cargo install stockwise --features desktop-notify` for desktop notifications.
+desktop-notify = ["dep:notify-rust"]
 
 [profile.release]
 opt-level = 3

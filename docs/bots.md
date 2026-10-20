@@ -36,6 +36,9 @@ stockwise -m us bot 5000 1  # US market, $5K, 1% target
 - Half-Kelly fraction for safety (max 25% of capital)
 - 1% max risk per trade
 - Never more than 30% of capital in one position
+- At most 5 plans, and **together they never need more than your capital**:
+  walking down the ranking, a plan that doesn't fit in what's left is shrunk
+  to what does (or dropped)
 - Smart stop-loss: uses support levels when available, else ATR-based
 
 ### Output
@@ -98,9 +101,34 @@ Test the intraday bot without risking real money.
 ```bash
 stockwise sim start 25000 2    # Morning: lock in trades
 stockwise sim status           # During day: live P&L
-stockwise sim settle           # EOD: record results
+stockwise sim settle           # After the close: replay the day, record results
 stockwise sim history          # Performance over time
 ```
+
+`sim start` only runs on a trading day before the close (the clock is IST, or
+ET with `-m us`, and knows exchange holidays), and records when each trade
+was entered.
+
+### How `sim settle` decides
+
+Each open session is settled from **its own day's 5-minute bars**, not from
+whatever the price is when you run the command:
+
+1. Bars before the entry time are ignored.
+2. The bars are walked with the same position manager as the daemon: book
+   half at T1 and move the stop to breakeven, close the rest at T2, trail the
+   stop after T1, tighten it in the wind-down.
+3. Whichever of the stop or a target the price reached first decides the
+   trade. Inside a single bar the order of the high and low is unknown, so a
+   bar that touched both counts as **the stop** (conservative). Stops and
+   targets fill at their level; a bar that opens beyond one fills at the open.
+4. Otherwise the trade exits at the open of the 15:15 IST bar (15:45 ET).
+
+Yahoo keeps 5-minute bars for about 60 days. Older sessions fall back to
+hourly bars, then to the daily bar (same rules, exit at the close). Today's
+session is refused until the market closes; `sim settle --now` settles it at
+the latest bar. A session whose bars can't be fetched stays open and the
+command exits non-zero if nothing was settled.
 
 ### What It Tracks
 
@@ -125,31 +153,69 @@ Persistent background workers that run the bots continuously.
 ### Intraday Daemon
 
 ```bash
-stockwise daemon intraday 25000    # Run all day with ₹25K
+stockwise daemon intraday 25000         # NSE, ₹25K paper capital
+stockwise -m us daemon intraday 5000    # NYSE hours (ET), $5K
 ```
 
-Lifecycle:
+Lifecycle (NSE; NYSE uses the same offsets from 09:30–16:00 ET):
 ```
 9:00 AM   Pre-market scan (sectors, gaps)
-9:15 AM   Enter top 5 positions (9 strategies, Kelly sizing)
-9:15–3:00 Monitor every 60 seconds:
+9:15 AM   Enter up to 5 positions (9 strategies, Kelly sizing, ≤ capital in total)
+9:30–3:15 Monitor every 60 seconds:
           - T1 hit → book 50%, move stop to breakeven
           - T2 hit → close fully
           - Stop hit → exit, record loss
           - Trailing stop updates (1.5% trail)
           - Wind-down (2 PM+): tighten stops to 0.5%
 3:15 PM   Square off all remaining positions
-3:30 PM   Settle → save to sim_history.json → AI EOD report
+3:20 PM   Settle → save to sim_history.json → AI EOD report → exit
 ```
 
-Risk controls:
-- 1% max risk per trade
-- 3% daily loss kill switch (closes everything)
-- Max 5 concurrent positions
-- No new entries after 2 PM
-- Forced square-off at 3:15 PM
+The clock is the exchange's, not your machine's: IST (+05:30) for NSE, US
+Eastern with daylight saving for NYSE. Weekends and exchange holidays are
+closed all day; the daemon prints the reason and the next session, then
+sleeps until 15 minutes before it.
 
-Results are saved to simulation history — check with `stockwise sim history`.
+Risk controls:
+- 1% max risk per trade, 30% max per position, total allocation ≤ capital
+- 3% daily loss kill switch (closes everything; counts every realised exit,
+  including targets)
+- Max 5 concurrent positions
+- Entries only in the first 15 minutes; no new entries after that
+- Forced square-off 15 minutes before the close
+
+Resilience:
+- One Yahoo session is reused across ticks. A failed tick is logged and
+  retried after 15 s, 30 s, 60 s … (capped at 5 minutes); after three
+  failures in a row the session is rebuilt. Network blips never stop it.
+- The day's state (positions, risk manager, entries) is saved to
+  `daemon_state.json` (`daemon_state_us.json` with `-m us`) in the data
+  directory after every tick. Restarting the daemon the same day resumes it —
+  the capital from the saved state wins.
+- **Ctrl+C** (or SIGTERM, e.g. from systemd) squares off open positions at
+  their last price, records the day in the simulator history, saves, and
+  exits 0. A second Ctrl+C exits immediately; the saved state is resumed next
+  time.
+- If the daemon missed the square-off (crash, laptop asleep), it hands that
+  day's entries to the simulator as an open session instead of closing them
+  at stale prices: run `stockwise sim settle` to settle them from the day's
+  5-minute bars.
+- One NSE and one NYSE daemon can run side by side; don't start two for the
+  same market — they would share one state file.
+
+The daemon is **paper-only**: it never calls a broker order API. Results are
+saved to simulation history — check with `stockwise sim history`. With
+[notifications](#notifications) configured, it also sends entries, exits,
+the kill switch and the end-of-day summary.
+
+### Market calendar
+
+Holidays come from a table in `src/clock.rs`: the NSE equity-segment list
+(2026 official; 2027 provisional — only fixed-date holidays until NSE
+publishes its circular in December) and the NYSE calendar for 2026–2028,
+including 1:00 pm early closes. When the current year's list is missing or
+provisional, the daemon prints a warning. Muhurat trading sessions are not
+traded.
 
 ### Long-Term Daemon
 
@@ -175,3 +241,59 @@ stockwise deep RELIANCE
 ```
 
 Shows: company info, price action, valuation (P/E, PEG, P/B, EV/EBITDA), profitability, financial health, dividends, analyst ratings, 1Y chart, all technicals (RSI + gauge, SMA, MACD, Bollinger, ATR, VWAP), support/resistance, Fibonacci, risk (vol, Sharpe, drawdown, VaR), OBV trend, open gaps, insights, verdict, and (with `--ai`) AI analysis.
+
+---
+
+## Price Alerts
+
+```bash
+stockwise alert add TCS above 4200
+stockwise alert add AAPL -m us below 180
+stockwise alert watch                 # check every 60 s while markets are open
+stockwise alert watch --interval 30   # every 30 s (minimum 10)
+stockwise alert watch --once          # one pass over every alert, for cron
+```
+
+`alert watch` checks each alert only while its market is open — `.NS`/`.BO`
+symbols on the NSE clock, US tickers on the NYSE clock, crypto and FX
+(`BTC-USD`, `USDINR=X`) around the clock — and sleeps until the next open
+otherwise. Alerts are re-read every pass, so `alert add` in another terminal
+takes effect without a restart.
+
+Each trigger is announced **once**: an alert fires when its condition becomes
+true, re-arms after the price moves back, and fires at most once a day. That
+memory lives in `alert_watch.json`, so a restart doesn't repeat
+notifications. If every configured channel fails, the trigger is not marked
+and the next check tries again. Network errors are retried with backoff;
+Ctrl+C stops it.
+
+---
+
+## Notifications
+
+`alert watch` and `daemon intraday` send to every channel you configure.
+All channels are opt-in, set with environment variables:
+
+| Channel | Variables |
+|---------|-----------|
+| Telegram | `STOCKWISE_TELEGRAM_TOKEN` (from @BotFather), `STOCKWISE_TELEGRAM_CHAT_ID` |
+| Slack | `STOCKWISE_SLACK_WEBHOOK` — an incoming-webhook URL |
+| Discord | `STOCKWISE_DISCORD_WEBHOOK` — a channel webhook URL |
+| Email | `STOCKWISE_SMTP_HOST`, `STOCKWISE_SMTP_USER`, `STOCKWISE_SMTP_PASSWORD`, `STOCKWISE_EMAIL_TO` (comma-separated); optional `STOCKWISE_EMAIL_FROM`, `STOCKWISE_SMTP_PORT`, `STOCKWISE_SMTP_TLS` (`starttls` — default, port 587 — `tls` for 465, or `none` for a server on this machine) |
+| Desktop | `STOCKWISE_DESKTOP_NOTIFY=1`, in a build with the `desktop-notify` feature: `cargo install stockwise --features desktop-notify` |
+
+```bash
+stockwise notify          # which channels are configured (secrets are never shown)
+stockwise notify test     # send a test message to each; exits 1 if any fails
+```
+
+Security: the bot token, webhook URLs and SMTP password are only sent to their
+own endpoint. Redirects are not followed, error messages are stripped of
+URLs, and `notify` shows only the chat id, the webhook's host, or the SMTP
+server. Email uses TLS (rustls); `STOCKWISE_SMTP_TLS=none` with a password is
+refused unless the server is `localhost`. A failed notification is printed
+as a warning and never stops the daemon or the alert loop.
+
+Telegram setup: message @BotFather → `/newbot` → copy the token; send your
+bot a message, then open `https://api.telegram.org/bot<TOKEN>/getUpdates` in
+a browser and copy `chat.id`.

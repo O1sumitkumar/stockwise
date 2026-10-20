@@ -166,12 +166,26 @@ stockwise quote ZZZZ || echo "lookup failed"     # non-zero exit on errors
 ```bash
 stockwise sim start 100000          # paper session with the bot's picks
 stockwise sim status                # live P&L
-stockwise daemon intraday 25000     # 9:00–15:30 IST paper loop: 1% risk/trade, 3% daily stop
+stockwise daemon intraday 25000     # NSE-hours paper loop: 1% risk/trade, 3% daily stop
+stockwise sim settle                # after the close: replay the day's 5-minute bars
 stockwise sim history               # track record + confidence rating
 ```
 
-The daemon never sends broker orders. Read [docs/bot-design.md](docs/bot-design.md)
-for how it decides.
+The daemon never sends broker orders. It runs on the exchange clock (IST,
+NSE holidays included), survives network blips, resumes after a restart, and
+squares off on Ctrl+C. Read [docs/bot-design.md](docs/bot-design.md) for how
+it decides.
+
+### Alerts and notifications
+
+```bash
+stockwise alert add TCS above 4200
+export STOCKWISE_TELEGRAM_TOKEN=... STOCKWISE_TELEGRAM_CHAT_ID=...
+stockwise notify test               # Telegram, Slack, Discord, email or desktop
+stockwise alert watch               # checks during market hours, notifies once per trigger
+```
+
+See [notifications](docs/bots.md#notifications) for every channel.
 
 ### Live orders (optional, Angel One)
 
@@ -219,6 +233,7 @@ Everything works with no config. Optional environment variables:
 | `STOCKWISE_AI_PROVIDER` | `ollama` (default, local), or opt-in cloud: `openai`, `anthropic`, `gemini` with `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` — see [docs/ai.md](docs/ai.md) |
 | `STOCKWISE_MODEL` / `OLLAMA_HOST` | AI model (Ollama default `qwen3:14b`) and Ollama server |
 | `STOCKWISE_REDIS_URL` | Optional shared cache (`redis://…`), or `off` |
+| `STOCKWISE_TELEGRAM_TOKEN`, `STOCKWISE_SLACK_WEBHOOK`, … | Notification channels — see [docs/bots.md](docs/bots.md#notifications) |
 | `NO_COLOR` | Disable colours (also automatic when piping) |
 
 The same settings work as flags: `-m crypto`, `--quote-currency inr`,
@@ -235,8 +250,8 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 
 ## Roadmap & contributing
 
-Next up: Homebrew, a config file, more brokers (Zerodha, Upstox), notifications,
-and a TUI dashboard — see the [ROADMAP](ROADMAP.md). Ideas and bug reports are
+Next up: Homebrew, a config file, more brokers (Zerodha, Upstox), and a TUI
+dashboard — see the [ROADMAP](ROADMAP.md). Ideas and bug reports are
 welcome in [Discussions](https://github.com/iamsaquib8/stockwise/discussions) and
 [Issues](https://github.com/iamsaquib8/stockwise/issues); start with
 [CONTRIBUTING.md](CONTRIBUTING.md).
