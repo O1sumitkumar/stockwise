@@ -23,6 +23,24 @@ Requires Rust **1.88+** (edition 2024 + let-chains). Optional at runtime: a loca
 [Ollama](https://ollama.com) server for AI features and Redis for caching — both
 degrade gracefully when absent.
 
+Try your build without touching your real portfolio by pointing StockWise at a
+scratch data directory:
+
+```bash
+export STOCKWISE_HOME=$(mktemp -d)
+cargo run -- doctor
+cargo run -- quote RELIANCE TCS
+cargo run -- portfolio add TCS 10 3500 && cargo run -- portfolio
+```
+
+## Finding your way around
+
+[docs/architecture.md](docs/architecture.md) maps the source tree. In short:
+`src/main.rs` defines the CLI, `src/commands/` holds one file per command area
+(`overview`, `technicals`, `markets`, `holdings`, `trade`, ...), and the
+analysis engines (`technical.rs`, `backtest.rs`, `intraday.rs`, `longterm.rs`)
+are pure functions with unit tests.
+
 ## Before you open a PR
 
 Run the same checks CI does — all three must pass:
@@ -37,8 +55,23 @@ cargo test                 # all tests green
 - Add tests for new behavior — CLI parsing tests live in `src/main.rs`, pure logic tests next to the code.
 - Update `docs/`, `README.md`, and `CHANGELOG.md` (`[Unreleased]`) when behavior
   changes.
-- New commands: wire them into `commands.rs`, document them in
-  `docs/commands.md`, and add to the README command table.
+- New commands: add the variant to `Commands` and to the `GROUPS` help table in
+  `src/main.rs` (a test checks every command is grouped), write `cmd_<name>` in
+  the matching `src/commands/*.rs` file, and document it in `docs/commands.md`.
+- Errors: return `anyhow` errors (`bail!`) instead of printing and returning
+  `Ok(())`, so scripts see a non-zero exit code. Empty states (nothing in the
+  portfolio yet) are not errors.
+- Anything that can place a live order must go through `place_live_order` in
+  `src/commands/trade.rs` — never call `AngelClient::place_order` directly.
+
+## Good first contributions
+
+- `--json` output for another command (`portfolio`, `technical`, `risk`,
+  `backtest`) — see `cmd_quote` / `cmd_history` for the pattern.
+- More symbols in the India/US universes in `src/market.rs`, or a refresh when
+  a ticker changes.
+- Unit tests for an indicator in `src/technical.rs` against a known reference.
+- Docs: a worked example for a command you use.
 
 ## Adding a data source or broker
 

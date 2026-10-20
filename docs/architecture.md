@@ -4,38 +4,51 @@
 
 ```
 src/
-  main.rs          CLI definition (clap) — 50+ subcommands
-  commands.rs      All command implementations (~4000 lines)
-  daemon.rs        Continuous market workers (phases, position tracking, risk manager)
-  api.rs           Yahoo Finance client (cookie/crumb auth, quotes, charts, search)
-  angel.rs         Angel One SmartAPI (login, TOTP, orders, holdings, positions)
-  ai.rs            Ollama integration (6 prompt types, think-tag stripping, model config)
-  technical.rs     30+ indicators (SMA, EMA, RSI, MACD, BB, ATR, VWAP, OBV, A/D, Fibonacci, pivots, VaR, Sharpe, Sortino, Calmar, correlation, gap detection)
-  backtest.rs      Backtesting engine (6 strategies, trade simulation, equity curves)
-  intraday.rs      Intraday bot (9 strategies, regime detection, Kelly sizing, sector heat)
-  longterm.rs      Long-term bot (6-pillar scoring, moat analysis, Monte Carlo, DRIP)
-  simulator.rs     Paper trading (sessions, daily P&L, cumulative stats, confidence rating)
-  insights.rs      Rule-based investment insight generation
-  charts.rs        Braille line charts, dual overlays, volume bars, bar charts, gauges
-  display.rs       Currency-aware formatting (₹/$/£), sparklines, colors
-  market.rs        Market enum, symbol resolver, sector/index definitions, stock lists
-  portfolio.rs     Portfolio persistence (JSON)
-  watchlist.rs     Watchlist persistence (JSON)
-  alerts.rs        Price alert storage and checking
-  wealth.rs        Daily portfolio snapshots
+  main.rs            CLI definition (clap): 60 subcommands, grouped help, parse tests
+  commands/          Command handlers — one file per area, each `cmd_*` re-exported
+    mod.rs           Shared imports and helpers (period → interval, symbol resolution)
+    overview.rs      quote, markets, dashboard, search, doctor
+    fundamentals.rs  analyze, compare, peers, dividends, insider, deep
+    technicals.rs    technical, history, chart, timeframes, patterns, support, fibs, volume, gaps, stoploss
+    risk.rs          risk, correlate, returns, forecast, options
+    markets.rs       movers, sectors, news, sentiment, screen, picks, earnings, rotation, matrix, surprise, heatmap, sectorcmp, ipo
+    strategies.rs    backtest, sip, whatif, intraday, longterm, report
+    holdings.rs      portfolio, watch, alert, import, export, wealth, rebalance, harvest, tax, divcal, pcorr
+    sim.rs           paper-trading simulator
+    worker.rs        daemon intraday / longterm loops
+    trade.rs         Angel One orders: instrument resolution, preview, confirmation
+  store.rs           Atomic JSON persistence, data directory (STOCKWISE_HOME)
+  api.rs             Yahoo Finance client (session, quotes, charts, search, cache, retries)
+  angel.rs           Angel One SmartAPI (login, TOTP, exact instrument lookup, orders)
+  ai.rs              Ollama integration (prompts, opt-in flag, model checks)
+  daemon.rs          Worker state: market phases, positions, risk manager
+  technical.rs       Indicators and statistics (SMA, EMA, RSI, MACD, BB, ATR, VWAP, OBV, VaR, Sharpe, XIRR, ...)
+  backtest.rs        Backtesting engine (6 strategies, equity curves)
+  intraday.rs        Intraday bot (9 strategies, regime detection, Kelly sizing)
+  longterm.rs        Long-term bot (6-pillar scoring, Monte Carlo, DRIP)
+  simulator.rs       Paper-trading sessions and confidence rating
+  insights.rs        Rule-based plain-English insights
+  charts.rs          Braille line charts, volume bars, gauges
+  display.rs         Currency-aware formatting (₹/$/£), colours
+  market.rs          Market enum, symbol resolution, index/sector lists
+  portfolio.rs, watchlist.rs, alerts.rs, wealth.rs   Data models persisted via store.rs
 ```
+
+Adding a command: define it in `Commands` in `main.rs` (and in the `GROUPS`
+help table — a test enforces this), write `cmd_<name>` in the matching
+`commands/*.rs` file, and dispatch to it in `main()`.
 
 ## Data Flow
 
 ```
-User Input → clap CLI → commands.rs → api.rs → Yahoo Finance
+User Input → clap CLI → commands/* → api.rs → Yahoo Finance
                                    → angel.rs → Angel One
                                    → ai.rs → Local Ollama
                                    → technical.rs (indicators)
                                    → intraday.rs / longterm.rs (bots)
                                    → charts.rs (visualization)
                                    → display.rs (formatting)
-                                   → portfolio.rs / watchlist.rs (persistence)
+                                   → store.rs (portfolio, watchlist, alerts, history)
 ```
 
 ## Caching
