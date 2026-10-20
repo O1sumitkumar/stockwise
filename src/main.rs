@@ -16,6 +16,7 @@ mod angel;
 mod api;
 mod backtest;
 mod charts;
+mod clock;
 mod commands;
 mod daemon;
 mod display;
@@ -23,6 +24,7 @@ mod insights;
 mod intraday;
 mod longterm;
 mod market;
+mod notify;
 mod portfolio;
 mod simulator;
 mod store;
@@ -406,6 +408,12 @@ enum Commands {
     },
 
     // ── Setup ──
+    /// Notification channels for alerts and the daemon (default: status)
+    Notify {
+        #[command(subcommand)]
+        action: Option<NotifyCmd>,
+    },
+
     /// Print a shell completion script (bash, zsh, fish, powershell, elvish)
     Completions {
         #[arg(value_enum, ignore_case = true)]
@@ -464,6 +472,15 @@ enum AlertCmd {
     Remove { index: usize },
     /// Check all alerts against live prices
     Check,
+    /// Keep checking alerts while their market is open; notify each trigger once
+    Watch {
+        /// Seconds between checks
+        #[arg(long, default_value = "60", value_parser = clap::value_parser!(u64).range(10..))]
+        interval: u64,
+        /// Check every alert once (any time of day) and exit — for cron
+        #[arg(long)]
+        once: bool,
+    },
     /// List alerts
     #[command(alias = "show")]
     List,
@@ -480,8 +497,12 @@ enum SimCmd {
     },
     /// Live P&L of the open session
     Status,
-    /// Close the session at current prices and record the result
-    Settle,
+    /// Settle open sessions from each day's 5-minute bars (stop or target first?)
+    Settle {
+        /// Settle today's session before the close, at the latest bar
+        #[arg(long)]
+        now: bool,
+    },
     /// Past sessions and the bot's confidence rating
     #[command(alias = "stats")]
     History,
@@ -491,6 +512,15 @@ enum SimCmd {
         #[arg(short, long)]
         yes: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum NotifyCmd {
+    /// Show which channels are configured
+    #[command(alias = "show")]
+    Status,
+    /// Send a test message to every configured channel
+    Test,
 }
 
 #[derive(Args, Clone, Copy)]
@@ -587,7 +617,7 @@ enum Strategy {
 
 #[derive(Clone, Copy, ValueEnum)]
 enum DaemonMode {
-    /// 9:00-15:30 IST paper-trading loop
+    /// Paper-trading loop during market hours (IST; ET with `-m us`)
     Intraday,
     /// Daily post-market long-term scan
     Longterm,
@@ -711,7 +741,7 @@ const GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     ("Live trading", &["trade"]),
-    ("Setup", &["completions", "help"]),
+    ("Setup", &["notify", "completions", "help"]),
 ];
 
 /// Top-level help with commands grouped by purpose (clap would otherwise list
@@ -855,7 +885,7 @@ async fn main() {
                 commands::cmd_sim("start", amount, target, m).await
             }
             Some(SimCmd::Status) => commands::cmd_sim("status", None, None, m).await,
-            Some(SimCmd::Settle) => commands::cmd_sim("settle", None, None, m).await,
+            Some(SimCmd::Settle { now }) => commands::cmd_sim_settle(now).await,
             Some(SimCmd::History) => commands::cmd_sim("history", None, None, m).await,
             None => commands::cmd_sim("help", None, None, m).await,
         },
@@ -895,6 +925,9 @@ async fn main() {
                 commands::cmd_alert("remove", Some(&index), None, None, m).await
             }
             Some(AlertCmd::Check) => commands::cmd_alert("check", None, None, None, m).await,
+            Some(AlertCmd::Watch { interval, once }) => {
+                commands::cmd_alert_watch(interval, once, m).await
+            }
             Some(AlertCmd::List) | None => commands::cmd_alert("list", None, None, None, m).await,
         },
         Commands::Export { what } => commands::cmd_export(&value_name(what), m).await,
@@ -931,6 +964,11 @@ async fn main() {
             let opts = flags.map(Into::into).unwrap_or_default();
             commands::cmd_trade(name, symbol.as_deref(), qty, price, opts, m).await
         }
+
+        Commands::Notify { action } => match action {
+            Some(NotifyCmd::Test) => commands::cmd_notify("test").await,
+            Some(NotifyCmd::Status) | None => commands::cmd_notify("status").await,
+        },
 
         Commands::Completions { shell } => {
             clap_complete::generate(
@@ -1019,6 +1057,23 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
         }
+    }
+
+    #[test]
+    fn bots_and_alerts_forms_parse() {
+        for args in [
+            vec!["stockwise", "sim", "settle"],
+            vec!["stockwise", "sim", "settle", "--now"],
+            vec!["stockwise", "alert", "watch"],
+            vec!["stockwise", "alert", "watch", "--interval", "30", "--once"],
+            vec!["stockwise", "notify"],
+            vec!["stockwise", "notify", "test"],
+            vec!["stockwise", "-m", "us", "daemon", "intraday", "5000"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
+        }
+        // Faster than every 10 seconds would hammer Yahoo.
+        assert!(Cli::try_parse_from(["stockwise", "alert", "watch", "--interval", "5"]).is_err());
     }
 
     #[test]

@@ -546,15 +546,59 @@ fn kelly_fraction(win_rate: f64, win_loss_ratio: f64) -> f64 {
     (kelly * 0.5).clamp(0.0, 0.25) // never bet more than 25% of capital
 }
 
-/// Generate trade plans with intelligent position sizing
+/// Sizing limits for [`generate_trade_plans_with`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlanLimits {
+    /// Max % of capital to lose on one trade if its stop is hit.
+    pub max_risk_pct: f64,
+    /// Max % of capital in one position.
+    pub max_position_pct: f64,
+    /// Max number of plans returned.
+    pub max_positions: usize,
+}
+
+impl Default for PlanLimits {
+    fn default() -> Self {
+        Self {
+            max_risk_pct: 1.0,
+            max_position_pct: 30.0,
+            max_positions: 5,
+        }
+    }
+}
+
+/// Generate trade plans with intelligent position sizing and the default
+/// [`PlanLimits`] (30% per position, 5 positions) with `max_risk_pct` risk
+/// per trade.
 pub fn generate_trade_plans(
     signals: &[IntradaySignal],
     capital: f64,
     target_pct: f64,
     max_risk_pct: f64, // max % of capital to risk per trade (e.g., 1.0 = 1%)
 ) -> Vec<TradePlan> {
+    generate_trade_plans_with(
+        signals,
+        capital,
+        target_pct,
+        PlanLimits {
+            max_risk_pct,
+            ..PlanLimits::default()
+        },
+    )
+}
+
+/// Generate trade plans, best first, sized so that together they never need
+/// more than `capital`: each position is capped by Kelly, by per-trade risk
+/// and by `max_position_pct`; then, walking down the ranking, a plan that
+/// doesn't fit in the capital left is shrunk to what does (or dropped).
+pub fn generate_trade_plans_with(
+    signals: &[IntradaySignal],
+    capital: f64,
+    target_pct: f64,
+    limits: PlanLimits,
+) -> Vec<TradePlan> {
     let _target_profit = capital * (target_pct / 100.0);
-    let max_risk_per_trade = capital * (max_risk_pct / 100.0);
+    let max_risk_per_trade = capital * (limits.max_risk_pct / 100.0);
     let mut plans = Vec::new();
 
     for signal in signals
@@ -626,7 +670,7 @@ pub fn generate_trade_plans(
         // Position size: min of Kelly allocation, max risk constraint, and total capital
         let kelly_capital = capital * kf;
         let risk_capital = max_risk_per_trade / risk_per_share * price;
-        let max_capital = capital * 0.3; // never more than 30% in one trade
+        let max_capital = capital * (limits.max_position_pct / 100.0);
         let position_capital = kelly_capital.min(risk_capital).min(max_capital);
 
         let qty = (position_capital / price).floor() as u32;
@@ -665,7 +709,40 @@ pub fn generate_trade_plans(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    plans
+    cap_total_allocation(plans, capital, limits.max_positions)
+}
+
+/// Keep the best `max_positions` plans whose combined capital fits in
+/// `capital`, shrinking the plan that would overflow and dropping any that
+/// can't afford a single share.
+fn cap_total_allocation(
+    plans: Vec<TradePlan>,
+    capital: f64,
+    max_positions: usize,
+) -> Vec<TradePlan> {
+    let mut remaining = capital;
+    let mut kept = Vec::new();
+    for mut plan in plans {
+        if kept.len() >= max_positions {
+            break;
+        }
+        if plan.capital_required > remaining {
+            let qty = (remaining / plan.entry).floor() as u32;
+            if qty == 0 {
+                continue;
+            }
+            let per_share_risk = plan.max_risk / plan.qty as f64;
+            let per_share_profit = plan.expected_profit / plan.qty as f64;
+            plan.qty = qty;
+            plan.capital_required = qty as f64 * plan.entry;
+            plan.max_risk = qty as f64 * per_share_risk;
+            plan.expected_profit = qty as f64 * per_share_profit;
+            plan.position_pct = plan.capital_required / capital * 100.0;
+        }
+        remaining -= plan.capital_required;
+        kept.push(plan);
+    }
+    kept
 }
 
 // ══════════════════════════════════════════════════════════
@@ -998,5 +1075,76 @@ mod tests {
         assert_eq!(c.symbol, s.symbol);
         assert_eq!(c.price, s.price);
         assert_eq!(c.score, s.score);
+    }
+
+    #[test]
+    fn test_plans_never_exceed_total_capital() {
+        // Ten strong signals, each wanting up to 30%: together they would
+        // need far more than the capital.
+        let signals: Vec<IntradaySignal> = (0..10)
+            .map(|i| {
+                let mut s = make_signal(90.0, Confidence::High, 3.0);
+                s.symbol = format!("S{i}.NS");
+                s
+            })
+            .collect();
+        let limits = PlanLimits {
+            max_risk_pct: 5.0,
+            max_position_pct: 30.0,
+            max_positions: 10,
+        };
+        let plans = generate_trade_plans_with(&signals, 25000.0, 2.0, limits);
+        assert!(!plans.is_empty());
+        let total: f64 = plans.iter().map(|p| p.capital_required).sum();
+        assert!(total <= 25000.0 + 1e-9, "deployed {total}");
+        for p in &plans {
+            assert!(p.capital_required <= 25000.0 * 0.30 + 1e-9);
+            assert_eq!(p.capital_required, p.qty as f64 * p.entry);
+        }
+    }
+
+    #[test]
+    fn test_max_position_pct_is_honoured() {
+        let signal = make_signal(90.0, Confidence::High, 3.0);
+        let limits = PlanLimits {
+            max_risk_pct: 50.0,
+            max_position_pct: 10.0,
+            max_positions: 5,
+        };
+        let plans = generate_trade_plans_with(&[signal], 25000.0, 2.0, limits);
+        assert_eq!(plans.len(), 1);
+        assert!(plans[0].capital_required <= 2500.0);
+    }
+
+    #[test]
+    fn test_overflowing_plan_is_shrunk_then_later_ones_dropped() {
+        let mk = |sym: &str, qty: u32| TradePlan {
+            signal: {
+                let mut s = make_signal(80.0, Confidence::High, 2.0);
+                s.symbol = sym.into();
+                s
+            },
+            entry: 100.0,
+            target1: 101.0,
+            target2: 102.0,
+            stop_loss: 99.0,
+            trailing_stop: 98.0,
+            qty,
+            capital_required: qty as f64 * 100.0,
+            max_risk: qty as f64,
+            expected_profit: qty as f64 * 2.0,
+            risk_reward: 2.0,
+            kelly_fraction: 0.2,
+            position_pct: 0.0,
+        };
+        let plans = vec![mk("A", 6), mk("B", 6), mk("C", 6)];
+        let kept = cap_total_allocation(plans, 1000.0, 5);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].qty, 6);
+        assert_eq!(kept[1].qty, 4); // only ₹400 left
+        assert!((kept[1].max_risk - 4.0).abs() < 1e-9);
+        assert!((kept[1].expected_profit - 8.0).abs() < 1e-9);
+        let kept = cap_total_allocation(vec![mk("A", 1), mk("B", 1), mk("C", 1)], 1000.0, 2);
+        assert_eq!(kept.len(), 2);
     }
 }

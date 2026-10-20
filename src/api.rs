@@ -584,6 +584,35 @@ impl YahooClient {
             .context("No chart data returned")
     }
 
+    /// Bars between two instants (Unix seconds), e.g. one past session's
+    /// 5-minute bars. Yahoo keeps 5-minute bars for about 60 days and hourly
+    /// bars for about two years.
+    pub async fn get_chart_between(
+        &self,
+        symbol: &str,
+        start: i64,
+        end: i64,
+        interval: &str,
+    ) -> Result<ChartData> {
+        let (period1, period2) = (start.to_string(), end.to_string());
+        let url = build_url(
+            "https://query1.finance.yahoo.com/v8/finance/chart",
+            Some(symbol),
+            &[
+                ("period1", &period1),
+                ("period2", &period2),
+                ("interval", interval),
+            ],
+        );
+        let body = self.fetch(&url, Duration::from_secs(600)).await?;
+        let resp: ChartResponse =
+            serde_json::from_str(&body).context("Failed to parse chart response")?;
+        resp.chart
+            .result
+            .and_then(|r| r.into_iter().next())
+            .context("No chart data returned")
+    }
+
     pub fn crumb(&self) -> &str {
         &self.crumb
     }

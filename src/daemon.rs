@@ -1,63 +1,18 @@
-use chrono::{Datelike, Local, NaiveTime, Weekday};
+//! Intraday worker state: positions, the risk manager, the day's persisted
+//! state (`daemon_state.json`), and the shutdown / retry plumbing the
+//! `daemon` and `alert watch` loops share.
+//!
+//! The worker is paper-only: nothing in here talks to a broker.
 
-/// Market session phases
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Phase {
-    PreMarket,  // 9:00 – 9:14
-    Opening,    // 9:15 – 9:30
-    Active,     // 9:30 – 14:00
-    WindDown,   // 14:00 – 15:15
-    SquareOff,  // 15:15 – 15:20
-    PostMarket, // 15:20 – 16:00
-    Closed,     // outside market hours
-}
+use chrono::{DateTime, NaiveDate, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::time::Duration;
 
-impl std::fmt::Display for Phase {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Phase::PreMarket => write!(f, "Pre-Market"),
-            Phase::Opening => write!(f, "Opening"),
-            Phase::Active => write!(f, "Active Trading"),
-            Phase::WindDown => write!(f, "Wind-Down"),
-            Phase::SquareOff => write!(f, "Square-Off"),
-            Phase::PostMarket => write!(f, "Post-Market"),
-            Phase::Closed => write!(f, "Closed"),
-        }
-    }
-}
-
-pub fn current_phase_india() -> Phase {
-    let now = Local::now();
-    let day = now.weekday();
-    if day == Weekday::Sat || day == Weekday::Sun {
-        return Phase::Closed;
-    }
-    let time = now.time();
-    let t = |h: u32, m: u32| NaiveTime::from_hms_opt(h, m, 0).unwrap();
-
-    if time < t(9, 0) || time >= t(16, 0) {
-        Phase::Closed
-    } else if time < t(9, 15) {
-        Phase::PreMarket
-    } else if time < t(9, 30) {
-        Phase::Opening
-    } else if time < t(14, 0) {
-        Phase::Active
-    } else if time < t(15, 15) {
-        Phase::WindDown
-    } else if time < t(15, 20) {
-        Phase::SquareOff
-    } else {
-        Phase::PostMarket
-    }
-}
-
-pub fn is_market_open_india() -> bool {
-    !matches!(current_phase_india(), Phase::Closed)
-}
+pub use crate::clock::Phase;
 
 /// Live position tracked by the daemon
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LivePosition {
     pub symbol: String,
     pub direction: String,
@@ -76,9 +31,15 @@ pub struct LivePosition {
     pub status: PositionStatus,
     pub strategies: Vec<String>,
     pub score: f64,
+    /// When the position was opened (used to replay bars from that point).
+    #[serde(default)]
+    pub entered_at: Option<DateTime<Utc>>,
+    /// Stop-loss at entry, before breakeven / wind-down tightening.
+    #[serde(default)]
+    pub initial_stop: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PositionStatus {
     Open,
     T1Hit,      // partial booked
@@ -100,7 +61,7 @@ impl std::fmt::Display for PositionStatus {
 }
 
 /// Risk manager state
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RiskState {
     pub capital: f64,
     pub daily_loss_limit_pct: f64,
@@ -266,8 +227,11 @@ pub fn update_position(pos: &mut LivePosition, new_price: f64, phase: Phase) {
     }
 }
 
-/// Convert intraday trade plans to live positions
-pub fn plans_to_positions(plans: &[crate::intraday::TradePlan]) -> Vec<LivePosition> {
+/// Convert intraday trade plans to live positions opened at `entered_at`.
+pub fn plans_to_positions(
+    plans: &[crate::intraday::TradePlan],
+    entered_at: DateTime<Utc>,
+) -> Vec<LivePosition> {
     plans
         .iter()
         .map(|p| LivePosition {
@@ -293,8 +257,412 @@ pub fn plans_to_positions(plans: &[crate::intraday::TradePlan]) -> Vec<LivePosit
                 .map(|s| s.name.to_string())
                 .collect(),
             score: p.signal.score,
+            entered_at: Some(entered_at),
+            initial_stop: Some(p.stop_loss),
         })
         .collect()
+}
+
+impl PositionStatus {
+    /// Closed positions take no more price updates.
+    pub fn is_closed(self) -> bool {
+        matches!(
+            self,
+            PositionStatus::T2Hit | PositionStatus::StopHit | PositionStatus::SquaredOff
+        )
+    }
+}
+
+impl LivePosition {
+    pub fn is_open(&self) -> bool {
+        !self.status.is_closed()
+    }
+}
+
+/// Something that happened in the day's session. The worker prints it and
+/// sends it to the configured notification channels.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Event {
+    Entered {
+        symbol: String,
+        direction: String,
+        qty: u32,
+        entry: f64,
+        target1: f64,
+        target2: f64,
+        stop: f64,
+    },
+    T1Booked {
+        symbol: String,
+        price: f64,
+        booked_pnl: f64,
+    },
+    Closed {
+        symbol: String,
+        status: PositionStatus,
+        price: f64,
+        pnl: f64,
+    },
+    KillSwitch {
+        loss: f64,
+        limit: f64,
+    },
+}
+
+/// `+₹120` / `-₹45` without colours.
+pub fn signed_money(csym: &str, v: f64) -> String {
+    if v >= 0.0 {
+        format!("+{}{:.0}", csym, v)
+    } else {
+        format!("-{}{:.0}", csym, v.abs())
+    }
+}
+
+impl Event {
+    /// Plain-text one-liner for notifications and logs.
+    pub fn text(&self, csym: &str) -> String {
+        match self {
+            Event::Entered {
+                symbol,
+                direction,
+                qty,
+                entry,
+                target1,
+                target2,
+                stop,
+            } => format!(
+                "ENTRY {} {} x{} @ {}{:.2} (T1 {:.2}, T2 {:.2}, SL {:.2})",
+                direction, symbol, qty, csym, entry, target1, target2, stop
+            ),
+            Event::T1Booked {
+                symbol,
+                price,
+                booked_pnl,
+            } => format!(
+                "T1 HIT {} — booked half at {}{:.2} ({}), stop moved to breakeven",
+                symbol,
+                csym,
+                price,
+                signed_money(csym, *booked_pnl)
+            ),
+            Event::Closed {
+                symbol,
+                status,
+                price,
+                pnl,
+            } => {
+                let what = match status {
+                    PositionStatus::T2Hit => "TARGET HIT",
+                    PositionStatus::StopHit => "STOPPED",
+                    _ => "SQUARED OFF",
+                };
+                format!(
+                    "{} {} at {}{:.2} (P&L {})",
+                    what,
+                    symbol,
+                    csym,
+                    price,
+                    signed_money(csym, *pnl)
+                )
+            }
+            Event::KillSwitch { loss, limit } => format!(
+                "KILL SWITCH — day's P&L {} breached the {}{:.0} daily loss limit; closing everything",
+                signed_money(csym, *loss),
+                csym,
+                limit
+            ),
+        }
+    }
+}
+
+/// File the intraday worker saves its day's state to after every tick.
+pub const STATE_FILE: &str = "daemon_state.json";
+
+/// One trading day of the intraday worker, persisted after every tick so a
+/// restart the same day resumes the open positions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonState {
+    /// Exchange-local session date.
+    pub date: NaiveDate,
+    /// `IN` or `US`.
+    pub market: String,
+    pub capital: f64,
+    pub target_pct: f64,
+    /// Positions were opened today (or the entry scan ran and found trades).
+    pub entered: bool,
+    pub positions: Vec<LivePosition>,
+    pub risk: RiskState,
+    pub tick_count: u32,
+    /// The day is over: results are in the simulator history.
+    pub settled: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl DaemonState {
+    pub fn new(
+        date: NaiveDate,
+        market: &str,
+        capital: f64,
+        target_pct: f64,
+        now: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            date,
+            market: market.to_string(),
+            capital,
+            target_pct,
+            entered: false,
+            positions: Vec::new(),
+            risk: RiskState::new(capital),
+            tick_count: 0,
+            settled: false,
+            updated_at: now,
+        }
+    }
+
+    /// The saved state, if any.
+    pub fn load() -> anyhow::Result<Option<Self>> {
+        crate::store::load(STATE_FILE)
+    }
+
+    pub fn save(&mut self, now: DateTime<Utc>) -> anyhow::Result<()> {
+        self.updated_at = now;
+        crate::store::save(STATE_FILE, self, false)
+    }
+
+    pub fn open_count(&self) -> usize {
+        self.positions.iter().filter(|p| p.is_open()).count()
+    }
+
+    pub fn open_symbols(&self) -> Vec<String> {
+        self.positions
+            .iter()
+            .filter(|p| p.is_open())
+            .map(|p| p.symbol.clone())
+            .collect()
+    }
+
+    pub fn total_pnl(&self) -> f64 {
+        self.positions.iter().map(|p| p.pnl).sum()
+    }
+
+    /// Open the day's positions from the (already capital-capped) plans.
+    pub fn enter(
+        &mut self,
+        plans: &[crate::intraday::TradePlan],
+        now: DateTime<Utc>,
+    ) -> Vec<Event> {
+        let n = plans.len().min(self.risk.max_positions);
+        self.positions = plans_to_positions(&plans[..n], now);
+        self.entered = true;
+        self.positions
+            .iter()
+            .map(|p| Event::Entered {
+                symbol: p.symbol.clone(),
+                direction: p.direction.clone(),
+                qty: p.qty,
+                entry: p.entry_price,
+                target1: p.target1,
+                target2: p.target2,
+                stop: p.stop_loss,
+            })
+            .collect()
+    }
+
+    /// Mark open positions to `prices`, book exits with the risk manager,
+    /// and trip the kill switch if the day's loss passes the limit. Symbols
+    /// missing from `prices` keep their last price — never valued at 0.
+    pub fn apply_prices(&mut self, prices: &HashMap<String, f64>, phase: Phase) -> Vec<Event> {
+        let mut events = Vec::new();
+        for pos in self.positions.iter_mut().filter(|p| p.is_open()) {
+            let Some(&price) = prices.get(&pos.symbol) else {
+                continue;
+            };
+            let was_t1 = pos.t1_booked;
+            update_position(pos, price, phase);
+            if pos.t1_booked && !was_t1 {
+                events.push(Event::T1Booked {
+                    symbol: pos.symbol.clone(),
+                    price: pos.target1,
+                    booked_pnl: pos.booked_pnl,
+                });
+            }
+            if pos.status.is_closed() {
+                self.risk.record_exit(pos.pnl);
+                events.push(Event::Closed {
+                    symbol: pos.symbol.clone(),
+                    status: pos.status,
+                    price: pos.current_price,
+                    pnl: pos.pnl,
+                });
+            }
+        }
+
+        if !self.risk.killed {
+            let unrealized: f64 = self
+                .positions
+                .iter()
+                .filter(|p| p.is_open())
+                .map(|p| p.pnl)
+                .sum();
+            if self.risk.check_daily_limit(unrealized) {
+                events.push(Event::KillSwitch {
+                    loss: self.risk.realized_pnl + unrealized,
+                    limit: self.risk.capital * self.risk.daily_loss_limit_pct / 100.0,
+                });
+                events.extend(self.square_off_all());
+            }
+        }
+        events
+    }
+
+    /// Close every open position at its last price (paper square-off).
+    pub fn square_off_all(&mut self) -> Vec<Event> {
+        let mut events = Vec::new();
+        for pos in self.positions.iter_mut().filter(|p| p.is_open()) {
+            pos.status = PositionStatus::SquaredOff;
+            self.risk.record_exit(pos.pnl);
+            events.push(Event::Closed {
+                symbol: pos.symbol.clone(),
+                status: pos.status,
+                price: pos.current_price,
+                pnl: pos.pnl,
+            });
+        }
+        events
+    }
+
+    /// The day as a simulator session. `settled` sessions carry exits and
+    /// P&L; unsettled ones carry only the entries (with the original stop),
+    /// for `sim settle` to replay from intraday bars.
+    pub fn to_sim_session(&self, settled: bool) -> crate::simulator::SimSession {
+        let trades: Vec<crate::simulator::SimTrade> = self
+            .positions
+            .iter()
+            .map(|p| crate::simulator::SimTrade {
+                symbol: p.symbol.clone(),
+                direction: p.direction.clone(),
+                entry_price: p.entry_price,
+                target1: p.target1,
+                target2: p.target2,
+                stop_loss: if settled {
+                    p.stop_loss
+                } else {
+                    p.initial_stop.unwrap_or(p.stop_loss)
+                },
+                qty: p.qty,
+                capital: p.entry_price * p.qty as f64,
+                score: p.score,
+                confidence: "DAEMON".into(),
+                strategies: p.strategies.clone(),
+                entered_at: p.entered_at.map(|t| t.to_rfc3339()),
+                exit_price: settled.then_some(p.current_price),
+                pnl: settled.then_some(p.pnl),
+                pnl_pct: settled.then_some(p.pnl_pct),
+                hit_target: settled.then_some(p.status == PositionStatus::T2Hit),
+                hit_stop: settled.then_some(p.status == PositionStatus::StopHit),
+            })
+            .collect();
+        let total_pnl = self.total_pnl();
+        let wins = self.positions.iter().filter(|p| p.pnl > 0.0).count() as u32;
+        crate::simulator::SimSession {
+            date: self.date.format("%Y-%m-%d").to_string(),
+            market: self.market.clone(),
+            capital: self.capital,
+            target_pct: self.target_pct,
+            total_pnl: settled.then_some(total_pnl),
+            total_pnl_pct: settled.then_some(total_pnl / self.capital * 100.0),
+            win_count: settled.then_some(wins),
+            loss_count: settled.then_some(trades.len() as u32 - wins),
+            trades,
+            settled,
+        }
+    }
+}
+
+/// Add a daemon session to the simulator history unless the same day's
+/// daemon session is already there (a crash between the two saves must not
+/// record the day twice). Returns false if it was already recorded.
+pub fn record_session(
+    history: &mut crate::simulator::SimHistory,
+    session: crate::simulator::SimSession,
+) -> bool {
+    let symbols: Vec<&str> = session.trades.iter().map(|t| t.symbol.as_str()).collect();
+    let duplicate = history.sessions.iter().any(|s| {
+        s.date == session.date
+            && s.market == session.market
+            && s.trades.iter().all(|t| t.confidence == "DAEMON")
+            && s.trades
+                .iter()
+                .map(|t| t.symbol.as_str())
+                .eq(symbols.iter().copied())
+    });
+    if !duplicate {
+        history.sessions.push(session);
+    }
+    !duplicate
+}
+
+/// Delay before retrying after `failures` consecutive failed ticks:
+/// 15 s, 30 s, 60 s, … capped at 5 minutes. A worker never gives up.
+pub fn retry_delay(failures: u32) -> Duration {
+    let secs = 15u64 << failures.saturating_sub(1).min(5);
+    Duration::from_secs(secs.min(300))
+}
+
+/// Ctrl+C (and SIGTERM on Unix) as a flag the worker loops poll and await.
+/// The first signal asks for a clean stop; a second one exits immediately
+/// (state is already on disk from the last tick).
+pub struct Shutdown {
+    rx: tokio::sync::watch::Receiver<bool>,
+}
+
+impl Shutdown {
+    pub fn install(second_signal_note: &'static str) -> Self {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            wait_for_signal().await;
+            let _ = tx.send(true);
+            wait_for_signal().await;
+            eprintln!(
+                "\n  Interrupted again — exiting now. {}",
+                second_signal_note
+            );
+            std::process::exit(130);
+        });
+        Self { rx }
+    }
+
+    pub fn requested(&self) -> bool {
+        *self.rx.borrow()
+    }
+
+    /// Resolves once a stop was requested.
+    pub async fn wait(&mut self) {
+        let _ = self.rx.wait_for(|stop| *stop).await;
+    }
+}
+
+async fn wait_for_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 #[cfg(test)]
@@ -320,6 +688,8 @@ mod tests {
             status: PositionStatus::Open,
             strategies: vec!["RSI".into()],
             score: 75.0,
+            entered_at: None,
+            initial_stop: None,
         }
     }
 
@@ -461,5 +831,206 @@ mod tests {
         // Next tick at 106: pnl = booked(20) + 5 remaining * (106-100)=30 → 50.
         update_position(&mut pos, 106.0, Phase::Active);
         assert!((pos.pnl - 50.0).abs() < 0.01);
+    }
+
+    // ── DaemonState ──
+
+    fn state_with(positions: Vec<LivePosition>) -> DaemonState {
+        let now = DateTime::parse_from_rfc3339("2026-10-21T04:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut s = DaemonState::new(
+            NaiveDate::from_ymd_opt(2026, 10, 21).unwrap(),
+            "IN",
+            25000.0,
+            2.0,
+            now,
+        );
+        s.positions = positions;
+        s.entered = true;
+        s
+    }
+
+    fn prices(pairs: &[(&str, f64)]) -> HashMap<String, f64> {
+        pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
+    #[test]
+    fn target2_close_is_recorded_with_the_risk_manager() {
+        let mut s = state_with(vec![make_position(100.0, 103.0, 106.0, 97.0)]);
+        let events = s.apply_prices(&prices(&[("TEST.NS", 107.0)]), Phase::Active);
+        assert_eq!(s.positions[0].status, PositionStatus::T2Hit);
+        assert!((s.risk.realized_pnl - 70.0).abs() < 1e-9);
+        assert!(matches!(
+            events.as_slice(),
+            [Event::Closed {
+                status: PositionStatus::T2Hit,
+                ..
+            }]
+        ));
+        // A closed position takes no more updates or exits.
+        let events = s.apply_prices(&prices(&[("TEST.NS", 90.0)]), Phase::Active);
+        assert!(events.is_empty());
+        assert!((s.risk.realized_pnl - 70.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn t1_then_t2_reports_both_and_books_the_whole_trade() {
+        let mut s = state_with(vec![make_position(100.0, 104.0, 110.0, 97.0)]);
+        let events = s.apply_prices(&prices(&[("TEST.NS", 104.0)]), Phase::Active);
+        assert!(matches!(events.as_slice(), [Event::T1Booked { .. }]));
+        assert_eq!(s.risk.realized_pnl, 0.0); // not closed yet
+        s.apply_prices(&prices(&[("TEST.NS", 110.0)]), Phase::Active);
+        // 5 × 4 booked at T1 + 5 × 10 at T2.
+        assert!((s.risk.realized_pnl - 70.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn missing_price_keeps_the_last_price() {
+        let mut s = state_with(vec![make_position(100.0, 103.0, 106.0, 97.0)]);
+        s.apply_prices(&prices(&[("TEST.NS", 101.0)]), Phase::Active);
+        let events = s.apply_prices(&prices(&[]), Phase::Active);
+        assert!(events.is_empty());
+        assert_eq!(s.positions[0].current_price, 101.0);
+        assert!((s.positions[0].pnl - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn kill_switch_closes_everything_once() {
+        let mut a = make_position(100.0, 103.0, 106.0, 50.0);
+        a.qty = 100;
+        a.remaining_qty = 100;
+        let mut b = make_position(200.0, 203.0, 206.0, 100.0);
+        b.symbol = "OTHER.NS".into();
+        let mut s = state_with(vec![a, b]);
+        // −₹800 on A breaches 3% of ₹25,000 (₹750).
+        let events = s.apply_prices(&prices(&[("TEST.NS", 92.0)]), Phase::Active);
+        assert!(matches!(events[0], Event::KillSwitch { .. }));
+        assert_eq!(events.len(), 3);
+        assert!(s.risk.killed);
+        assert_eq!(s.open_count(), 0);
+        assert!((s.risk.realized_pnl + 800.0).abs() < 1e-9);
+        // Later ticks don't trip it again.
+        assert!(
+            s.apply_prices(&prices(&[("TEST.NS", 80.0)]), Phase::Active)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn square_off_all_records_each_open_position_once() {
+        let mut closed = make_position(100.0, 103.0, 106.0, 97.0);
+        closed.symbol = "DONE.NS".into();
+        closed.status = PositionStatus::StopHit;
+        let mut s = state_with(vec![make_position(100.0, 103.0, 106.0, 97.0), closed]);
+        s.apply_prices(&prices(&[("TEST.NS", 102.0)]), Phase::Active);
+        let events = s.square_off_all();
+        assert_eq!(events.len(), 1);
+        assert!((s.risk.realized_pnl - 20.0).abs() < 1e-9);
+        assert!(s.square_off_all().is_empty());
+    }
+
+    #[test]
+    fn entries_are_capped_at_max_positions() {
+        let plan = |sym: &str| crate::intraday::TradePlan {
+            signal: crate::intraday::IntradaySignal {
+                symbol: sym.into(),
+                name: sym.into(),
+                price: 100.0,
+                currency: None,
+                change_pct: 0.0,
+                volume_ratio: 1.0,
+                regime: crate::intraday::MarketRegime::Ranging,
+                confidence: crate::intraday::Confidence::High,
+                direction: crate::intraday::Direction::Long,
+                score: 80.0,
+                strategies: vec![],
+                rsi: None,
+                vwap: None,
+                above_vwap: false,
+                macd_histogram: None,
+                bb_position: None,
+                atr_pct: Some(2.0),
+                obv_trend: crate::intraday::OBVTrend::Flat,
+                gap_detected: false,
+                near_support: false,
+                near_resistance: false,
+                pivot: None,
+                support1: None,
+                resistance1: None,
+            },
+            entry: 100.0,
+            target1: 101.0,
+            target2: 102.0,
+            stop_loss: 99.0,
+            trailing_stop: 97.0,
+            qty: 10,
+            capital_required: 1000.0,
+            max_risk: 10.0,
+            expected_profit: 20.0,
+            risk_reward: 2.0,
+            kelly_fraction: 0.2,
+            position_pct: 4.0,
+        };
+        let mut s = state_with(vec![]);
+        s.entered = false;
+        let plans: Vec<_> = (0..7).map(|i| plan(&format!("S{i}.NS"))).collect();
+        let events = s.enter(&plans, s.updated_at);
+        assert_eq!(events.len(), 5);
+        assert!(s.entered);
+        assert_eq!(s.positions[0].initial_stop, Some(99.0));
+        assert_eq!(s.positions[0].entered_at, Some(s.updated_at));
+    }
+
+    #[test]
+    fn state_round_trips_through_json() {
+        let mut s = state_with(vec![make_position(100.0, 103.0, 106.0, 97.0)]);
+        s.apply_prices(&prices(&[("TEST.NS", 103.5)]), Phase::Active);
+        let json = serde_json::to_string(&s).unwrap();
+        let back: DaemonState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.date, s.date);
+        assert_eq!(back.positions[0].status, PositionStatus::T1Hit);
+        assert_eq!(back.positions[0].remaining_qty, 5);
+        assert_eq!(back.risk.capital, 25000.0);
+    }
+
+    #[test]
+    fn sim_sessions_from_the_daemon() {
+        let mut s = state_with(vec![make_position(100.0, 103.0, 106.0, 97.0)]);
+        s.positions[0].initial_stop = Some(97.0);
+        s.apply_prices(&prices(&[("TEST.NS", 103.5)]), Phase::Active);
+        s.square_off_all();
+
+        let settled = s.to_sim_session(true);
+        assert!(settled.settled);
+        assert_eq!(settled.date, "2026-10-21");
+        assert_eq!(settled.win_count, Some(1));
+        assert_eq!(settled.trades[0].exit_price, Some(103.5));
+        assert_eq!(settled.trades[0].stop_loss, 100.0); // moved to breakeven
+
+        // Unsettled hand-over keeps the original stop for the replay.
+        let open = s.to_sim_session(false);
+        assert!(!open.settled);
+        assert_eq!(open.trades[0].stop_loss, 97.0);
+        assert_eq!(open.trades[0].exit_price, None);
+        assert_eq!(open.total_pnl, None);
+    }
+
+    #[test]
+    fn a_day_is_recorded_once() {
+        let s = state_with(vec![make_position(100.0, 103.0, 106.0, 97.0)]);
+        let mut history = crate::simulator::SimHistory::default();
+        assert!(record_session(&mut history, s.to_sim_session(true)));
+        assert!(!record_session(&mut history, s.to_sim_session(true)));
+        assert_eq!(history.sessions.len(), 1);
+    }
+
+    #[test]
+    fn retry_delay_backs_off_and_is_bounded() {
+        assert_eq!(retry_delay(1), Duration::from_secs(15));
+        assert_eq!(retry_delay(2), Duration::from_secs(30));
+        assert_eq!(retry_delay(4), Duration::from_secs(120));
+        assert_eq!(retry_delay(6), Duration::from_secs(300));
+        assert_eq!(retry_delay(1000), Duration::from_secs(300));
     }
 }
