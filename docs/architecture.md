@@ -15,12 +15,15 @@ src/
     fno.rs           options chain, pcr, maxpain
     markets.rs       movers, sectors, news, sentiment, screen, picks, earnings, rotation, matrix, surprise, heatmap, sectorcmp, ipo
     strategies.rs    backtest, sip, whatif, intraday, longterm, report
-    holdings.rs      portfolio, watch, alert, import, export, wealth, rebalance, harvest, tax, divcal, pcorr
+    portfolio.rs     portfolio (show, add, sell, lots, actions, list) and valuation in a base currency
+    holdings.rs      watch, alert, import, export, wealth, rebalance, harvest, tax, divcal, pcorr
     sim.rs           paper-trading simulator (settle replays intraday bars)
     worker.rs        daemon intraday / longterm loops
     alerting.rs      alert watch loop, notify status/test
     trade.rs         Angel One orders: instrument resolution, preview, confirmation
   store.rs           Atomic JSON persistence, data directory (STOCKWISE_HOME)
+  portfolio.rs       Lots, FIFO sales, splits/dividends, XIRR cash flows, FX, named portfolios
+  tax.rs             Capital-gains rules: holding periods, tax years, set-off (India/US/UK)
   api.rs             Yahoo Finance client (session, quotes, charts, search, cache, retries); routes to a provider
   providers/         MarketData trait + opt-in Alpha Vantage, Massive (Polygon), Twelve Data; Yahoo fills gaps
   i18n.rs            Typed English/Hindi message catalog, --lang / STOCKWISE_LANG / locale detection
@@ -41,7 +44,7 @@ src/
   charts.rs          Braille line charts, volume bars, gauges
   display.rs         Currency- and asset-aware formatting (₹/$/€/£/¥, FX and crypto decimals), width-aware padding
   market.rs          Market enum (in/us/crypto/fx), asset classes, symbol resolution, index/sector/coin/pair lists
-  portfolio.rs, watchlist.rs, alerts.rs, wealth.rs   Data models persisted via store.rs
+  watchlist.rs, alerts.rs, wealth.rs   Data models persisted via store.rs
 ```
 
 Adding a command: define it in `Commands` in `main.rs` (and in the `GROUPS`
@@ -103,10 +106,12 @@ Location: `~/Library/Application Support/stockwise/` (macOS), `~/.local/share/st
 
 | File | Purpose |
 |------|---------|
-| `portfolio.json` | Holdings (symbol, shares, avg cost, date) |
+| `portfolio.json` | Default portfolio: holdings with lots (qty, price, purchase date, source), realized sales, dividends. Format version 2; older files are upgraded on load and kept once as `portfolio.json.bak` |
+| `portfolios/NAME.json` | Named portfolios (`--portfolio NAME`), same format |
+| `portfolios/NAME.wealth_history.json` | Wealth history of a named portfolio |
 | `watchlist.json` | Watched symbols |
 | `alerts.json` | Price alerts (symbol, condition, target) |
-| `wealth_history.json` | Daily portfolio value snapshots |
+| `wealth_history.json` | Daily value snapshots of the default portfolio |
 | `sim_history.json` | Paper trading sessions and results |
 | `daemon_state.json` / `daemon_state_us.json` | The intraday daemon's current day (positions, risk), saved every tick |
 | `alert_watch.json` | Which alerts `alert watch` already announced |

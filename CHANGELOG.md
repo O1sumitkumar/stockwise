@@ -123,6 +123,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   price) or a short's below it; such levels are now ignored.
 - The daemon monitors positions from the moment it enters them, not only
   from 15 minutes after the open, and ignores zero quotes.
+- **Lot-level holdings.** Every purchase is a lot with its own quantity, price,
+  date and source. `portfolio add ... --date YYYY-MM-DD` records the real
+  purchase date; `portfolio lots SYMBOL` shows a holding's lots, sales and
+  dividends, and `--lot N --date` corrects a purchase date.
+- `portfolio sell SYMBOL SHARES [PRICE] [--date]` sells oldest lots first
+  (FIFO) and keeps the realized P&L for `tax`.
+- Portfolio XIRR: `portfolio` shows a money-weighted annual return per holding
+  and for the whole portfolio (including closed positions and dividends).
+- `portfolio actions [SYMBOL] [--apply]` lists splits, bonus issues and
+  dividends since you bought (from Yahoo) and, with `--apply`, adjusts lots and
+  records dividends. Idempotent; nothing changes without `--apply`. `divcal`
+  shows the dividends received.
+- Named portfolios: global `--portfolio NAME` / `STOCKWISE_PORTFOLIO`, stored as
+  `portfolios/NAME.json` with their own wealth history; `portfolio list`.
+- Mixed-currency portfolios: INR and USD holdings are totalled in one currency
+  at the live `USDINR=X` rate (`portfolio --base inr|usd`; default: the
+  market's currency). Also in `dashboard`, `wealth`, `rebalance` and the
+  long-term daemon.
+- `import` reads a purchase/trade date column and a buy/sell column, so a lot
+  list or a tradebook (e.g. Zerodha Console) imports with real dates, realized
+  sales and splits applied as they happened. A holding that already has lots
+  from elsewhere is only rebuilt with `import --replace`.
+
+### Changed
+- `tax in|us|uk` classifies each lot by its own purchase date, shows realized
+  gains (sales this tax year) separately from unrealized ones, and applies the
+  set-off rules: in India a short-term loss offsets STCG then LTCG, a long-term
+  loss only LTCG, before the ₹1.25 lakh exemption; losses left over are shown
+  as carry forward. Holdings in another currency are listed but not included.
+  UK CGT uses the 24% higher rate (was 20%).
+- `portfolio.json` has a new format (version 2). Older files are upgraded on
+  first load — each holding becomes one lot dated when it was added, flagged as
+  an estimated date — and the original is kept once as `portfolio.json.bak`.
+  StockWise 0.3.0 can still read the new file.
+- `import` without dates and `trade holdings` keep existing lots and only adjust
+  the quantity, instead of overwriting the average cost.
+- `portfolio list` now lists your portfolios; use `portfolio` or
+  `portfolio show` for holdings.
+- `import` exits with an error when a file has no usable rows, an unrecognized
+  date, or nothing it could apply.
+- `portfolio sell`, `import` and `trade holdings` refuse to match shares while
+  a split or bonus isn't applied to your lots yet, and point to
+  `portfolio actions --apply`.
+- `wealth` snapshots are always in the market's currency.
+
+### Fixed
+- Tax holding periods used the day a holding was added to StockWise, and adding
+  shares kept the first purchase's date for all of them.
+- Portfolio totals added INR and USD amounts together.
+- `portfolio sell`, `lots`, `remove` and `actions` find a holding saved as typed
+  (e.g. `AAPL` while the market is India).
 
 ## [0.3.0] - 2026-10-21
 

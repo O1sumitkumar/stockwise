@@ -15,12 +15,17 @@ pub struct WealthHistory {
 }
 
 impl WealthHistory {
+    /// History of the active portfolio (each named portfolio has its own).
     pub fn load() -> Result<Self> {
-        crate::store::load("wealth_history.json")
+        crate::store::load(&crate::portfolio::scoped_file("wealth_history.json"))
     }
 
     pub fn save(&self) -> Result<()> {
-        crate::store::save("wealth_history.json", self, false)
+        crate::store::save(
+            &crate::portfolio::scoped_file("wealth_history.json"),
+            self,
+            false,
+        )
     }
 
     pub fn add_snapshot(&mut self, value: f64, cost: f64, holdings: usize) {

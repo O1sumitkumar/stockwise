@@ -294,6 +294,7 @@ pub async fn cmd_trade(
 
             // Also sync to stockwise portfolio
             let mut portfolio = Portfolio::load()?;
+            let mut snapshot = Vec::new();
             for h in &holdings {
                 let sym = h.tradingsymbol.as_deref().unwrap_or("");
                 let qty = h.quantity.unwrap_or(0) as f64;
@@ -307,8 +308,25 @@ pub async fn cmd_trade(
                     } else {
                         format!("{}.NS", base)
                     };
-                    // Overwrite quantity/cost but keep the original added date.
-                    portfolio.set(&resolved, qty, avg);
+                    snapshot.push((resolved, qty, avg));
+                }
+            }
+            // More shares at the broker may just be a split or bonus not yet
+            // applied to the lots; syncing those would count them twice.
+            let wanted: Vec<(String, f64)> =
+                snapshot.iter().map(|(s, q, _)| (s.clone(), *q)).collect();
+            let blocked = super::portfolio::blocked_by_pending_splits(&portfolio, &wanted).await;
+            let mut reduced = Vec::new();
+            for (resolved, qty, avg) in &snapshot {
+                if blocked.iter().any(|(s, _)| s == resolved) {
+                    continue;
+                }
+                // Keep existing lots and their purchase dates; only the
+                // quantity follows the broker.
+                if let crate::portfolio::SyncChange::Reduced(n) =
+                    portfolio.sync_quantity(resolved, *qty, *avg, "broker:angel")
+                {
+                    reduced.push(format!("{} (-{})", resolved, n));
                 }
             }
             portfolio.save()?;
@@ -316,6 +334,18 @@ pub async fn cmd_trade(
                 "\n  {} Holdings synced to StockWise portfolio.",
                 "✓".green()
             );
+            for (sym, reason) in &blocked {
+                println!("  {} {} not synced: {}", "!".yellow(), sym, reason);
+            }
+            if !reduced.is_empty() {
+                println!(
+                    "  {} Fewer shares than StockWise had: {} — taken from the oldest lots, not \
+                     recorded as sales. To keep a sale's P&L for `tax`, record it with \
+                     `stockwise portfolio sell` before syncing.",
+                    "!".yellow(),
+                    reduced.join(", ")
+                );
+            }
             println!();
             Ok(())
         }

@@ -133,12 +133,18 @@ has every option.
 ### Track a portfolio
 
 ```bash
-stockwise import kite ~/Downloads/holdings.csv   # or: portfolio add TCS 10 3500
-stockwise portfolio                              # live P&L + allocation
-stockwise alert add RELIANCE below 1200
-stockwise tax in                                 # LTCG/STCG estimate for this FY
+stockwise import kite ~/Downloads/holdings.csv   # or: portfolio add TCS 10 3500 --date 2023-04-12
+stockwise portfolio                              # live P&L, XIRR + allocation
+stockwise portfolio sell TCS 5 3900              # FIFO sale, realized P&L kept for tax
+stockwise portfolio actions --apply              # splits, bonuses and dividends since you bought
+stockwise tax in                                 # LTCG/STCG per lot, set-off, realized vs unrealized
+stockwise --portfolio us portfolio add AAPL 3 190 -m us   # a second, named portfolio
 stockwise dashboard                              # indices + portfolio + watchlist + alerts
 ```
+
+Every purchase is a lot with its own date, so holding periods, FIFO sales and
+XIRR are exact. Holdings in INR and USD are totalled in one currency
+(`portfolio --base usd`) at the live `USDINR=X` rate.
 
 ### Mutual funds and options
 
@@ -229,6 +235,7 @@ Everything works with no config. Optional environment variables:
 | `STOCKWISE_LANG` | Output language: `en` or `hi` (Hindi). Default: your locale (`LANG=hi_IN…` picks Hindi) |
 | `STOCKWISE_HOME` | Where portfolio, watchlist, alerts and history are stored |
 | `STOCKWISE_DATA_PROVIDER` | Opt-in data provider: `alphavantage`, `massive` (Polygon) or `twelvedata`, with its API key — see [docs/data-providers.md](docs/data-providers.md) |
+| `STOCKWISE_PORTFOLIO` | Named portfolio to use (same as `--portfolio NAME`) |
 | `STOCKWISE_AI` | `1` to add AI sections by default |
 | `STOCKWISE_AI_PROVIDER` | `ollama` (default, local), or opt-in cloud: `openai`, `anthropic`, `gemini` with `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` — see [docs/ai.md](docs/ai.md) |
 | `STOCKWISE_MODEL` / `OLLAMA_HOST` | AI model (Ollama default `qwen3:14b`) and Ollama server |

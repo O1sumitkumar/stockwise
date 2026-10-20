@@ -716,6 +716,8 @@ impl Series {
                     volume: Some(self.bars.iter().map(|b| b.volume).collect()),
                 }],
             },
+            // Dividends/splits come from Yahoo (`get_corporate_actions`).
+            events: None,
         }
     }
 }
