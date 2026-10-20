@@ -38,13 +38,16 @@ steps:
    NSE_EQ scrip master, Fyers' NSE_CM symbol master. Partial names, other
    series (`-BE`), ETFs with a similar name, and F&O contracts never match; two
    matches are refused.
-2. **Price checks.** Prices must be positive. For stop-loss orders the trigger
-   must sit on the right side of the market (above it for a BUY, below it for a
-   SELL — otherwise it would fire at once), and the limit must be at or beyond
-   the trigger in the order's direction. A limit more than 20% away from its
-   trigger is treated as a typo. A GTT trigger must be at least 0.25% away from
-   the last price. Stop and GTT orders need a last price; if it can't be
-   fetched the order is refused.
+2. **Price checks.** Prices must be positive with at most 2 decimals (never
+   silently rounded). For stop-loss orders the trigger must sit on the right
+   side of the market (above it for a BUY, below it for a SELL — otherwise it
+   would fire at once), and the limit must be at or beyond the trigger in the
+   order's direction. A limit more than 20% away from its trigger is treated as
+   a typo. A GTT trigger must be at least 0.25% away from the last price, and a
+   stop GTT (SELL below the market, BUY above it) needs a limit that is
+   marketable at the trigger. Stop and GTT orders need a last price; if it
+   can't be fetched the order is refused. Orders go to NSE only: a `.BO`
+   symbol is refused rather than traded on NSE.
 3. **Preview.** Instrument and broker token, side, quantity, order type,
    product (delivery / CNC), last price, estimated value.
 4. **`max_order_value`.** If set in the broker's config file, any order whose
@@ -118,14 +121,18 @@ data directory (the path is printed; `stockwise doctor` shows it too) with
 owner-only permissions (0600 on Unix). Fill in the placeholders and run the
 command again.
 
-On the next command, secrets in that file — passwords, TOTP secrets, API
-secrets, access tokens — **move into the OS keyring** when one is available
+On the next `trade` command run in a terminal (or `trade config` again),
+secrets in that file — passwords, TOTP secrets, API secrets, access tokens —
+**move into the OS keyring** when one is available
 (macOS Keychain, Windows Credential Manager, the Secret Service on Linux
 desktops), and the file is rewritten without them. It keeps the non-secret
 settings plus `"secret_store": "keyring"` and the keyring entry name. Each data
 directory (`STOCKWISE_HOME`) gets its own keyring entry.
 
 - `stockwise trade config --keyring` moves them now and says why if it can't.
+- Scripts and cron jobs (no terminal) never move secrets themselves; after a
+  move they read them from the keyring, so on a machine where the keyring is
+  locked when cron runs, keep `STOCKWISE_KEYRING=off`.
 - With no keyring (headless Linux, containers, CI) the secrets stay in the
   owner-only file. Set `STOCKWISE_KEYRING=off` to always use the file.
 - To change a secret later, put the new value in the file; it moves into the

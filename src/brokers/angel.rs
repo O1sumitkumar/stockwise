@@ -53,9 +53,9 @@ pub struct AngelConfig {
 
 impl AngelConfig {
     /// Load the config, moving plaintext secrets into the OS keyring when
-    /// one is available.
+    /// one is available and this is an interactive run.
     pub fn load() -> Result<Self> {
-        Ok(Self::load_with_storage(true)?.0)
+        Ok(Self::load_with_storage(secrets::auto_migrate())?.0)
     }
 
     /// Load without migrating; also returns where the secrets live.

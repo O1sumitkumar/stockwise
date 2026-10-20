@@ -283,6 +283,17 @@ impl CostBook {
     fn avg(&self) -> Option<f64> {
         (self.units > 0.0 && self.cost > 0.0).then(|| self.cost / self.units)
     }
+
+    /// Average cost, but only if the transactions explain the whole closing
+    /// balance. A statement that starts with units bought before its period
+    /// has no cost for them, and averaging only the later purchases would be
+    /// wrong.
+    fn avg_for(&self, closing_units: f64) -> Option<f64> {
+        let tolerance = 0.002_f64.max(closing_units * 1e-4);
+        ((self.units - closing_units).abs() <= tolerance)
+            .then(|| self.avg())
+            .flatten()
+    }
 }
 
 fn json_num(v: Option<&serde_json::Value>) -> Option<f64> {
@@ -359,24 +370,16 @@ pub(super) fn parse_cas_json(content: &str) -> Result<Parsed> {
                             json_num(t.get("nav")),
                         );
                     }
-                    book.avg()
+                    book.avg_for(units)
                 }
             };
-            let Some(avg) = avg else {
-                out.skipped.push(Skipped {
-                    what,
-                    why: "no cost in the statement (a summary CAS without cost values?) — \
-                          add it with `portfolio add`"
-                        .into(),
-                });
-                continue;
-            };
+            // No complete cost: update the quantity of a fund already tracked.
             out.rows.push(ImportRow {
                 symbol,
                 isin,
                 name: Some(name),
                 qty: units,
-                avg_cost: Some(avg),
+                avg_cost: avg,
                 unit: "units",
             });
         }
@@ -578,19 +581,13 @@ pub(super) fn parse_cas_csv(content: &str) -> Result<Parsed> {
             });
             continue;
         };
-        let Some(avg) = book.avg() else {
-            out.skipped.push(Skipped {
-                what,
-                why: "no purchase amounts to compute a cost from".into(),
-            });
-            continue;
-        };
+        // Opening units of unknown cost (a period statement): quantity only.
         out.rows.push(ImportRow {
             symbol,
             isin: isin.clone(),
             name: Some(key.1.clone()),
             qty: units,
-            avg_cost: Some(avg),
+            avg_cost: book.avg_for(units),
             unit: "units",
         });
     }
@@ -615,9 +612,11 @@ pub(super) fn parse_cas(content: &str) -> Result<Parsed> {
 }
 
 /// Look up the NSE (else BSE) ticker for an ISIN via Yahoo search. Only a
-/// single unambiguous equity result is accepted.
-async fn ticker_for_isin(yahoo: &YahooClient, isin: &str) -> Option<String> {
-    let hits = yahoo.search(isin).await.ok()?;
+/// single unambiguous equity result is accepted. `Ok(None)` means the search
+/// worked and found no listing; a failed search is an error, so a network
+/// blip never changes what a row is imported as.
+async fn ticker_for_isin(yahoo: &YahooClient, isin: &str) -> Result<Option<String>> {
+    let hits = yahoo.search(isin).await?;
     let pick = |suffix: &str| {
         let mut found = hits.iter().filter_map(|h| {
             let s = h.symbol.as_deref()?;
@@ -630,7 +629,7 @@ async fn ticker_for_isin(yahoo: &YahooClient, isin: &str) -> Option<String> {
         let first = found.next()?;
         found.all(|s| s == first).then_some(first)
     };
-    pick(".NS").or_else(|| pick(".BO"))
+    Ok(pick(".NS").or_else(|| pick(".BO")))
 }
 
 /// Apply rows with snapshot semantics: the first row for a symbol replaces
@@ -656,7 +655,8 @@ pub(super) fn apply_rows(
             skipped.push(Skipped {
                 what: r.name.clone().unwrap_or_else(|| sym.clone()),
                 why: format!(
-                    "the statement has no purchase cost — add it once with `portfolio add {sym} <qty> <cost>`; \
+                    "the statement has no complete purchase cost (units bought before its period, \
+                     or a summary/demat statement) — add it once with `portfolio add {sym} <qty> <cost>`; \
                      later imports keep its quantity in sync"
                 ),
             });
@@ -684,25 +684,27 @@ pub(super) async fn import_rows(source: &str, parsed: Parsed) -> Result<()> {
         let yahoo = YahooClient::new().await;
         for r in rows.iter_mut().filter(|r| r.symbol.is_empty()) {
             let isin = r.isin.clone().unwrap_or_default();
-            let ticker = match &yahoo {
+            let what = r.name.clone().unwrap_or(isin.clone());
+            let lookup = match &yahoo {
                 Ok(y) => ticker_for_isin(y, &isin).await,
-                Err(_) => None,
+                Err(e) => Err(anyhow::anyhow!("{e:#}")),
             };
-            match ticker {
-                Some(t) => r.symbol = t,
-                // INF… ISINs that don't trade on an exchange are mutual funds.
-                None if isin.starts_with("INF") => {
+            match lookup {
+                Ok(Some(t)) => r.symbol = t,
+                // INF… ISINs with no exchange listing are mutual funds.
+                Ok(None) if isin.starts_with("INF") => {
                     r.symbol = mf_symbol(None, Some(&isin)).unwrap_or_default();
                     r.unit = "units";
                 }
-                None => skipped.push(Skipped {
-                    what: r.name.clone().unwrap_or(isin.clone()),
-                    why: match &yahoo {
-                        Ok(_) => format!(
-                            "could not find one NSE/BSE ticker for ISIN {isin} — add it with `portfolio add`"
-                        ),
-                        Err(e) => format!("ticker lookup unavailable ({e:#})"),
-                    },
+                Ok(None) => skipped.push(Skipped {
+                    what,
+                    why: format!(
+                        "could not find one NSE/BSE ticker for ISIN {isin} — add it with `portfolio add`"
+                    ),
+                }),
+                Err(e) => skipped.push(Skipped {
+                    what,
+                    why: format!("ticker lookup failed ({e:#}) — run the import again later"),
                 }),
             }
         }
@@ -891,6 +893,22 @@ mod tests {
         apply_rows(&mut pf, &p.rows);
         assert_eq!(pf.holdings.len(), 1);
         assert!((pf.holdings[0].shares - 29.912).abs() < 1e-9);
+    }
+
+    #[test]
+    fn units_bought_before_the_statement_period_have_no_cost() {
+        // 100 units carried in, 10 bought in the period: averaging only the
+        // 10 would misstate the cost of all 110.
+        let json = r#"{"folios":[{"folio":"1","schemes":[{"scheme":"X Fund","amfi":"1","isin":"INF000000001",
+            "open":"100","close":"110","close_calculated":"110","valuation":{"date":"2025-03-31","nav":"100","value":"11000"},
+            "transactions":[{"date":"2024-05-01","description":"Purchase","amount":"1000","units":"10","nav":"100","balance":"110","type":"PURCHASE"}]}]}]}"#;
+        let p = parse_cas(json).unwrap();
+        assert_eq!((p.rows[0].qty, p.rows[0].avg_cost), (110.0, None));
+
+        let csv = "amc,folio,pan,scheme,advisor,isin,amfi,date,description,amount,units,nav,balance,type,dividend\n\
+X AMC,1,P,X Fund,,INF000000001,1,2024-05-01,Purchase,1000,10,100,110,PURCHASE,\n";
+        let p = parse_cas(csv).unwrap();
+        assert_eq!((p.rows[0].qty, p.rows[0].avg_cost), (110.0, None));
     }
 
     #[test]

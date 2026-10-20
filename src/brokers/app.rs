@@ -113,7 +113,7 @@ pub fn status(kind: BrokerKind, needs: Needs, migrate: bool) -> Result<ConfigSta
 
 /// Load the config for an API call: credentials and a saved session.
 pub fn session(kind: BrokerKind, needs: Needs) -> Result<AppConfig> {
-    let (config, _) = load(kind, true)?;
+    let (config, _) = load(kind, secrets::auto_migrate())?;
     if !is_configured(&config, needs) {
         return Err(super::not_configured(kind));
     }
@@ -125,7 +125,7 @@ pub fn session(kind: BrokerKind, needs: Needs) -> Result<AppConfig> {
 
 /// Load the config for `trade login`: credentials must be filled in.
 pub fn for_login(kind: BrokerKind, needs: Needs) -> Result<(AppConfig, Storage)> {
-    let (config, storage) = load(kind, true)?;
+    let (config, storage) = load(kind, secrets::auto_migrate())?;
     if !is_configured(&config, needs) {
         return Err(super::not_configured(kind));
     }

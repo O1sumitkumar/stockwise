@@ -89,7 +89,7 @@ fn check_args(qty: u32, intent: &Intent) -> Result<()> {
     }
     let finite = |name: &str, v: f64| {
         if v.is_finite() && v > 0.0 {
-            Ok(())
+            brokers::check_paise(name, v)
         } else {
             Err(anyhow::anyhow!("{name} must be a positive number"))
         }
@@ -206,7 +206,7 @@ pub(super) async fn place_live_order(
     if matches!(intent, Intent::Gtt { .. }) && !broker.supports_gtt() {
         bail!("{} GTT orders are not supported yet", kind.label());
     }
-    let sym = brokers::plain_symbol(symbol);
+    let sym = brokers::nse_symbol(symbol)?;
     let instrument = broker.resolve_instrument(&sym, "NSE").await?;
     let last = guard.last_price;
 
@@ -218,7 +218,7 @@ pub(super) async fn place_live_order(
             brokers::estimate_value(&k, qty, last)
         }
         Intent::Gtt { trigger, limit } => {
-            brokers::validate_gtt(trigger, limit, last)?;
+            brokers::validate_gtt(side, trigger, limit, last)?;
             Some(limit * qty as f64)
         }
     };
@@ -420,6 +420,7 @@ async fn run_order(
     opts: OrderOpts,
 ) -> Result<()> {
     check_args(qty, &intent)?;
+    brokers::nse_symbol(symbol)?;
     let limits = brokers::order_limits(kind)?;
     let broker = brokers::connect(kind).await?;
     let guard = Guard {
@@ -1177,6 +1178,18 @@ mod tests {
         let neg = Intent::Order(OrderKind::Limit { price: -1.0 });
         assert!(
             place_live_order(&b, Side::Buy, "SBIN", 1, neg, YES, &g)
+                .await
+                .is_err()
+        );
+        let sub_paise = Intent::Order(OrderKind::Limit { price: 800.123 });
+        assert!(
+            place_live_order(&b, Side::Buy, "SBIN", 1, sub_paise, YES, &g)
+                .await
+                .is_err()
+        );
+        let market = Intent::Order(OrderKind::Market);
+        assert!(
+            place_live_order(&b, Side::Buy, "SBIN.BO", 1, market, YES, &g)
                 .await
                 .is_err()
         );

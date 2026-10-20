@@ -8,6 +8,7 @@
 //! in the file (an older file, or one the user just edited) are moved into the
 //! keyring on load, and the file is rewritten without them.
 //!
+//! Moving happens on its own only in interactive runs ([`auto_migrate`]).
 //! Set `STOCKWISE_KEYRING=off` to keep secrets in the owner-only file.
 //! Tests never touch the OS keyring.
 
@@ -159,6 +160,15 @@ fn disabled_by_env() -> bool {
             "off" | "0" | "false" | "no" | "file"
         )
     })
+}
+
+/// Whether loading a config may move its secrets into the keyring on its
+/// own: only in a terminal, where the user sees the notice and can answer a
+/// keychain prompt. Scripts and cron jobs keep using the file until
+/// `trade config` (or any interactive trade command) migrates it.
+pub fn auto_migrate() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
 }
 
 /// The secret store for this run.

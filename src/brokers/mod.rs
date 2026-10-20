@@ -530,8 +530,11 @@ pub fn validate_order(side: Side, kind: &OrderKind, last: Option<f64>) -> Result
 /// Check a single-leg GTT. Either direction is valid (a BUY above the market
 /// is a breakout entry, below it a dip buy; a SELL above is a target, below
 /// a stop-loss), but the trigger must not sit on the last price and the
-/// limit must be near the trigger.
-pub fn validate_gtt(trigger: f64, limit: f64, last: Option<f64>) -> Result<()> {
+/// limit must be near the trigger. A stop GTT (SELL below the market, BUY
+/// above it) fires into a moving price, so its limit must be marketable at
+/// the trigger: at or below it for a SELL, at or above it for a BUY —
+/// otherwise the order could rest unfilled and leave the position open.
+pub fn validate_gtt(side: Side, trigger: f64, limit: f64, last: Option<f64>) -> Result<()> {
     check_price("Trigger price", trigger)?;
     check_price("Limit price", limit)?;
     check_limit_near_trigger(limit, trigger)?;
@@ -543,6 +546,26 @@ pub fn validate_gtt(trigger: f64, limit: f64, last: Option<f64>) -> Result<()> {
             "The trigger (₹{trigger:.2}) is within 0.25% of the last price (₹{last:.2}); \
              it would fire immediately. Place a regular order instead."
         );
+    }
+    match side {
+        Side::Sell if trigger < last && limit > trigger => bail!(
+            "A stop-loss SELL GTT (trigger ₹{trigger:.2} below the market) needs its limit at or \
+             below the trigger, or the sell may never fill; got ₹{limit:.2}"
+        ),
+        Side::Buy if trigger > last && limit < trigger => bail!(
+            "A stop BUY GTT (trigger ₹{trigger:.2} above the market) needs its limit at or above \
+             the trigger, or the buy may never fill; got ₹{limit:.2}"
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// Prices with more than 2 decimals: refused rather than silently rounded,
+/// so what the preview shows is what is sent.
+pub fn check_paise(name: &str, v: f64) -> Result<()> {
+    let paise = v * 100.0;
+    if (paise - paise.round()).abs() > 1e-6 {
+        bail!("{name} ₹{v} has more than 2 decimals");
     }
     Ok(())
 }
@@ -570,14 +593,25 @@ pub fn strip_series(tradingsymbol: &str) -> &str {
     }
 }
 
-/// `RELIANCE.NS` / `reliance-eq` / ` Reliance ` → `RELIANCE`.
+/// `RELIANCE.NS` / `reliance-eq` / ` Reliance ` → `RELIANCE`. Other
+/// suffixes (`.BO`) are kept.
 pub fn plain_symbol(symbol: &str) -> String {
     let s = symbol.trim().to_uppercase();
-    let s = s
-        .strip_suffix(".NS")
-        .or_else(|| s.strip_suffix(".BO"))
-        .unwrap_or(&s);
+    let s = s.strip_suffix(".NS").unwrap_or(&s);
     s.strip_suffix("-EQ").unwrap_or(s).to_string()
+}
+
+/// The NSE symbol to trade. Orders go to NSE only, so a BSE (`.BO`) or other
+/// suffixed ticker is refused instead of quietly trading the NSE listing.
+pub fn nse_symbol(symbol: &str) -> Result<String> {
+    let s = plain_symbol(symbol);
+    if s.is_empty() {
+        bail!("Symbol required");
+    }
+    if s.contains('.') {
+        bail!("StockWise places orders on NSE only; use the NSE symbol (e.g. RELIANCE), not {s}");
+    }
+    Ok(s)
 }
 
 #[cfg(test)]
@@ -642,23 +676,42 @@ mod tests {
             price: 95.0,
         };
         assert!(validate_order(Side::Sell, &typo, Some(1000.0)).is_err());
-        assert!(validate_gtt(1200.0, 120.0, Some(1300.0)).is_err());
+        assert!(validate_gtt(Side::Sell, 1200.0, 120.0, Some(1300.0)).is_err());
     }
 
     #[test]
     fn bad_numbers_are_refused() {
         for bad in [0.0, -5.0, f64::NAN, f64::INFINITY] {
             assert!(validate_order(Side::Buy, &OrderKind::Limit { price: bad }, None).is_err());
-            assert!(validate_gtt(bad, 100.0, Some(120.0)).is_err());
+            assert!(validate_gtt(Side::Buy, bad, 100.0, Some(120.0)).is_err());
         }
     }
 
     #[test]
     fn gtt_trigger_must_not_sit_on_the_market() {
-        assert!(validate_gtt(1200.0, 1195.0, Some(1300.0)).is_ok());
-        assert!(validate_gtt(1400.0, 1405.0, Some(1300.0)).is_ok());
-        assert!(validate_gtt(1300.5, 1300.0, Some(1300.0)).is_err());
-        assert!(validate_gtt(1200.0, 1195.0, None).is_err());
+        assert!(validate_gtt(Side::Sell, 1200.0, 1195.0, Some(1300.0)).is_ok());
+        assert!(validate_gtt(Side::Buy, 1400.0, 1405.0, Some(1300.0)).is_ok());
+        assert!(validate_gtt(Side::Sell, 1300.5, 1300.0, Some(1300.0)).is_err());
+        assert!(validate_gtt(Side::Sell, 1200.0, 1195.0, None).is_err());
+    }
+
+    #[test]
+    fn stop_gtts_need_a_marketable_limit() {
+        // Stop-loss SELL below the market with the limit above the trigger:
+        // the sell could rest unfilled as the price falls.
+        assert!(validate_gtt(Side::Sell, 1200.0, 1230.0, Some(1300.0)).is_err());
+        // Stop BUY above the market with the limit below the trigger.
+        assert!(validate_gtt(Side::Buy, 1400.0, 1390.0, Some(1300.0)).is_err());
+        // Targets and dip buys may rest beyond the trigger (Kite's own examples do).
+        assert!(validate_gtt(Side::Sell, 1400.0, 1405.0, Some(1300.0)).is_ok());
+        assert!(validate_gtt(Side::Buy, 1200.0, 1195.0, Some(1300.0)).is_ok());
+    }
+
+    #[test]
+    fn prices_with_more_than_two_decimals_are_refused() {
+        assert!(check_paise("Limit price", 1300.45).is_ok());
+        assert!(check_paise("Limit price", 0.05).is_ok());
+        assert!(check_paise("Limit price", 1300.456).is_err());
     }
 
     #[test]
@@ -698,7 +751,10 @@ mod tests {
         assert_eq!(plain_symbol(" reliance.ns "), "RELIANCE");
         assert_eq!(plain_symbol("TCS-EQ"), "TCS");
         assert_eq!(plain_symbol("M&M"), "M&M");
-        assert_eq!(plain_symbol("INFY.BO"), "INFY");
+        assert_eq!(plain_symbol("INFY.BO"), "INFY.BO");
+        assert_eq!(nse_symbol("infy.ns").unwrap(), "INFY");
+        assert!(nse_symbol("INFY.BO").is_err());
+        assert!(nse_symbol(" ").is_err());
     }
 
     #[test]
