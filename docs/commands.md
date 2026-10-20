@@ -1,127 +1,140 @@
 # Commands Reference
 
-Default market is India. Use `-m us` for US stocks.
+`stockwise --help` lists every command by group; `stockwise <command> --help`
+shows its arguments. This page adds detail.
 
-## Core Analysis
+## Global options
 
-| Command | Alias | Description |
-|---------|-------|-------------|
-| `quote <SYMBOLS...>` | `q` | Live price, volume, P/E, market cap, MAs, 52-week range |
-| `analyze <SYMBOL>` | `a` | Fundamental analysis: valuation, profitability, growth, analyst ratings, AI insights, verdict |
-| `technical <SYMBOL> [-p PERIOD]` | `t` | RSI, MACD, Bollinger Bands, ATR, VWAP, SMA/EMA, braille charts, AI interpretation. Default: 3mo |
-| `compare <SYMBOLS...>` | `c` | Side-by-side comparison across 16 metrics with AI verdict |
-| `history <SYMBOL> [-p PERIOD]` | | Price history with braille line chart, volume bars, SMA overlay. Default: 1mo |
-| `chart <SYMBOL>` | | Multi-timeframe charts (1W, 1M, 3M, 1Y at once) |
-| `deep <SYMBOL> [-p PERIOD]` | | Everything about a stock — fundamentals, technicals, support/resistance, Fibonacci, risk, gaps, volume, insights, AI. Default: 3mo |
+| Option | Env var | Description |
+|--------|---------|-------------|
+| `-m, --market <in\|us>` | `STOCKWISE_MARKET` | Market for bare tickers. Default `in`: `TCS` → `TCS.NS`. Symbols with a suffix (`RELIANCE.BO`, `VOD.L`), indices (`^NSEI`), FX (`USDINR=X`) and crypto (`BTC-USD`) pass through unchanged |
+| `--ai` | `STOCKWISE_AI` | Add a local-AI section to `analyze`, `technical`, `compare`, `screen`, `backtest`, `deep` (slow; see [ai.md](ai.md)) |
 
-## Market Intelligence
+Other environment variables: `STOCKWISE_HOME` (data directory),
+`STOCKWISE_REDIS_URL` (cache server, or `off`), `STOCKWISE_MODEL` and
+`OLLAMA_HOST` (AI). `NO_COLOR` disables colour; colour is also off when output
+is piped.
 
-| Command | Description |
-|---------|-------------|
-| `markets` | US + India major indices (S&P 500, Dow, NASDAQ, NIFTY, SENSEX, Bank NIFTY) |
-| `movers` | Top 10 gainers and losers from 30 popular large-cap stocks |
-| `sectors` | Sector ETF/index performance with visual bars |
-| `news <SYMBOL>` | Latest 10 headlines from Yahoo Finance |
-| `search <QUERY>` | Find stock symbols by company name |
-| `sentiment` | Fear & Greed gauge from VIX + market momentum + 1-month trend |
+**Periods** (`-p`): `1d`, `5d`, `1w`, `1mo`, `3mo`, `6mo`, `1y`, `2y`, `5y`, `10y`, `max`.
 
-## Advanced Analysis
+**Exit codes**: `0` success, `1` runtime error (unknown symbol, no data,
+network), `2` invalid arguments.
 
-| Command | Alias | Description |
-|---------|-------|-------------|
-| `risk <SYMBOL>` | | Annualized volatility, Sharpe/Sortino/Calmar ratios, max drawdown, VaR (95%/99%), braille chart |
-| `correlate <SYMBOLS...>` | `corr` | Pearson correlation matrix from 1Y daily returns |
-| `screen <CATEGORY>` | | Screener: `undervalued` (P/E<15), `growth` (EPS fwd>TTM), `dividend` (yield>2%), `momentum` (top gainers), `bluechip` (cap>$100B) |
-| `timeframes <SYMBOL>` | `mtf` | 1M/3M/6M/1Y/2Y/5Y returns, volatility, RSI, SMA/MACD signals at a glance |
-| `picks` | | AI-scored top investment picks across 8 fundamental + technical factors |
-| `earnings` | | Earnings growth overview for portfolio & watchlist stocks |
-
-## Stock-Specific Tools
+## Start here
 
 | Command | Description |
 |---------|-------------|
-| `support <SYMBOL> [-p PERIOD]` | Pivot points (R1-R3, S1-S3) + Fibonacci retracement levels |
-| `fibs <SYMBOL> [-p PERIOD]` | Fibonacci retracement levels with "you are here" marker |
-| `volume <SYMBOL> [-p PERIOD]` | On-Balance Volume chart, A/D line, volume ratio, volume bars |
-| `gaps <SYMBOL> [-p PERIOD]` | Detect unfilled/filled price gaps |
-| `stoploss <SYMBOL> [--entry PRICE] [-p PERIOD]` | ATR-based (1.5x/2x/3x), percentage, Chandelier exit, R:R targets |
-| `patterns <SYMBOL> [-p PERIOD]` | Candlestick pattern detection (doji, hammer, engulfing, morning star) |
-| `options <SYMBOL> [-p PERIOD]` | Expected moves (1/5/10/30 day), OTM strike suggestions |
-| `peers <SYMBOL>` | Auto-find same-sector peers, compare P/E, P/B, market cap |
-| `dividends <SYMBOL>` | Yield analysis, income projection (₹1L/5L/10L invested), 10Y DRIP growth |
+| `quote <SYMBOLS...> [--json]` (`q`) | Price, change, day/52-week range, volume, market cap, P/E, EPS, moving averages. Unknown symbols are named in the error |
+| `deep <SYMBOL> [-p PERIOD]` | Everything about one stock: fundamentals, technicals, support/resistance, Fibonacci, risk, gaps, volume, insights. Default `3mo` |
+| `markets [--json]` | US + India indices (S&P 500, Dow, NASDAQ, Russell, VIX, NIFTY 50, SENSEX, Bank NIFTY, NIFTY IT) |
+| `dashboard` (`d`) | Indices + portfolio P&L + watchlist + triggered alerts; first-run hints when empty |
+| `search <QUERY> [--json]` | Find a ticker by company name |
+| `doctor` | Check data directory, Yahoo reachability, Redis, Ollama model, broker config |
+
+## Analysis
+
+| Command | Description |
+|---------|-------------|
+| `analyze <SYMBOL>` (`a`) | Valuation, profitability, growth, analyst ratings, plain-English verdict |
+| `technical <SYMBOL> [-p]` (`t`) | RSI, MACD, Bollinger Bands, ATR, VWAP, SMA/EMA, braille charts. Default `3mo` |
+| `history <SYMBOL> [-p] [--json]` | Braille price chart, volume bars, last 20 bars. `--json` emits every OHLCV bar. Default `1mo` |
+| `chart <SYMBOL>` | 1W, 1M, 3M and 1Y charts at once |
+| `compare <SYMBOLS...>` (`c`) | Two or more stocks side by side across 16 metrics |
+| `risk <SYMBOL> [-p]` | Annualized volatility, Sharpe/Sortino/Calmar, max drawdown, VaR 95/99% — always from daily bars. Default `1y` |
+| `correlate <SYMBOLS...>` (`corr`) | Correlation matrix of daily returns (two or more symbols) |
+| `timeframes <SYMBOL>` (`mtf`) | 1M–5Y return, volatility, RSI, SMA/MACD signals |
+| `returns <SYMBOL>` | 1W–5Y returns with CAGR |
+| `patterns <SYMBOL> [-p]` | Candlestick patterns (doji, hammer, engulfing, morning star) |
+| `support <SYMBOL> [-p]` | Pivot points (R1–R3, S1–S3) + Fibonacci levels |
+| `fibs <SYMBOL> [-p]` | Fibonacci retracement with a "you are here" marker |
+| `volume <SYMBOL> [-p]` (`vol`) | OBV, A/D line, volume ratio, volume bars |
+| `gaps <SYMBOL> [-p]` | Filled and unfilled price gaps |
+| `stoploss <SYMBOL> [-e PRICE] [-p]` | ATR (1.5x/2x/3x), percentage and Chandelier stops, R:R targets |
+| `forecast <SYMBOL> [-d DAYS] [-p]` | Linear trend projection with 95% bands — a projection, not a prediction |
+| `options <SYMBOL> [-p]` | Expected 1/5/10/30-day moves and OTM strike ideas from realized volatility |
+
+## Market
+
+| Command | Description |
+|---------|-------------|
+| `movers` | Top gainers and losers among 30 large caps |
+| `sectors` | Sector ETF/index performance with bars |
+| `heatmap` | Heatmap of the 30-stock universe |
+| `sentiment` | Fear & Greed style gauge from VIX, momentum and trend |
+| `news <SYMBOL>` | Headlines collated from Yahoo Finance and Google News |
+| `rotation` | Sector rotation vs 50-day average |
+| `sectorcmp <SECTOR1> <SECTOR2>` | Two sectors head to head |
+| `peers <SYMBOL>` | Same-sector peers on P/E, P/B, market cap |
 | `insider <SYMBOL>` | Analyst consensus + insider-related news |
-| `ipo` | IPO calendar and latest IPO news |
+| `ipo` | IPO calendar and news |
+| `earnings` | Earnings growth for portfolio and watchlist |
+| `surprise` | Earnings momentum — accelerating vs decelerating |
+| `matrix` | Quality vs growth quadrants |
+| `picks` | Large caps ranked on 8 fundamental + technical factors |
+| `screen <CATEGORY>` | `undervalued` (P/E<15), `growth` (forward EPS > trailing), `dividend` (yield>2%), `momentum` (top gainers), `bluechip` (>$100B / >₹5L Cr) |
+| `dividends <SYMBOL>` | Yield, income projection, 10-year DRIP growth |
 
-## Wealth Generation
-
-| Command | Description |
-|---------|-------------|
-| `backtest <SYM> -s <STRATEGY> -p <PERIOD>` | Backtest strategies: `rsi`, `macd`, `sma`, `bb`, `vwap`, `mr`. Shows equity curve, alpha, Sharpe, drawdown |
-| `sip <SYM> <AMOUNT> -p <PERIOD>` | SIP/DCA simulator with value-vs-invested dual chart |
-| `forecast <SYM> -d <DAYS>` | Linear trend projection with 95% confidence bands |
-| `intraday <AMOUNT> <TARGET%>` | 9-strategy intraday bot with Kelly sizing, sector heat, dual targets |
-| `longterm [AMOUNT]` | 6-pillar scoring, moat analysis, Monte Carlo (1000 sims), DRIP, SIP allocation |
-
-## Portfolio & Tracking
-
-| Command | Alias | Description |
-|---------|-------|-------------|
-| `portfolio add <SYM> <SHARES> <COST>` | `p` | Add a holding |
-| `portfolio show` | `p` | Live P&L + allocation chart |
-| `import <SOURCE> <FILE>` | | Import from `kite`, `indmoney`, or `csv` |
-| `watch add <SYMBOLS...>` | `w` | Add to watchlist |
-| `watch` | `w` | View watchlist with live prices |
-| `alert add <SYM> above/below <PRICE>` | | Set price alert |
-| `alert check` | | Check alerts against live prices |
-| `export portfolio/watchlist` | | Export to CSV |
-| `wealth` | | Snapshot portfolio value (run daily for growth chart) |
-| `rebalance` | | Suggest trades for equal-weight allocation |
-| `harvest` | | Find tax-loss harvesting opportunities |
-| `tax <COUNTRY>` | | Tax calculator: `in` (India), `us` (USA), `uk` (UK) |
-| `dashboard` | `d` | Combined: indices + portfolio + watchlist + triggered alerts |
-
-## Trading & Simulation
+## Strategies & bots
 
 | Command | Description |
 |---------|-------------|
-| `trade setup/config` | Configure Angel One SmartAPI credentials |
-| `trade holdings` | Fetch live holdings (auto-syncs to StockWise) |
-| `trade buy/sell <SYM> <QTY>` | Place market orders |
-| `trade limit <SYM> <QTY> <PRICE>` | Place limit orders |
-| `trade orders/positions` | View order book / open positions |
-| `sim start [AMOUNT] [TARGET%]` | Start paper trading session |
-| `sim status` | Live P&L on simulated trades |
-| `sim settle` | End-of-day settlement |
-| `sim history` | Cumulative performance + confidence rating |
+| `backtest <SYMBOL> [-s STRATEGY] [-p]` | `rsi` (default), `macd`, `sma`, `bb`, `vwap`, `mr`. Equity curve, alpha, per-trade Sharpe, drawdown. Default `2y`. No commissions or slippage are modelled |
+| `sip <SYMBOL> <AMOUNT> [-p]` | Monthly SIP/DCA simulation with value-vs-invested chart and XIRR. Default `5y` |
+| `whatif <SYMBOL> <AMOUNT> <YYYY-MM-DD>` | What a lump sum on a past date is worth today |
+| `intraday <CAPITAL> <TARGET%>` (`bot`) | 9-strategy intraday ideas with Kelly sizing and dual targets. Signals only |
+| `longterm [MONTHLY_BUDGET]` | 6-pillar scoring, Monte Carlo, SIP allocation |
+| `daemon intraday [CAPITAL]` | Paper-trading loop, 9:00–15:30 IST: scan, enter, trail stops every 60s, book half at T1, square off 15:15, settle into `sim` history. **Never sends broker orders** |
+| `daemon longterm` | Post-market scan: scores, portfolio check, alerts, tax-harvest ideas |
+| `sim start <CAPITAL> [TARGET%]` | Start a paper session with the bot's picks |
+| `sim status` / `settle` / `history` | Live P&L / close at current prices / record + confidence rating |
+| `sim reset [--yes]` | Delete simulator history after confirmation (a timestamped backup is kept) |
+| `report <intraday\|longterm\|portfolio\|SYMBOL>` | AI report via local Ollama |
 
-## Daemon Workers
+## Portfolio
 
-| Command | Description |
-|---------|-------------|
-| `daemon intraday [CAPITAL]` | Continuous intraday worker (9AM–3:30PM IST). Scans, enters, monitors every 60s, trails stops, books T1 at 50%, squares off at 3:15, settles EOD. Risk: 1%/trade, 3% daily kill switch |
-| `daemon longterm` | Daily post-market analysis: score 30 stocks, check portfolio, alerts, tax harvest, AI memo |
-
-## Market Analysis
+Data lives in the directory shown by `stockwise doctor`.
 
 | Command | Description |
 |---------|-------------|
-| `rotation` | Sector rotation signals — overweight/underweight vs 50-day MA |
-| `matrix` | Quality-vs-Growth 4-quadrant categorization (Stars/Quality/Growth/Laggards) |
-| `surprise` | Earnings momentum — accelerating vs decelerating EPS |
-| `divcal` | Dividend dashboard — yield ranking + income projection for portfolio |
-| `pcorr` | Portfolio correlation matrix + diversification warnings |
-| `returns <SYMBOL>` | All-timeframe returns (1W to 5Y) with CAGR and ₹1L growth |
-| `heatmap` | Visual market heatmap of all 30 stocks |
-| `sectorcmp <SECTOR1> <SECTOR2>` | Head-to-head sector comparison |
-| `whatif <SYMBOL> <AMOUNT> <DATE>` | "What if I invested ₹X on YYYY-MM-DD?" calculator |
+| `portfolio [show]` (`p`) | Holdings with live P&L and allocation; holdings without a live price show N/A |
+| `portfolio add <SYMBOL> <SHARES> <COST>` | Add shares (averages into an existing holding) |
+| `portfolio remove <SYMBOL>` | Remove a holding |
+| `watch [show]` / `watch add <SYMBOLS...>` / `watch remove <SYMBOLS...>` (`w`) | Watchlist |
+| `alert [list]` / `alert add <SYMBOL> <above\|below> <PRICE>` / `alert check` / `alert remove <N>` | Price alerts |
+| `import <kite\|indmoney\|csv> <FILE>` | Import broker holdings; re-importing updates instead of doubling |
+| `export <portfolio\|watchlist>` | Write a CSV to the current directory |
+| `wealth` | Save today's portfolio value and show growth (run daily) |
+| `rebalance` | Trades to reach equal weight |
+| `harvest` | Tax-loss harvesting candidates |
+| `tax <in\|us\|uk>` | Capital-gains estimate for the current tax year |
+| `divcal` | Dividend ranking and income for portfolio + watchlist |
+| `pcorr` | Correlation between holdings, diversification warnings |
 
-## AI Reports
+## Live trading (Angel One)
+
+See [angel-one.md](angel-one.md). Orders are previewed and need a typed `yes`.
 
 | Command | Description |
 |---------|-------------|
-| `report intraday` | AI morning trading brief |
-| `report longterm` | AI investment memo |
-| `report portfolio` | AI portfolio review |
-| `report <SYMBOL>` | AI single-stock analysis |
+| `trade setup` / `trade config` | How to connect / create the owner-only credentials file |
+| `trade holdings` / `positions` / `orders` | Live holdings (synced into `portfolio`), open positions, order book |
+| `trade buy <SYMBOL> <QTY> [--dry-run] [--yes]` | Market buy on NSE |
+| `trade sell <SYMBOL> <QTY> [--dry-run] [--yes]` | Market sell on NSE |
+| `trade limit <SYMBOL> <QTY> <PRICE> [--dry-run] [--yes]` | Limit buy on NSE |
 
-All chart-based commands accept `-p <PERIOD>` flag. Available periods: `1d`, `5d`, `1w`, `1mo`, `3mo`, `6mo`, `1y`, `2y`, `5y`, `max`.
+## Setup
+
+| Command | Description |
+|---------|-------------|
+| `completions <bash\|zsh\|fish\|powershell\|elvish>` | Print a completion script, e.g. `stockwise completions zsh > ~/.zfunc/_stockwise` |
+
+## Scripting with `--json`
+
+```bash
+stockwise quote TCS INFY --json | jq '.[] | {symbol, regularMarketPrice}'
+stockwise history AAPL -m us -p 6mo --json | jq '.bars | map(.close) | max'
+stockwise markets --json | jq '.[] | select(.change_percent < -1)'
+```
+
+`quote --json` returns Yahoo's quote fields (camelCase). `history --json`
+returns `{symbol, currency, period, interval, bars: [{time, open, high, low, close, volume}]}`.

@@ -59,16 +59,21 @@ Redis keys use `stockwise:` prefix. Cache persists across CLI invocations — ru
 ```bash
 brew services start redis       # Enable Redis caching
 redis-cli keys "stockwise:*"    # See cached entries
-redis-cli flushdb               # Clear cache
+redis-cli --scan --pattern 'stockwise:*' | xargs redis-cli del   # Clear only StockWise keys
 ```
 
-Falls back to in-memory HashMap silently if Redis isn't running.
+Falls back to an in-memory cache if Redis isn't running. Connection and response timeouts
+(300/500 ms) keep a missing or hung Redis from slowing commands. Point at another server with
+`STOCKWISE_REDIS_URL`, or set it to `off`.
 
-Rate limiting: 200ms minimum between requests (5 req/sec). Retry: 3 attempts with exponential backoff. HTTP 429: aggressive backoff (2s, 4s, 8s).
+Rate limiting: 200ms minimum between requests (5 req/sec). Retry: 3 attempts with exponential backoff; HTTP 429 honours `Retry-After` (capped at 10s) and never sleeps after the last attempt.
 
 ## Data Storage
 
-Location: `~/Library/Application Support/stockwise/` (macOS) or `~/.local/share/stockwise/` (Linux)
+Location: `~/Library/Application Support/stockwise/` (macOS), `~/.local/share/stockwise/` (Linux), or
+`%LOCALAPPDATA%\stockwise\` (Windows). Set `STOCKWISE_HOME` to use another directory;
+`stockwise doctor` prints the active path. Files are written atomically (temp file + rename), and
+`angel_config.json` is readable only by you (0600 on Unix).
 
 | File | Purpose |
 |------|---------|

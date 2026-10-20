@@ -34,7 +34,7 @@ cargo test                 # all tests green
 ```
 
 - Keep PRs focused; one logical change per PR.
-- Add tests for new behavior. We have 213 and would like more.
+- Add tests for new behavior — CLI parsing tests live in `src/main.rs`, pure logic tests next to the code.
 - Update `docs/`, `README.md`, and `CHANGELOG.md` (`[Unreleased]`) when behavior
   changes.
 - New commands: wire them into `commands.rs`, document them in

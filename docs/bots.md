@@ -174,4 +174,4 @@ One command for everything about a single stock:
 stockwise deep RELIANCE
 ```
 
-Shows: company info, price action, valuation (P/E, PEG, P/B, EV/EBITDA), profitability, financial health, dividends, analyst ratings, 1Y chart, all technicals (RSI + gauge, SMA, MACD, Bollinger, ATR, VWAP), support/resistance, Fibonacci, risk (vol, Sharpe, drawdown, VaR), OBV trend, open gaps, insights, verdict, and AI analysis.
+Shows: company info, price action, valuation (P/E, PEG, P/B, EV/EBITDA), profitability, financial health, dividends, analyst ratings, 1Y chart, all technicals (RSI + gauge, SMA, MACD, Bollinger, ATR, VWAP), support/resistance, Fibonacci, risk (vol, Sharpe, drawdown, VaR), OBV trend, open gaps, insights, verdict, and (with `--ai`) AI analysis.

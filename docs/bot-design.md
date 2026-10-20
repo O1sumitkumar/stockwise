@@ -240,10 +240,16 @@ Implementation:
 - Tokio async loop with `tokio::time::interval`
 - Intraday: 60-second tick during market hours (9:00–3:30 IST)
 - Longterm: single run at 4:00 PM, cron-scheduled or manual
-- State persisted to `~/.local/share/stockwise/daemon_state.json`
-- Ctrl+C graceful shutdown (square off any open positions first)
+- *Planned:* state persisted to `daemon_state.json` — today open positions live
+  in memory and are written to the simulator history at the 3:30 settle
+- *Planned:* Ctrl+C graceful shutdown that squares off first — today Ctrl+C
+  stops the worker and the day's open paper positions are not recorded
 
-### Phase 2: Trade Execution
+### Phase 2: Trade Execution (planned — not implemented)
+
+> Today the daemon is **paper-only**: it never sends orders to a broker. Live
+> orders are placed only by `stockwise trade buy/sell/limit`, one at a time,
+> after a preview and confirmation.
 
 ```
 Signal Generated ──► Confirmation Check ──► Angel One API
@@ -303,7 +309,7 @@ src/
 ## FAQ
 
 **Q: Should the bot trade automatically?**
-A: Not yet. Start with paper trading (`sim` commands). Once you have 20+ days of HIGH confidence rating from `sim history`, then consider `--auto-trade` mode.
+A: Not yet. Start with paper trading (`sim` commands). Once you have 20+ days of HIGH confidence rating from `sim history`, then consider a future auto-trade mode (not built yet — today the daemon only paper-trades).
 
 **Q: How much capital should I start with?**
 A: Paper trade with the same amount you'd use for real. ₹25,000–₹50,000 is a good starting point for intraday. For long-term SIP, whatever your monthly budget is.

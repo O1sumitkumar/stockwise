@@ -1,66 +1,82 @@
 # AI Integration (Ollama)
 
-StockWise uses local AI via [Ollama](https://ollama.com) for intelligent analysis. All inference runs on your machine — no data sent to external AI services.
+StockWise can add plain-English commentary from a **local** model via
+[Ollama](https://ollama.com). Inference runs on your machine — no stock data,
+portfolio, or credentials are sent to an external AI service. Everything else
+in StockWise works without it.
 
 ## Setup
 
 ```bash
-# Install Ollama (if not already)
+# Install Ollama (macOS; see ollama.com for Linux/Windows)
 brew install ollama
 
 # Start the server
 ollama serve
 
 # Pull the default model
-ollama pull gemma3:12b
+ollama pull qwen3:14b
+
+# Check that StockWise can see it
+stockwise doctor
 ```
 
-## How It Works
+## Two ways to use it
 
-When Ollama is running, AI analysis is **automatically appended** to these commands:
-
-| Command | AI Enhancement |
-|---------|---------------|
-| `analyze` | Fundamental analysis verdict (buy/hold/sell) |
-| `technical` | Multi-indicator confluence interpretation |
-| `compare` | "Which stock is better?" verdict |
-| `backtest` | Strategy viability assessment |
-| `screen` | Top picks from results, value trap warnings |
-
-AI sections appear only when Ollama is available. Commands work perfectly without it.
-
-## Dedicated Reports
+**Dedicated reports** always use the model:
 
 ```bash
 stockwise report intraday     # Morning trading brief
 stockwise report longterm     # Investment memo for SIP
 stockwise report portfolio    # Portfolio health review
-stockwise report RELIANCE     # Single-stock deep analysis
+stockwise report RELIANCE     # Single-stock analysis
 ```
 
-## Model Configuration
-
-Default: `gemma3:12b`
-
-Override with environment variable:
+**Opt-in sections** on analysis commands — add `--ai` (or set `STOCKWISE_AI=1`
+to make it the default):
 
 ```bash
-STOCKWISE_MODEL=qwen3:14b stockwise analyze RELIANCE
-STOCKWISE_MODEL=llama3.1:8b stockwise report portfolio
+stockwise analyze RELIANCE --ai
+stockwise compare TCS INFY --ai
 ```
 
-## Recommended Models
+| Command | AI section |
+|---------|-----------|
+| `analyze` | Fundamental verdict |
+| `technical` | Indicator confluence interpretation |
+| `compare` | "Which looks stronger?" verdict |
+| `backtest` | Strategy viability notes |
+| `screen` | Notes on the screened names, value-trap warnings |
+| `deep` | Summary of the full report |
 
-| Model | Size | Best For |
-|-------|------|----------|
-| `gemma3:12b` | 8GB | Best general finance reasoning (default) |
-| `qwen3:14b` | 9GB | Strong structured analysis |
-| `phi4:14b` | 9GB | Excellent at financial metrics |
-| `llama3.1:8b` | 5GB | Lighter, faster, decent quality |
-| `llama3.3:70b` | 40GB | Best quality (needs 64GB+ RAM) |
+AI is opt-in because a local model typically takes **30–60 seconds** per
+answer, which would turn these sub-second commands into minute-long waits.
+StockWise prints a progress line while the model works, and caches answers for
+an hour when Redis is available.
 
-## Privacy
+## Configuration
 
-- All AI runs locally via Ollama
-- No stock data, portfolio, or credentials sent to external services
-- Models run on your hardware only
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `STOCKWISE_MODEL` | `qwen3:14b` | Model name as shown by `ollama list` |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server (`host:port` or a full URL) |
+| `STOCKWISE_AI` | off | `1` to add AI sections to analysis commands by default |
+
+```bash
+STOCKWISE_MODEL=llama3.1:8b stockwise report portfolio
+OLLAMA_HOST=192.168.1.20:11434 stockwise report TCS
+```
+
+If the model isn't pulled, StockWise tells you the exact `ollama pull` command
+instead of printing an empty section.
+
+## Suggested models
+
+| Model | Download | Notes |
+|-------|----------|-------|
+| `qwen3:14b` | ~9 GB | Default. Strong structured analysis |
+| `gemma3:12b` | ~8 GB | Good general reasoning |
+| `phi4:14b` | ~9 GB | Good with financial metrics |
+| `llama3.1:8b` | ~5 GB | Lighter and faster |
+
+Model output is commentary, not advice. See [DISCLAIMER.md](../DISCLAIMER.md).

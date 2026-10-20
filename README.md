@@ -1,8 +1,9 @@
 # StockWise
 
-Autonomous stock market CLI built in Rust. Real-time quotes, deep analysis,
-backtesting, trading bots, and live trading for **US** and **Indian** markets —
-all from your terminal.
+**A stock market toolkit for your terminal — built for Indian (NSE/BSE) and US
+stocks.** Quotes, charts, screeners, backtests, SIP math, paper trading, and
+portfolio tracking in one fast Rust binary. No API keys, no account, no
+browser tabs.
 
 [![CI](https://github.com/iamsaquib8/stockwise/actions/workflows/ci.yml/badge.svg)](https://github.com/iamsaquib8/stockwise/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/stockwise.svg)](https://crates.io/crates/stockwise)
@@ -10,142 +11,165 @@ all from your terminal.
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![MSRV](https://img.shields.io/badge/rustc-1.88+-blue.svg)](#install)
 
-**57 commands** · **daemon workers** · **live trading** · **local AI (Ollama)** · **Redis cache** · **213 tests**
+<p align="center">
+  <img src="assets/history.svg" alt="stockwise history AAPL -m us -p 6mo: a braille price chart with volume bars in the terminal" width="760">
+</p>
 
-> ⚠️ **Not financial advice.** StockWise is for education and information only.
-> It can place **real-money orders** through your broker. You are responsible for
-> every trade. Markets are risky — you can lose money. See
-> [DISCLAIMER.md](DISCLAIMER.md) before using live trading.
-
-<!--
-  Animated demo: build the binary, then record with VHS:
-      cargo build --release && vhs assets/demo.tape
-  That writes assets/demo.gif. Then replace this comment with:
-      ![StockWise demo](assets/demo.gif)
--->
-
-```text
-$ stockwise quote AAPL -m us
-
-────────────────────────────────────────────────────────────
-  AAPL — Apple Inc.
-────────────────────────────────────────────────────────────
-  $295.78  ▼ -1.23 (-0.41%)
-
-  Day Range        $295.18 — $301.64     Market Cap   $4.34T
-  52-Week Range    $199.26 — $317.40     P/E (TTM)    35.81
-  50-Day MA        $289.47               200-Day MA   $268.49
+```bash
+stockwise quote RELIANCE TCS            # Indian stocks are the default
+stockwise quote AAPL NVDA -m us         # US stocks
+stockwise deep HDFCBANK                 # everything about one stock
+stockwise backtest INFY -s macd         # test a strategy on 2 years of data
+stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR)
 ```
+
+> **Not financial advice.** StockWise is for education and information. See
+> [DISCLAIMER.md](DISCLAIMER.md).
+
+## Why StockWise
+
+- **India-first, US too.** `TCS` means `TCS.NS`; rupee formatting in lakhs and
+  crores; NIFTY/SENSEX sectors; Indian tax years and LTCG/STCG; imports from
+  Zerodha Kite and INDmoney. Add `-m us` (or `STOCKWISE_MARKET=us`) for US stocks.
+- **Zero setup.** Public market data, no API key or sign-up. One binary for
+  macOS, Linux and Windows. `stockwise doctor` checks everything.
+- **60 commands, one muscle memory.** Fundamentals, technicals, risk, screeners,
+  sector rotation, backtests, SIP/what-if calculators, alerts, tax estimates.
+- **Scriptable.** `--json` on `quote`, `history`, `markets` and `search`; real
+  exit codes; shell completions.
+- **Practice before money.** A paper-trading simulator and an intraday paper
+  daemon with risk controls. Optional live orders via Angel One, behind a
+  preview and a typed confirmation.
+- **Private by design.** Your portfolio stays in local files. Optional AI runs
+  on your own machine through [Ollama](https://ollama.com).
 
 ## Install
 
-### crates.io (recommended)
+**macOS / Linux — prebuilt binary**
 
 ```bash
-cargo install stockwise
+curl -fsSL https://raw.githubusercontent.com/iamsaquib8/stockwise/master/install.sh | sh
 ```
 
-### Prebuilt binaries
-
-Grab a binary for macOS (Intel/Apple Silicon), Linux, or Windows from the
+Installs to `~/.local/bin` (override with `STOCKWISE_INSTALL=/usr/local/bin`)
+and verifies the release checksum. Windows: download the `.zip` from the
 [latest release](https://github.com/iamsaquib8/stockwise/releases/latest).
 
-### From source
+**With Rust**
 
 ```bash
-git clone https://github.com/iamsaquib8/stockwise
-cd stockwise
-cargo install --path .       # needs Rust 1.88+
+cargo binstall stockwise    # prebuilt binary via cargo-binstall
+cargo install stockwise     # or build from source (Rust 1.88+)
 ```
 
-## Quick Start
+Then:
 
 ```bash
-stockwise quote RELIANCE TCS INFY        # Indian stocks (default market)
-stockwise quote AAPL MSFT -m us          # US stocks
-stockwise deep HDFCBANK                   # everything about a stock, one shot
-stockwise markets                         # US + India indices at a glance
-stockwise dashboard                       # markets + portfolio + alerts
+stockwise doctor                                          # check your setup
+stockwise completions zsh > ~/.zfunc/_stockwise           # optional: tab completion
 ```
 
-## What It Does
+## Tour
 
-| Category | Commands |
-|----------|----------|
-| **Analysis** | `quote`, `analyze`, `technical`, `compare`, `history`, `chart`, `deep`, `risk`, `correlate`, `timeframes`, `picks`, `earnings` |
-| **Market** | `markets`, `movers`, `sectors`, `news`, `search`, `sentiment`, `rotation`, `matrix`, `surprise`, `heatmap`, `sectorcmp` |
-| **Screening** | `screen`, `support`, `fibs`, `volume`, `gaps`, `stoploss`, `peers`, `dividends`, `options`, `insider`, `ipo`, `patterns` |
-| **Bots** | `intraday` (9-strategy), `longterm` (6-pillar + Monte Carlo), `forecast`, `backtest`, `sip` |
-| **Daemon** | `daemon intraday` (continuous 9 AM–3:30 PM worker), `daemon longterm` (daily post-market analysis) |
-| **Trading** | `trade buy/sell/limit/holdings/orders` (Angel One), `import kite/indmoney/csv` |
-| **Portfolio** | `portfolio`, `watch`, `alert`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `dashboard` |
-| **Simulator** | `sim start/status/settle/history` (paper trading + confidence rating) |
-| **AI** | `report intraday/longterm/portfolio/<SYMBOL>` + auto-AI in 6 commands |
+<p align="center">
+  <img src="assets/markets.svg" alt="stockwise markets: Indian and US indices with daily change" width="49%">
+  <img src="assets/backtest.svg" alt="stockwise backtest TCS -s macd: equity curve and trade statistics" width="49%">
+</p>
 
-Full reference: [docs/commands.md](docs/commands.md).
+| | Commands |
+|---|---|
+| **Start here** | `quote`, `deep`, `markets`, `dashboard`, `search`, `doctor` |
+| **Analysis** | `analyze`, `technical`, `history`, `chart`, `compare`, `risk`, `correlate`, `timeframes`, `returns`, `patterns`, `support`, `fibs`, `volume`, `gaps`, `stoploss`, `forecast`, `options` |
+| **Market** | `movers`, `sectors`, `heatmap`, `sentiment`, `news`, `rotation`, `sectorcmp`, `peers`, `insider`, `ipo`, `earnings`, `surprise`, `matrix`, `picks`, `screen`, `dividends` |
+| **Strategies & bots** | `backtest`, `sip`, `whatif`, `intraday`, `longterm`, `daemon`, `sim`, `report` |
+| **Portfolio** | `portfolio`, `watch`, `alert`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
+| **Live trading** | `trade` (Angel One) |
 
-## Daemon Mode
+`stockwise --help` shows the same groups; [docs/commands.md](docs/commands.md)
+has every option.
 
-Continuous background workers that monitor the market all day.
+### Track a portfolio
 
 ```bash
-# Intraday worker — runs 9:00 AM to 3:30 PM IST
-stockwise daemon intraday 25000
-
-# 9:00   Pre-market scan (sectors, gaps)
-# 9:15   Enter top 5 positions (9 strategies, Kelly sizing)
-# 9:15–3:00  Monitor every 60s (trail stops, book T1 at 50%)
-# 3:15   Square off everything
-# 3:30   Settle → save to sim history → AI EOD report
-
-# Long-term worker — run after market close
-stockwise daemon longterm
+stockwise import kite ~/Downloads/holdings.csv   # or: portfolio add TCS 10 3500
+stockwise portfolio                              # live P&L + allocation
+stockwise alert add RELIANCE below 1200
+stockwise tax in                                 # LTCG/STCG estimate for this FY
+stockwise dashboard                              # indices + portfolio + watchlist + alerts
 ```
 
-Risk controls: 1% per trade, 3% daily-loss kill switch, max 5 positions. Read
-[docs/bot-design.md](docs/bot-design.md) before running with real capital.
-
-## AI Integration
-
-When [Ollama](https://ollama.com) is running locally, AI analysis is auto-added
-to `analyze`, `technical`, `compare`, `backtest`, `screen`, and daemon EOD
-reports. Default model: `qwen3:14b`. Everything works without it.
+### Script it
 
 ```bash
-ollama serve
-stockwise analyze RELIANCE                # includes an AI verdict
-stockwise report HDFCBANK                 # full AI stock report
+stockwise quote TCS INFY --json | jq '.[] | {symbol, regularMarketPrice}'
+stockwise history AAPL -m us -p 6mo --json | jq '.bars | map(.close) | max'
+stockwise quote ZZZZ || echo "lookup failed"     # non-zero exit on errors
 ```
 
-## Live Trading (Angel One)
-
-> Live trading uses **real money**. Start with the `sim` paper trader.
+### Paper trade, then decide
 
 ```bash
-stockwise trade config                    # set up credentials (stored locally)
-stockwise sim start 100000                # paper trade first
-stockwise trade buy RELIANCE 10           # market buy
-stockwise trade holdings                  # sync live holdings
+stockwise sim start 100000          # paper session with the bot's picks
+stockwise sim status                # live P&L
+stockwise daemon intraday 25000     # 9:00–15:30 IST paper loop: 1% risk/trade, 3% daily stop
+stockwise sim history               # track record + confidence rating
 ```
+
+The daemon never sends broker orders. Read [docs/bot-design.md](docs/bot-design.md)
+for how it decides.
+
+### Live orders (optional, Angel One)
+
+```bash
+stockwise trade setup                          # how to create owner-only credentials
+stockwise trade buy RELIANCE 10 --dry-run      # resolve + preview, send nothing
+stockwise trade buy RELIANCE 10                # preview, then type "yes" to send
+```
+
+Orders resolve the exact NSE instrument, show the estimated value, respect an
+optional `max_order_value` cap, and refuse to run unattended without `--yes`.
+See [docs/angel-one.md](docs/angel-one.md).
+
+### Local AI (optional)
+
+With [Ollama](https://ollama.com) running, `stockwise report TCS` writes an AI
+stock report, and `--ai` adds commentary to `analyze`, `technical`, `compare`,
+`screen`, `backtest` and `deep`. It's opt-in because local models take 30–60s.
+See [docs/ai.md](docs/ai.md).
+
+## Configuration
+
+Everything works with no config. Optional environment variables:
+
+| Variable | Purpose |
+|----------|---------|
+| `STOCKWISE_MARKET` | Default market: `in` (default) or `us` |
+| `STOCKWISE_HOME` | Where portfolio, watchlist, alerts and history are stored |
+| `STOCKWISE_AI` | `1` to add AI sections by default |
+| `STOCKWISE_MODEL` / `OLLAMA_HOST` | Ollama model (default `qwen3:14b`) and server |
+| `STOCKWISE_REDIS_URL` | Optional shared cache (`redis://…`), or `off` |
+| `NO_COLOR` | Disable colours (also automatic when piping) |
 
 ## Docs
 
-- [Commands Reference](docs/commands.md) — all 57 commands
-- [Trading Bots](docs/bots.md) — intraday + longterm + simulator
-- [Bot Design & Architecture](docs/bot-design.md) — daemon, state machine, risk
-- [Angel One Setup](docs/angel-one.md) — live trading + broker import
-- [AI & Ollama](docs/ai.md) — model setup, integration points
-- [Architecture](docs/architecture.md) — source layout, data flow, testing
+- [Commands reference](docs/commands.md)
+- [Trading bots](docs/bots.md) and [bot design](docs/bot-design.md)
+- [Angel One setup](docs/angel-one.md)
+- [AI & Ollama](docs/ai.md)
+- [Architecture](docs/architecture.md)
 
-## Roadmap & Contributing
+## Roadmap & contributing
 
-See the [ROADMAP](ROADMAP.md) for what's next (crates.io + binaries, more
-brokers, a TUI dashboard, and more). Contributions are welcome — start with
-[CONTRIBUTING.md](CONTRIBUTING.md) and the
-[good first issues](https://github.com/iamsaquib8/stockwise/issues).
+Next up: Homebrew, a config file, more brokers (Zerodha, Upstox), notifications,
+and a TUI dashboard — see the [ROADMAP](ROADMAP.md). Ideas and bug reports are
+welcome in [Discussions](https://github.com/iamsaquib8/stockwise/discussions) and
+[Issues](https://github.com/iamsaquib8/stockwise/issues); start with
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+If StockWise is useful to you, a ⭐ helps other people find it.
 
 ## License
 
-[MIT](LICENSE) © iamsaquib8. Data via Yahoo Finance and your broker; StockWise is
-not affiliated with any exchange, broker, or data provider. See
-[DISCLAIMER.md](DISCLAIMER.md).
+[MIT](LICENSE) © iamsaquib8. Market data comes from Yahoo Finance and your
+broker; StockWise is not affiliated with any exchange, broker, or data provider.
+See [DISCLAIMER.md](DISCLAIMER.md).

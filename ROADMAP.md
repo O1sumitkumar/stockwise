@@ -8,34 +8,37 @@ demand.
 
 Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 
-## ✅ Recently shipped (0.2)
+## ✅ Recently shipped
 
+**0.3** — usability and safety
+- `doctor`, shell completions, grouped help, `--json` on core commands
+- Typed subcommands with suggestions; real exit codes
+- Live orders behind exact instrument matching, preview, and confirmation
+- Opt-in local AI; owner-only credential storage; atomic data files
+- One-line installer, `cargo binstall`, checksums, Linux ARM64 binaries
+
+**0.2** — first public release
 - 57 commands across analysis, screening, bots, trading, and portfolio
-- Daemon workers — continuous intraday (9-strategy) + daily long-term
-- Paper-trading simulator with confidence rating
-- Live trading via Angel One; broker import (Kite, INDmoney, CSV)
-- Local AI via Ollama, auto-injected into 6 commands
-- Redis caching with in-memory fallback
-- Multi-timeframe + braille terminal charts
-- 205 tests, edition 2024
+- Daemon workers, paper-trading simulator, Angel One live trading
+- Broker import (Kite, INDmoney, CSV), Redis cache, braille charts
 
-## 🛠️ Now — distribution & scripting (0.2.x)
+## 🛠️ Now — distribution & scripting (0.3.x)
 
-- 🛠️ Publish to crates.io — `cargo install stockwise`
-- 🛠️ Prebuilt binaries for macOS (x86_64/arm64), Linux, Windows on every release
 - 📋 Homebrew tap — `brew install iamsaquib8/tap/stockwise`
-- 📋 Global `--json` flag so every command pipes into `jq`, dashboards, and scripts
-- 📋 Shell completions (bash/zsh/fish) + `stockwise completions` command
+- 📋 `--json` on more commands (`portfolio`, `technical`, `risk`, `backtest`)
+- 📋 Config file (`~/.config/stockwise/config.toml`) for market, model, and defaults
+- 📋 Daemon resilience — survive network blips, square off on Ctrl+C, IST clock + exchange holidays
+- 📋 Lot-level holdings with purchase dates, for accurate LTCG/STCG after imports
 
-## 📋 Next — brokers, config & alerts (0.3)
+## 📋 Next — brokers & alerts (0.4)
 
 - 📋 Native Zerodha Kite and Upstox brokers (beyond CSV import)
-- 📋 Config profiles (`~/.config/stockwise/config.toml`) + named portfolios
+- 📋 Named portfolios
 - 📋 Secure credential storage via the OS keyring (no plaintext broker secrets)
 - 📋 Daemon notifications — Telegram, Slack, and email on entries/exits/alerts
 - 📋 Optional cloud AI providers (OpenAI, Anthropic, Gemini) alongside Ollama
 
-## 💡 Later — depth (0.4+)
+## 💡 Later — depth (0.5+)
 
 - 💡 Interactive TUI dashboard (ratatui) — live quotes, positions, P&L
 - 💡 Portfolio-level and walk-forward backtesting

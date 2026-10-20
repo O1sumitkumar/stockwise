@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-21
+
+Usability and safety release. Command-line forms from 0.2 keep working.
+
+### Added
+- `stockwise doctor` — checks the data directory, Yahoo reachability, Redis,
+  the Ollama model, and broker config in one screen.
+- `stockwise completions <shell>` for bash, zsh, fish, PowerShell and elvish.
+- `--json` output for `quote`, `history`, `markets` and `search`.
+- Grouped top-level `--help` with examples.
+- `trade buy/sell/limit --dry-run` and `--yes`; optional `max_order_value` cap.
+- Environment variables: `STOCKWISE_MARKET`, `STOCKWISE_HOME`, `STOCKWISE_AI`,
+  `STOCKWISE_REDIS_URL`, and the standard `OLLAMA_HOST`.
+- `install.sh` one-line installer, `cargo binstall` support, SHA-256 checksums
+  and a Linux ARM64 binary on every release.
+- Dashboard first-run hints when you have no portfolio, watchlist or alerts.
+
+### Changed
+- **Live orders need confirmation.** Every order resolves the exact NSE `-EQ`
+  instrument, prints a preview, and requires typing `yes` (or `--yes`).
+- **Local AI is opt-in** (`--ai` / `STOCKWISE_AI=1`). It made analysis commands
+  take 40–60 seconds. `report` still always uses AI.
+- Actions are real subcommands and value lists (`portfolio`, `watch`, `alert`,
+  `sim`, `trade`, `screen`, `backtest -s`, `tax`, `import`, `export`,
+  `daemon`): typos are rejected with suggestions, and help documents every
+  argument. `portfolio`, `watch` and `alert` show their list when run bare.
+- Errors go to stderr with exit code 1 (unknown symbol, no data, bad file);
+  invalid arguments exit 2. Previously many printed a message and exited 0.
+- Not-found errors name the symbol and suggest `-m us` for US tickers.
+- `forecast` and `stoploss` accept `-p` like the other commands.
+- `sim reset` asks for confirmation and keeps a timestamped backup.
+- Local data files are written atomically, and parse errors name the file.
+- Redis has 300/500 ms timeouts and no longer prints a banner on every run.
+
+### Fixed
+- `M&M` and other symbols/searches containing `&` were cut off (`M&M` showed
+  Macy's); all request URLs are now percent-encoded.
+- `risk`, `forecast`, `options` and `deep` annualized weekly or monthly bars as
+  if they were daily (volatility and Sharpe about 2.2x too high with `-p 1y`).
+- SIP "annualized" return was total return divided by years; it is now XIRR.
+- A missing quote was valued at 0: portfolio showed -100%, `tax` booked a full
+  loss, `harvest` suggested selling, `wealth` saved a fake crash, and alerts
+  fired. These holdings now show N/A and are left out.
+- Re-running `import` or `trade holdings` doubled positions and reset dates;
+  broker symbols like `RELIANCE-EQ` became `RELIANCE-EQ.NS`.
+- Angel One credentials were saved world-readable; they are now owner-only
+  (0600) and existing files are tightened. `trade setup` no longer suggests
+  passing secrets as command-line arguments.
+- Broker holdings/positions/order-book failures showed "No holdings found"
+  instead of an error; broker calls now have timeouts.
+- Index, FX and crypto symbols (`^NSEI`, `USDINR=X`, `BTC-USD`) got `.NS`
+  appended in the Indian market.
+- The Yahoo session token is validated; a rate-limit page used to be stored
+  as the token and break every later request. Retries honour `Retry-After`.
+- Volume bars drew the same glyph on every row instead of stacking.
+- `--help` said the default market was US (it is India).
+- `screen bluechip` used a $100B threshold for INR market caps.
+- `dashboard` labelled indices by position, not symbol.
+- `tax` printed a fixed "FY 2025-26"; it now shows the current tax year.
+- `TATAMOTORS.NS` (no longer quoted) replaced with `TMPV.NS` in the universe.
+- Piping output into `head` no longer panics.
+
 ## [0.2.0] - 2026-06-24
 
 First public release — published to crates.io with prebuilt binaries.
@@ -67,6 +129,7 @@ Initial development. Not published. Highlights that landed during this phase:
 - Multi-timeframe and braille terminal charts; `-p/--period` flag on chart commands.
 - `deep` command — full report on a single stock in one shot.
 
-[Unreleased]: https://github.com/iamsaquib8/stockwise/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/iamsaquib8/stockwise/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/iamsaquib8/stockwise/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/iamsaquib8/stockwise/releases/tag/v0.2.0
 [0.1.0]: https://github.com/iamsaquib8/stockwise/commits/master
