@@ -36,6 +36,18 @@ dirs = "6"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 redis = { version = "0.27", features = ["tokio-comp"] }
+# `tui` feature: interactive dashboard (crossterm is re-exported by ratatui).
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache"], optional = true }
+# `server` feature: read-only JSON API and Prometheus metrics.
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "matched-path"], optional = true }
+
+[features]
+default = ["tui", "server"]
+tui = ["dep:ratatui"]
+server = ["dep:axum"]
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 
 [profile.release]
 opt-level = 3

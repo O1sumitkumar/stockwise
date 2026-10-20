@@ -18,15 +18,21 @@ mod backtest;
 mod charts;
 mod commands;
 mod daemon;
+mod daemon_status;
 mod display;
 mod insights;
 mod intraday;
 mod longterm;
 mod market;
 mod portfolio;
+#[cfg(feature = "server")]
+mod server;
 mod simulator;
 mod store;
 mod technical;
+#[cfg(feature = "tui")]
+mod tui;
+mod views;
 mod watchlist;
 mod wealth;
 
@@ -405,6 +411,32 @@ enum Commands {
         action: TradeCmd,
     },
 
+    // ── Interfaces ──
+    /// Full-screen live dashboard: indices, watchlist, portfolio, alerts, charts
+    Tui {
+        /// Seconds between price refreshes (quotes are cached for 30s)
+        #[arg(
+            short,
+            long,
+            default_value_t = 30,
+            value_parser = clap::value_parser!(u64).range(10..=3600)
+        )]
+        interval: u64,
+        /// Print one frame of COLSxROWS to stdout and exit (for screenshots)
+        #[arg(long, value_name = "COLSxROWS", hide = true)]
+        snapshot: Option<String>,
+    },
+
+    /// Read-only JSON API and Prometheus metrics over HTTP
+    Serve {
+        /// Address to listen on. Non-loopback needs --allow-remote
+        #[arg(long, default_value = "127.0.0.1:8787", env = "STOCKWISE_BIND")]
+        bind: String,
+        /// Allow a non-loopback --bind; requires a STOCKWISE_API_TOKEN bearer token
+        #[arg(long)]
+        allow_remote: bool,
+    },
+
     // ── Setup ──
     /// Print a shell completion script (bash, zsh, fish, powershell, elvish)
     Completions {
@@ -710,6 +742,7 @@ const GROUPS: &[(&str, &[&str])] = &[
             "pcorr",
         ],
     ),
+    ("Interfaces", &["tui", "serve"]),
     ("Live trading", &["trade"]),
     ("Setup", &["completions", "help"]),
 ];
@@ -932,6 +965,11 @@ async fn main() {
             commands::cmd_trade(name, symbol.as_deref(), qty, price, opts, m).await
         }
 
+        Commands::Tui { interval, snapshot } => {
+            commands::cmd_tui(interval, snapshot.as_deref(), m).await
+        }
+        Commands::Serve { bind, allow_remote } => commands::cmd_serve(&bind, allow_remote, m).await,
+
         Commands::Completions { shell } => {
             clap_complete::generate(
                 shell,
@@ -1019,6 +1057,24 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
         }
+    }
+
+    #[test]
+    fn interface_flags_parse() {
+        assert!(Cli::try_parse_from(["stockwise", "tui"]).is_ok());
+        assert!(Cli::try_parse_from(["stockwise", "tui", "-i", "60"]).is_ok());
+        assert!(Cli::try_parse_from(["stockwise", "tui", "-i", "1"]).is_err());
+        assert!(Cli::try_parse_from(["stockwise", "serve"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "stockwise",
+                "serve",
+                "--bind",
+                "0.0.0.0:9000",
+                "--allow-remote"
+            ])
+            .is_ok()
+        );
     }
 
     #[test]

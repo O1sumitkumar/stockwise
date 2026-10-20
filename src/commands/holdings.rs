@@ -70,21 +70,19 @@ pub async fn cmd_portfolio(
             );
             println!("  {}", "─".repeat(76).dimmed());
 
-            let mut total_cost = 0.0;
-            let mut total_value = 0.0;
-
-            let mut unpriced: Vec<String> = Vec::new();
-            for holding in &portfolio.holdings {
-                let quote = quotes
-                    .iter()
-                    .find(|q| q.symbol.as_deref() == Some(&holding.symbol));
-                let current_price = quote.and_then(|q| q.regular_market_price);
-                let cur = quote.and_then(|q| q.currency.as_deref());
+            let view = views::portfolio_view(&portfolio, &quotes);
+            for holding in &view.holdings {
+                let cur = holding.currency.as_deref();
                 let csym = market::currency_symbol(cur);
 
                 // No live price (delisted, renamed, or a bad symbol): show N/A
                 // and leave it out of the totals rather than valuing it at 0.
-                let Some(price) = current_price else {
+                let (Some(price), Some(value), Some(pnl), Some(pnl_pct)) = (
+                    holding.price,
+                    holding.value,
+                    holding.pnl,
+                    holding.pnl_percent,
+                ) else {
                     println!(
                         "  {:<12} {:>8.2} {:>10} {:>10} {:>12} {:>10} {:>10}",
                         holding.symbol.yellow(),
@@ -95,20 +93,8 @@ pub async fn cmd_portfolio(
                         "—",
                         "—",
                     );
-                    unpriced.push(holding.symbol.clone());
                     continue;
                 };
-                let value = holding.shares * price;
-                let cost_basis = holding.shares * holding.avg_cost;
-                let pnl = value - cost_basis;
-                let pnl_pct = if cost_basis > 0.0 {
-                    (pnl / cost_basis) * 100.0
-                } else {
-                    0.0
-                };
-
-                total_cost += cost_basis;
-                total_value += value;
 
                 let pnl_str = if pnl >= 0.0 {
                     format!("+{}{:.2}", csym, pnl).green().to_string()
@@ -133,15 +119,10 @@ pub async fn cmd_portfolio(
                 );
             }
 
-            let total_pnl = total_value - total_cost;
-            let total_pnl_pct = if total_cost > 0.0 {
-                (total_pnl / total_cost) * 100.0
-            } else {
-                0.0
-            };
-
-            // Use first holding's currency for totals (mixed-currency portfolios just show numbers)
-            let total_cur = quotes.first().and_then(|q| q.currency.as_deref());
+            let (total_cost, total_value) = (view.total_cost, view.total_value);
+            let (total_pnl, total_pnl_pct) = (view.total_pnl, view.total_pnl_percent);
+            // Mixed-currency portfolios just show numbers in the first quote's currency.
+            let total_cur = view.currency.as_deref();
             let tcsym = market::currency_symbol(total_cur);
 
             println!("  {}", "─".repeat(76).dimmed());
@@ -171,28 +152,21 @@ pub async fn cmd_portfolio(
                 total_pnl_str,
                 total_pnl_pct_str,
             );
-            if !unpriced.is_empty() {
+            if !view.unpriced.is_empty() {
                 println!(
                     "\n  {} No live price for {} — excluded from totals. Check the symbol with `stockwise search`.",
                     "!".yellow(),
-                    unpriced.join(", ")
+                    view.unpriced.join(", ")
                 );
             }
 
             // Allocation chart
             if portfolio.holdings.len() > 1 {
                 print_section("Allocation");
-                let alloc_items: Vec<(&str, f64)> = portfolio
+                let alloc_items: Vec<(&str, f64)> = view
                     .holdings
                     .iter()
-                    .map(|h| {
-                        let price = quotes
-                            .iter()
-                            .find(|q| q.symbol.as_deref() == Some(&h.symbol))
-                            .and_then(|q| q.regular_market_price)
-                            .unwrap_or(0.0);
-                        (h.symbol.as_str(), h.shares * price)
-                    })
+                    .map(|h| (h.symbol.as_str(), h.value.unwrap_or(0.0)))
                     .collect();
                 for line in charts::allocation_chart(&alloc_items) {
                     println!("{}", line);

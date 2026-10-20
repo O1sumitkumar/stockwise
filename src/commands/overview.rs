@@ -5,21 +5,8 @@ use super::*;
 pub async fn cmd_quote(symbols: &[String], market: Market, json: bool) -> Result<()> {
     let resolved = resolve_symbols(symbols, market);
     let client = YahooClient::new().await?;
-    let sym_refs: Vec<&str> = resolved.iter().map(|s| s.as_str()).collect();
-    let quotes = client.get_quote(&sym_refs).await?;
-
     // Yahoo silently drops unknown symbols; name them instead.
-    let missing: Vec<&str> = resolved
-        .iter()
-        .filter(|r| {
-            !quotes.iter().any(|q| {
-                q.symbol
-                    .as_deref()
-                    .is_some_and(|s| s.eq_ignore_ascii_case(r))
-            })
-        })
-        .map(|s| s.as_str())
-        .collect();
+    let views::QuoteSet { quotes, missing } = views::quotes(&client, &resolved).await?;
     let missing_err = || {
         anyhow::anyhow!(
             "No quote for {}{}",
@@ -125,72 +112,29 @@ pub async fn cmd_quote(symbols: &[String], market: Market, json: bool) -> Result
 
 pub async fn cmd_markets(market: Market, json: bool) -> Result<()> {
     let client = YahooClient::new().await?;
+    let sections = views::market_sections(&client, market).await?;
 
-    let sections: Vec<(&str, &[(&str, &str)])> = match market {
-        Market::Us => vec![
-            ("US Markets", market::US_INDICES),
-            ("Indian Markets", market::INDIA_INDICES),
-        ],
-        Market::In => vec![
-            ("Indian Markets", market::INDIA_INDICES),
-            ("US Markets", market::US_INDICES),
-        ],
-    };
+    if json {
+        let rows: Vec<&views::IndexRow> = sections.iter().flat_map(|(_, rows)| rows).collect();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
 
-    let mut rows = Vec::new();
-    for (title, indices) in &sections {
-        let symbols: Vec<&str> = indices.iter().map(|(sym, _)| *sym).collect();
-        let quotes = client.get_quote(&symbols).await?;
-
-        if json {
-            for q in &quotes {
-                let q_sym = q.symbol.as_deref().unwrap_or("");
-                let label = indices
-                    .iter()
-                    .find(|(sym, _)| *sym == q_sym)
-                    .map(|(_, name)| *name)
-                    .unwrap_or(q_sym);
-                rows.push(serde_json::json!({
-                    "region": title,
-                    "symbol": q_sym,
-                    "name": label,
-                    "price": q.regular_market_price,
-                    "change": q.regular_market_change,
-                    "change_percent": q.regular_market_change_percent,
-                    "currency": q.currency,
-                }));
-            }
-            continue;
-        }
-
+    for (title, rows) in &sections {
         print_header(title);
-
-        for q in &quotes {
-            // Match the label by symbol — Yahoo may reorder or drop symbols, so
-            // pairing by position can mislabel an index.
-            let q_sym = q.symbol.as_deref().unwrap_or("");
-            let label = indices
-                .iter()
-                .find(|(sym, _)| *sym == q_sym)
-                .map(|(_, name)| *name)
-                .unwrap_or(q_sym);
-            let price = q.regular_market_price.unwrap_or(0.0);
-            let change = q.regular_market_change.unwrap_or(0.0);
-            let change_pct = q.regular_market_change_percent.unwrap_or(0.0);
-            let cur = q.currency.as_deref();
+        for r in rows {
+            let price = r.price.unwrap_or(0.0);
+            let change = r.change.unwrap_or(0.0);
+            let change_pct = r.change_percent.unwrap_or(0.0);
+            let cur = r.currency.as_deref();
 
             println!(
                 "  {:<16} {}  {}",
-                label.bold(),
+                r.name.bold(),
                 format_price(price, cur).bold(),
                 format_change(change, change_pct)
             );
         }
-    }
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&rows)?);
-        return Ok(());
     }
     println!();
     Ok(())

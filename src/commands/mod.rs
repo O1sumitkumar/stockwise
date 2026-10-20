@@ -16,6 +16,7 @@ use crate::market::{self, Market};
 use crate::portfolio::Portfolio;
 use crate::simulator::{SimHistory, SimSession, SimTrade};
 use crate::technical;
+use crate::views;
 use crate::watchlist::Watchlist;
 use crate::wealth::WealthHistory;
 use anyhow::{Context, Result, bail};
@@ -42,6 +43,7 @@ fn resolve_symbols(symbols: &[String], market: Market) -> Vec<String> {
 
 mod fundamentals;
 mod holdings;
+mod interfaces;
 mod markets;
 mod overview;
 mod risk;
@@ -53,6 +55,7 @@ mod worker;
 
 pub use fundamentals::*;
 pub use holdings::*;
+pub use interfaces::*;
 pub use markets::*;
 pub use overview::*;
 pub use risk::*;

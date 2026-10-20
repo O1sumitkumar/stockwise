@@ -3,6 +3,7 @@ use reqwest::header;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
@@ -12,6 +13,29 @@ const REDIS_KEY_PREFIX: &str = "stockwise:";
 const DEFAULT_REDIS_URL: &str = "redis://127.0.0.1:6379/";
 /// Never sleep longer than this for a single retry, whatever Retry-After says.
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(10);
+
+/// Process-wide request counters, reported by `stockwise serve` at `/metrics`.
+pub struct FetchStats {
+    /// HTTP requests sent to the data provider, retries included.
+    pub requests: AtomicU64,
+    /// Fetches that failed after all retries.
+    pub errors: AtomicU64,
+    pub cache_hits_redis: AtomicU64,
+    pub cache_hits_memory: AtomicU64,
+    pub cache_misses: AtomicU64,
+}
+
+pub static STATS: FetchStats = FetchStats {
+    requests: AtomicU64::new(0),
+    errors: AtomicU64::new(0),
+    cache_hits_redis: AtomicU64::new(0),
+    cache_hits_memory: AtomicU64::new(0),
+    cache_misses: AtomicU64::new(0),
+};
+
+fn count(counter: &AtomicU64) {
+    counter.fetch_add(1, Ordering::Relaxed);
+}
 
 /// Connect to the optional Redis cache.
 ///
@@ -112,7 +136,10 @@ impl HybridCache {
                 .query_async::<Option<String>>(conn)
                 .await
             {
-                Ok(Some(v)) => return Some(v),
+                Ok(Some(v)) => {
+                    count(&STATS.cache_hits_redis);
+                    return Some(v);
+                }
                 Ok(None) => {}
                 // Timed out or dropped: stop using Redis for this run.
                 Err(_) => self.redis = None,
@@ -120,13 +147,19 @@ impl HybridCache {
         }
 
         // Fallback to memory
-        self.memory.get(key).and_then(|e| {
+        let hit = self.memory.get(key).and_then(|e| {
             if Instant::now() < e.expires {
                 Some(e.data.clone())
             } else {
                 None
             }
-        })
+        });
+        count(if hit.is_some() {
+            &STATS.cache_hits_memory
+        } else {
+            &STATS.cache_misses
+        });
+        hit
     }
 
     async fn set(&mut self, key: String, data: String, ttl: Duration) {
@@ -439,6 +472,14 @@ impl YahooClient {
 
     /// Rate-limited GET with retry and caching (Redis + in-memory)
     async fn fetch(&self, url: &str, cache_ttl: Duration) -> Result<String> {
+        let result = self.fetch_uncounted(url, cache_ttl).await;
+        if result.is_err() {
+            count(&STATS.errors);
+        }
+        result
+    }
+
+    async fn fetch_uncounted(&self, url: &str, cache_ttl: Duration) -> Result<String> {
         // Check cache first (Redis → memory)
         {
             let mut cache = self.cache.lock().await;
@@ -479,6 +520,7 @@ impl YahooClient {
             if is_yahoo {
                 req = req.header(header::COOKIE, &self.cookie);
             }
+            count(&STATS.requests);
             let result = req.send().await;
 
             match result {

@@ -300,77 +300,18 @@ pub async fn cmd_technical(symbol: &str, period: &str, market: Market) -> Result
 pub async fn cmd_history(symbol: &str, period: &str, market: Market, json: bool) -> Result<()> {
     let resolved = market::resolve_symbol(symbol, market);
     let client = YahooClient::new().await?;
-
-    let (api_range, interval) = match period {
-        "1d" => ("1d", "5m"),
-        "5d" | "1w" => ("5d", "15m"),
-        "1mo" => ("1mo", "1d"),
-        "3mo" | "6mo" => (period, "1d"),
-        "1y" | "2y" => (period, "1wk"),
-        "5y" | "10y" | "max" => (period, "1mo"),
-        _ => (period, "1d"),
-    };
-
-    let chart = client.get_chart(&resolved, api_range, interval).await?;
-    let cur = chart.meta.as_ref().and_then(|m| m.currency.as_deref());
-    let csym = market::currency_symbol(cur);
-
-    let timestamps = chart.timestamp.unwrap_or_default();
-    let closes: Vec<Option<f64>> = chart
-        .indicators
-        .quote
-        .first()
-        .and_then(|q| q.close.clone())
-        .unwrap_or_default();
-    let volumes: Vec<Option<u64>> = chart
-        .indicators
-        .quote
-        .first()
-        .and_then(|q| q.volume.clone())
-        .unwrap_or_default();
-
-    if timestamps.is_empty() {
-        bail!(
-            "No price history for {}{}",
-            resolved,
-            market::not_found_hint(market)
-        );
-    }
+    let hist = views::history(&client, &resolved, period, market).await?;
 
     if json {
-        let ind = chart.indicators.quote.first();
-        let series = |pick: fn(&crate::api::QuoteIndicator) -> Option<&Vec<Option<f64>>>| {
-            ind.and_then(pick).cloned().unwrap_or_default()
-        };
-        let (opens, highs, lows) = (
-            series(|q| q.open.as_ref()),
-            series(|q| q.high.as_ref()),
-            series(|q| q.low.as_ref()),
-        );
-        let bars: Vec<serde_json::Value> = timestamps
-            .iter()
-            .enumerate()
-            .map(|(i, &ts)| {
-                serde_json::json!({
-                    "time": chrono::DateTime::from_timestamp(ts, 0).map(|d| d.to_rfc3339()),
-                    "open": opens.get(i).copied().flatten(),
-                    "high": highs.get(i).copied().flatten(),
-                    "low": lows.get(i).copied().flatten(),
-                    "close": closes.get(i).copied().flatten(),
-                    "volume": volumes.get(i).copied().flatten(),
-                })
-            })
-            .collect();
-        let out = serde_json::json!({
-            "symbol": resolved,
-            "currency": cur,
-            "period": period,
-            "interval": interval,
-            "bars": bars,
-        });
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        println!("{}", serde_json::to_string_pretty(&hist)?);
         return Ok(());
     }
+
+    let cur = hist.currency.as_deref();
+    let csym = market::currency_symbol(cur);
+    let timestamps: Vec<i64> = hist.bars.iter().map(|b| b.ts).collect();
+    let closes: Vec<Option<f64>> = hist.bars.iter().map(|b| b.close).collect();
+    let volumes: Vec<Option<u64>> = hist.bars.iter().map(|b| b.volume).collect();
 
     print_header(&format!("Price History: {} ({})", resolved, period));
 

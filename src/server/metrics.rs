@@ -1,0 +1,350 @@
+//! Prometheus text exposition for `/metrics`, written by hand: a handful of
+//! counters and one histogram don't need a metrics crate.
+
+use crate::daemon_status::DaemonStatus;
+use std::collections::BTreeMap;
+use std::fmt::Write;
+use std::sync::Mutex;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
+
+/// Request latency buckets, in seconds.
+const BUCKETS: [f64; 11] = [
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+];
+
+#[derive(Default)]
+struct Histogram {
+    /// Cumulative counts per bucket in [`BUCKETS`].
+    buckets: [u64; BUCKETS.len()],
+    sum: f64,
+    count: u64,
+}
+
+impl Histogram {
+    fn observe(&mut self, secs: f64) {
+        for (i, le) in BUCKETS.iter().enumerate() {
+            if secs <= *le {
+                self.buckets[i] += 1;
+            }
+        }
+        self.sum += secs;
+        self.count += 1;
+    }
+}
+
+#[derive(Default)]
+struct Registry {
+    /// (method, route, status) → count
+    requests: BTreeMap<(String, String, u16), u64>,
+    /// route → latency
+    latency: BTreeMap<String, Histogram>,
+}
+
+pub struct Metrics {
+    started: Instant,
+    registry: Mutex<Registry>,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Escape a label value (backslash, quote, newline).
+fn label(v: &str) -> String {
+    v.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
+fn header(out: &mut String, name: &str, kind: &str, help: &str) {
+    let _ = writeln!(out, "# HELP {name} {help}");
+    let _ = writeln!(out, "# TYPE {name} {kind}");
+}
+
+impl Metrics {
+    pub fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            registry: Mutex::new(Registry::default()),
+        }
+    }
+
+    /// Record one served request. `route` is the matched route template
+    /// (`/api/history/{symbol}`), never the raw path, to bound cardinality.
+    pub fn observe(&self, method: &str, route: &str, status: u16, elapsed: Duration) {
+        let mut reg = self.registry.lock().unwrap();
+        *reg.requests
+            .entry((method.to_string(), route.to_string(), status))
+            .or_default() += 1;
+        reg.latency
+            .entry(route.to_string())
+            .or_default()
+            .observe(elapsed.as_secs_f64());
+    }
+
+    /// The full exposition. `daemon` is the intraday daemon's last status,
+    /// if it has ever run against this data directory; `now` is Unix seconds.
+    pub fn render(&self, daemon: Option<&DaemonStatus>, now: i64) -> String {
+        let mut out = String::new();
+
+        header(
+            &mut out,
+            "stockwise_build_info",
+            "gauge",
+            "StockWise version.",
+        );
+        let _ = writeln!(
+            out,
+            "stockwise_build_info{{version=\"{}\"}} 1",
+            env!("CARGO_PKG_VERSION")
+        );
+        header(
+            &mut out,
+            "stockwise_uptime_seconds",
+            "gauge",
+            "Seconds since the server started.",
+        );
+        let _ = writeln!(
+            out,
+            "stockwise_uptime_seconds {:.3}",
+            self.started.elapsed().as_secs_f64()
+        );
+
+        {
+            let reg = self.registry.lock().unwrap();
+            header(
+                &mut out,
+                "stockwise_http_requests_total",
+                "counter",
+                "HTTP requests served, by method, route and status.",
+            );
+            for ((method, route, status), n) in &reg.requests {
+                let _ = writeln!(
+                    out,
+                    "stockwise_http_requests_total{{method=\"{}\",route=\"{}\",status=\"{}\"}} {}",
+                    label(method),
+                    label(route),
+                    status,
+                    n
+                );
+            }
+            header(
+                &mut out,
+                "stockwise_http_request_duration_seconds",
+                "histogram",
+                "HTTP request latency, by route.",
+            );
+            for (route, h) in &reg.latency {
+                let route = label(route);
+                for (le, n) in BUCKETS.iter().zip(h.buckets) {
+                    let _ = writeln!(
+                        out,
+                        "stockwise_http_request_duration_seconds_bucket{{route=\"{route}\",le=\"{le}\"}} {n}"
+                    );
+                }
+                let _ = writeln!(
+                    out,
+                    "stockwise_http_request_duration_seconds_bucket{{route=\"{route}\",le=\"+Inf\"}} {}",
+                    h.count
+                );
+                let _ = writeln!(
+                    out,
+                    "stockwise_http_request_duration_seconds_sum{{route=\"{route}\"}} {}",
+                    h.sum
+                );
+                let _ = writeln!(
+                    out,
+                    "stockwise_http_request_duration_seconds_count{{route=\"{route}\"}} {}",
+                    h.count
+                );
+            }
+        }
+
+        let stats = &crate::api::STATS;
+        let load = |c: &std::sync::atomic::AtomicU64| c.load(Ordering::Relaxed);
+        header(
+            &mut out,
+            "stockwise_upstream_requests_total",
+            "counter",
+            "HTTP requests sent to Yahoo Finance, retries included.",
+        );
+        let _ = writeln!(
+            out,
+            "stockwise_upstream_requests_total {}",
+            load(&stats.requests)
+        );
+        header(
+            &mut out,
+            "stockwise_upstream_errors_total",
+            "counter",
+            "Yahoo Finance fetches that failed after all retries.",
+        );
+        let _ = writeln!(
+            out,
+            "stockwise_upstream_errors_total {}",
+            load(&stats.errors)
+        );
+        header(
+            &mut out,
+            "stockwise_cache_hits_total",
+            "counter",
+            "Market-data cache hits, by layer.",
+        );
+        let _ = writeln!(
+            out,
+            "stockwise_cache_hits_total{{layer=\"redis\"}} {}",
+            load(&stats.cache_hits_redis)
+        );
+        let _ = writeln!(
+            out,
+            "stockwise_cache_hits_total{{layer=\"memory\"}} {}",
+            load(&stats.cache_hits_memory)
+        );
+        header(
+            &mut out,
+            "stockwise_cache_misses_total",
+            "counter",
+            "Market-data cache misses.",
+        );
+        let _ = writeln!(
+            out,
+            "stockwise_cache_misses_total {}",
+            load(&stats.cache_misses)
+        );
+
+        header(
+            &mut out,
+            "stockwise_daemon_up",
+            "gauge",
+            "1 if the intraday daemon saved its state in the last 45 minutes.",
+        );
+        let fresh = daemon.is_some_and(|d| d.is_fresh(now));
+        let _ = writeln!(out, "stockwise_daemon_up {}", u8::from(fresh));
+        if let Some(d) = daemon {
+            let gauges: [(&str, &str, f64); 8] = [
+                (
+                    "stockwise_daemon_status_age_seconds",
+                    "Seconds since the daemon last saved its state.",
+                    d.age_secs(now) as f64,
+                ),
+                (
+                    "stockwise_daemon_open_positions",
+                    "Open paper positions.",
+                    d.open_positions as f64,
+                ),
+                (
+                    "stockwise_daemon_day_pnl",
+                    "Day P&L of the paper session (realized + unrealized).",
+                    d.day_pnl,
+                ),
+                (
+                    "stockwise_daemon_realized_pnl",
+                    "Realized P&L of the paper session today.",
+                    d.realized_pnl,
+                ),
+                (
+                    "stockwise_daemon_unrealized_pnl",
+                    "Unrealized P&L of open paper positions.",
+                    d.unrealized_pnl,
+                ),
+                (
+                    "stockwise_daemon_capital",
+                    "Paper capital the daemon trades with.",
+                    d.capital,
+                ),
+                (
+                    "stockwise_daemon_kill_switch",
+                    "1 once the daily loss limit tripped (no new entries today).",
+                    if d.kill_switch { 1.0 } else { 0.0 },
+                ),
+                (
+                    "stockwise_daemon_settled",
+                    "1 once the day is over and recorded in the simulator history.",
+                    if d.settled { 1.0 } else { 0.0 },
+                ),
+            ];
+            for (name, help, value) in gauges {
+                header(&mut out, name, "gauge", help);
+                let _ = writeln!(out, "{name} {value}");
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn histogram_buckets_are_cumulative() {
+        let m = Metrics::new();
+        m.observe("GET", "/api/quote", 200, Duration::from_millis(3));
+        m.observe("GET", "/api/quote", 200, Duration::from_millis(300));
+        m.observe("GET", "/api/quote", 404, Duration::from_secs(20));
+        let text = m.render(None, 0);
+        assert!(text.contains(
+            "stockwise_http_requests_total{method=\"GET\",route=\"/api/quote\",status=\"200\"} 2"
+        ));
+        assert!(text.contains(
+            "stockwise_http_requests_total{method=\"GET\",route=\"/api/quote\",status=\"404\"} 1"
+        ));
+        assert!(text.contains(
+            "stockwise_http_request_duration_seconds_bucket{route=\"/api/quote\",le=\"0.005\"} 1"
+        ));
+        assert!(text.contains(
+            "stockwise_http_request_duration_seconds_bucket{route=\"/api/quote\",le=\"0.5\"} 2"
+        ));
+        assert!(text.contains(
+            "stockwise_http_request_duration_seconds_bucket{route=\"/api/quote\",le=\"10\"} 2"
+        ));
+        assert!(text.contains(
+            "stockwise_http_request_duration_seconds_bucket{route=\"/api/quote\",le=\"+Inf\"} 3"
+        ));
+        assert!(
+            text.contains("stockwise_http_request_duration_seconds_count{route=\"/api/quote\"} 3")
+        );
+        assert!(text.contains("stockwise_daemon_up 0"));
+        assert!(!text.contains("stockwise_daemon_open_positions"));
+    }
+
+    #[test]
+    fn every_sample_has_help_and_type() {
+        let d = DaemonStatus {
+            updated_at: 100,
+            open_positions: 2,
+            day_pnl: -12.5,
+            kill_switch: true,
+            ..Default::default()
+        };
+        let m = Metrics::new();
+        m.observe("GET", "/healthz", 200, Duration::from_millis(1));
+        let text = m.render(Some(&d), 160);
+        assert!(text.contains("stockwise_daemon_up 1"));
+        assert!(text.contains("stockwise_daemon_open_positions 2"));
+        assert!(text.contains("stockwise_daemon_day_pnl -12.5"));
+        assert!(text.contains("stockwise_daemon_kill_switch 1"));
+        assert!(text.contains("stockwise_daemon_status_age_seconds 60"));
+        for line in text.lines().filter(|l| !l.starts_with('#')) {
+            let name = line
+                .split(['{', ' '])
+                .next()
+                .unwrap()
+                .trim_end_matches("_bucket")
+                .trim_end_matches("_sum")
+                .trim_end_matches("_count");
+            assert!(
+                text.contains(&format!("# TYPE {name} ")),
+                "no TYPE for {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn label_values_are_escaped() {
+        assert_eq!(label("a\"b\\c\nd"), "a\\\"b\\\\c\\nd");
+    }
+}
