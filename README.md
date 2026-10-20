@@ -49,8 +49,11 @@ stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR
   macOS, Linux and Windows. `stockwise doctor` checks everything.
 - **60 commands, one muscle memory.** Fundamentals, technicals, risk, screeners,
   sector rotation, backtests, SIP/what-if calculators, alerts, tax estimates.
-- **Scriptable.** `--json` on `quote`, `history`, `markets` and `search`; real
-  exit codes; shell completions.
+- **Scriptable.** `--json` on 21 data commands and `--csv` on their tables, a
+  config file for your defaults, real exit codes, shell completions, and a
+  read-only JSON API with Prometheus metrics (`stockwise serve`).
+- **Live dashboard.** `stockwise tui` keeps indices, watchlist, portfolio P&L,
+  alerts and a chart on one refreshing screen.
 - **Practice before money.** A paper-trading simulator and an intraday paper
   daemon with risk controls. Optional live orders via Angel One, behind a
   preview and a typed confirmation.
@@ -125,6 +128,7 @@ Homebrew, AUR and Nix install the man pages and completions for you.
 | **Funds & F&O** | `mf` (search, nav, history, sip, screen, overlap), `options` (chain, pcr, maxpain, moves) |
 | **Strategies & bots** | `backtest`, `sip`, `whatif`, `intraday`, `longterm`, `daemon`, `sim`, `report` |
 | **Portfolio** | `portfolio`, `watch`, `alert`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
+| **Interfaces** | `tui`, `serve` |
 | **Live trading** | `trade` (Angel One) |
 
 `stockwise --help` shows the same groups; [docs/commands.md](docs/commands.md)
@@ -159,13 +163,43 @@ stockwise options maxpain BANKNIFTY        # or: options pcr, options chain AAPL
 NAVs come from AMFI, option chains from NSE (India) or Yahoo (US). See
 [docs/commands.md](docs/commands.md#funds--fo) for what has data and what doesn't.
 
-### Script it
+### Watch it live
+
+<p align="center">
+  <img src="assets/tui.svg" alt="stockwise tui: indices, watchlist, a price chart, portfolio P&L and alerts on one screen" width="760">
+</p>
 
 ```bash
-stockwise quote TCS INFY --json | jq '.[] | {symbol, regularMarketPrice}'
-stockwise history AAPL -m us -p 6mo --json | jq '.bars | map(.close) | max'
-stockwise quote ZZZZ || echo "lookup failed"     # non-zero exit on errors
+stockwise tui                # ↑↓ select · 1-6 chart period · / add to watchlist · ? help · q quit
 ```
+
+Read-only: the TUI never places orders. See [docs/tui.md](docs/tui.md).
+
+### Script it
+
+`--json` works on the data commands (`portfolio`, `watch`, `alert`, `technical`,
+`risk`, `backtest`, `screen`, `movers`, `compare`, `tax`, ...) and `--csv` on
+their tables. Only the data goes to stdout; errors go to stderr with a non-zero
+exit code.
+
+```bash
+stockwise portfolio --json | jq '.totals.pnl_percent'
+stockwise portfolio --csv > portfolio.csv                # straight into a spreadsheet
+stockwise history AAPL -m us -p 6mo --csv > aapl.csv     # every OHLCV bar
+stockwise alert check --json | jq -r '.[] | select(.status == "triggered") | .symbol'
+stockwise technical TCS --json | jq '{rsi_14, bias}'
+stockwise backtest INFY -s macd --json | jq '.total_return_percent'
+stockwise quote ZZZZ || echo "lookup failed"             # non-zero exit on errors
+stockwise serve                                          # the same JSON over HTTP + /metrics
+curl -s localhost:8787/api/portfolio | jq '.totals'
+```
+
+Every JSON shape and CSV column is listed in
+[docs/commands.md](docs/commands.md#scripting-with---json-and---csv).
+
+`serve` has no trading endpoints and refuses non-loopback addresses unless you
+pass `--allow-remote` with a `STOCKWISE_API_TOKEN`. See
+[docs/server.md](docs/server.md).
 
 ### Paper trade, then decide
 
@@ -226,22 +260,48 @@ stockwise dashboard --lang hi                        # हिन्दी मे
 
 ## Configuration
 
-Everything works with no config. Optional environment variables:
+Everything works with no config. To keep your own defaults, create a config
+file:
 
-| Variable | Purpose |
-|----------|---------|
-| `STOCKWISE_MARKET` | Default market: `in` (default), `us`, `crypto` or `fx` |
-| `STOCKWISE_QUOTE_CURRENCY` | Currency for bare crypto tickers with `-m crypto` (default `usd`; `inr` gives `BTC-INR`) |
-| `STOCKWISE_LANG` | Output language: `en` or `hi` (Hindi). Default: your locale (`LANG=hi_IN…` picks Hindi) |
-| `STOCKWISE_HOME` | Where portfolio, watchlist, alerts and history are stored |
-| `STOCKWISE_DATA_PROVIDER` | Opt-in data provider: `alphavantage`, `massive` (Polygon) or `twelvedata`, with its API key — see [docs/data-providers.md](docs/data-providers.md) |
-| `STOCKWISE_PORTFOLIO` | Named portfolio to use (same as `--portfolio NAME`) |
-| `STOCKWISE_AI` | `1` to add AI sections by default |
-| `STOCKWISE_AI_PROVIDER` | `ollama` (default, local), or opt-in cloud: `openai`, `anthropic`, `gemini` with `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` — see [docs/ai.md](docs/ai.md) |
-| `STOCKWISE_MODEL` / `OLLAMA_HOST` | AI model (Ollama default `qwen3:14b`) and Ollama server |
-| `STOCKWISE_REDIS_URL` | Optional shared cache (`redis://…`), or `off` |
-| `STOCKWISE_TELEGRAM_TOKEN`, `STOCKWISE_SLACK_WEBHOOK`, … | Notification channels — see [docs/bots.md](docs/bots.md#notifications) |
-| `NO_COLOR` | Disable colours (also automatic when piping) |
+```bash
+stockwise config init     # writes a commented config.toml
+stockwise config show     # effective settings and where each comes from
+```
+
+```toml
+market = "us"
+model = "llama3.1:8b"
+
+[periods]                 # default -p per command
+technical = "6mo"
+backtest = "5y"
+```
+
+Each setting can also come from an environment variable or a flag.
+Precedence: **flag > environment variable > config file > built-in default.**
+
+| Config key | Env var | Flag | Purpose |
+|------------|---------|------|---------|
+| `market` | `STOCKWISE_MARKET` | `-m` | Default market: `in` (default), `us`, `crypto` or `fx` |
+| `quote_currency` | `STOCKWISE_QUOTE_CURRENCY` | `--quote-currency` | Currency for bare crypto tickers with `-m crypto` (default `usd`; `inr` gives `BTC-INR`) |
+| `lang` | `STOCKWISE_LANG` | `--lang` | Output language: `en` or `hi` (Hindi). Default: your locale (`LANG=hi_IN…` picks Hindi) |
+| `home` | `STOCKWISE_HOME` | | Where portfolio, watchlist, alerts and history are stored |
+| `portfolio` | `STOCKWISE_PORTFOLIO` | `--portfolio` | Named portfolio to use |
+| `data_provider` | `STOCKWISE_DATA_PROVIDER` | | Opt-in data provider: `alphavantage`, `massive` (Polygon) or `twelvedata`, with its API key in the environment — see [docs/data-providers.md](docs/data-providers.md) |
+| `ai` | `STOCKWISE_AI` | `--ai` / `--no-ai` | Add AI sections by default |
+| `ai_provider` | `STOCKWISE_AI_PROVIDER` | | `ollama` (default, local), or opt-in cloud: `openai`, `anthropic`, `gemini` with `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` in the environment — see [docs/ai.md](docs/ai.md) |
+| `model` | `STOCKWISE_MODEL` | | AI model (Ollama default `qwen3:14b`) |
+| `ollama_host` | `OLLAMA_HOST` | | Ollama server (default `http://localhost:11434`) |
+| `redis_url` | `STOCKWISE_REDIS_URL` | | Optional shared cache (`redis://…`), or `off` |
+| `[periods] <command>` | | `-p` | Default period for `technical`, `history`, `risk`, `backtest`, `sip`, ... |
+| `[notify] telegram_token`, ... | `STOCKWISE_TELEGRAM_TOKEN`, `STOCKWISE_SLACK_WEBHOOK`, … | | Notification channels — see [docs/bots.md](docs/bots.md#notifications) |
+| | `STOCKWISE_BIND` / `STOCKWISE_API_TOKEN` | `serve --bind` | `serve` address and bearer token |
+| | `STOCKWISE_CONFIG` | | Use another config file |
+| | `NO_COLOR` | | Disable colours (also automatic when piping) |
+
+The file lives in your platform's config directory (`stockwise config path`
+prints it); see [docs/commands.md](docs/commands.md#configuration-file) for
+details. API keys and the server token are read from the environment only.
 
 The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 `--lang hi`, `--ai`. Run `stockwise doctor` to see what is active.
@@ -249,6 +309,7 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 ## Docs
 
 - [Commands reference](docs/commands.md)
+- [Terminal dashboard](docs/tui.md) and [HTTP API & metrics](docs/server.md)
 - [Trading bots](docs/bots.md) and [bot design](docs/bot-design.md)
 - [Angel One setup](docs/angel-one.md)
 - [AI: Ollama and cloud providers](docs/ai.md)
@@ -257,8 +318,8 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 
 ## Roadmap & contributing
 
-Next up: Homebrew, a config file, more brokers (Zerodha, Upstox), and a TUI
-dashboard — see the [ROADMAP](ROADMAP.md). Ideas and bug reports are
+Next up: more brokers (Zerodha, Upstox) and Hindi for every command — see the
+[ROADMAP](ROADMAP.md). Ideas and bug reports are
 welcome in [Discussions](https://github.com/iamsaquib8/stockwise/discussions) and
 [Issues](https://github.com/iamsaquib8/stockwise/issues); start with
 [CONTRIBUTING.md](CONTRIBUTING.md).

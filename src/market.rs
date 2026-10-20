@@ -7,7 +7,7 @@ pub enum Market {
     /// US stock market (NYSE/NASDAQ)
     #[value(alias = "US")]
     Us,
-    /// Indian stock market (NSE/BSE) — the default
+    /// Indian stock market (NSE/BSE)
     #[value(alias = "IN", alias = "india")]
     In,
     /// Crypto, trades 24/7: BTC → BTC-USD (BTC-INR with --quote-currency inr)

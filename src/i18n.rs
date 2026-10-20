@@ -59,6 +59,8 @@ pub fn lang_source() -> LangSource {
 pub enum LangSource {
     Flag,
     StockwiseLang,
+    /// `lang` in the config file.
+    Config,
     Locale,
     Default,
 }
@@ -87,6 +89,25 @@ pub fn detect(args: &[String], env: impl Fn(&str) -> Option<String>) -> (Lang, L
         }
     }
     (Lang::En, LangSource::Default)
+}
+
+/// [`detect`], with `lang` from the config file between `STOCKWISE_LANG`
+/// and the locale: an explicit setting beats the system default.
+pub fn detect_with_config(
+    args: &[String],
+    env: impl Fn(&str) -> Option<String>,
+    file: Option<&str>,
+) -> (Lang, LangSource) {
+    let detected = detect(args, env);
+    match (detected.1, file.and_then(Lang::parse)) {
+        (LangSource::Locale | LangSource::Default, Some(lang)) => (lang, LangSource::Config),
+        _ => detected,
+    }
+}
+
+/// Whether `value` names a language (`en`, `hi`, ...).
+pub fn is_lang(value: &str) -> bool {
+    Lang::parse(value).is_some()
 }
 
 /// The value of `--lang X` / `--lang=X`, ignoring anything after `--`.
@@ -157,6 +178,7 @@ messages! {
     GroupStrategies => "Strategies & bots", "रणनीतियाँ और बॉट";
     GroupFunds => "Funds & F&O", "फंड और F&O";
     GroupPortfolio => "Portfolio", "पोर्टफोलियो";
+    GroupInterfaces => "Interfaces", "इंटरफ़ेस";
     GroupLiveTrading => "Live trading", "लाइव ट्रेडिंग";
     GroupSetup => "Setup", "सेटअप";
     AboutQuote => "Real-time quote for one or more stocks", "एक या अधिक शेयरों का ताज़ा भाव";
@@ -253,6 +275,7 @@ messages! {
     DoctorLanguage => "Language", "भाषा";
     DoctorLangFlag => "from --lang", "--lang से";
     DoctorLangEnv => "from STOCKWISE_LANG", "STOCKWISE_LANG से";
+    DoctorLangConfig => "from the config file", "कॉन्फ़िग फ़ाइल से";
     DoctorLangLocale => "from your locale (LANG)", "आपके लोकेल (LANG) से";
     DoctorLangDefault => "default; --lang hi or STOCKWISE_LANG=hi for Hindi", "डिफ़ॉल्ट; हिन्दी के लिए --lang hi या STOCKWISE_LANG=hi";
     DoctorDataDir => "Data directory", "डेटा फ़ोल्डर";
@@ -322,6 +345,28 @@ mod tests {
         assert_eq!(
             detect(&args(&["stockwise"]), &env),
             (Lang::Hi, LangSource::Locale)
+        );
+    }
+
+    #[test]
+    fn config_file_beats_locale_but_not_env_or_flag() {
+        let locale = env_from(&[("LANG", "en_US.UTF-8")]);
+        assert_eq!(
+            detect_with_config(&args(&["stockwise"]), &locale, Some("hi")),
+            (Lang::Hi, LangSource::Config)
+        );
+        let env = env_from(&[("STOCKWISE_LANG", "en")]);
+        assert_eq!(
+            detect_with_config(&args(&["stockwise"]), &env, Some("hi")),
+            (Lang::En, LangSource::StockwiseLang)
+        );
+        assert_eq!(
+            detect_with_config(&args(&["stockwise", "--lang", "en"]), &locale, Some("hi")),
+            (Lang::En, LangSource::Flag)
+        );
+        assert_eq!(
+            detect_with_config(&args(&["stockwise"]), &locale, None),
+            (Lang::En, LangSource::Default)
         );
     }
 

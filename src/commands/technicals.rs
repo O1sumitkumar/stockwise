@@ -2,7 +2,110 @@
 
 use super::*;
 
-pub async fn cmd_technical(symbol: &str, period: &str, market: Market) -> Result<()> {
+/// Bullish and bearish votes behind the "Technical Bias" verdict: price vs
+/// SMA 50 and SMA 200, RSI extremes, MACD histogram sign.
+fn technical_bias(closes: &[f64], current: f64) -> (i32, i32) {
+    let mut bullish = 0;
+    let mut bearish = 0;
+    for ma in [technical::sma(closes, 50), technical::sma(closes, 200)]
+        .into_iter()
+        .flatten()
+    {
+        if current > ma {
+            bullish += 1;
+        } else {
+            bearish += 1;
+        }
+    }
+    if let Some(rsi) = technical::rsi(closes, 14) {
+        if rsi < 30.0 {
+            bullish += 1;
+        } else if rsi > 70.0 {
+            bearish += 1;
+        }
+    }
+    if let Some((_, _, hist)) = technical::macd(closes) {
+        if hist > 0.0 {
+            bullish += 1;
+        } else {
+            bearish += 1;
+        }
+    }
+    (bullish, bearish)
+}
+
+/// `technical --json`: the indicators the table shows. Indicator values are
+/// rounded to 4 decimals, percentages to 2; null when there are too few bars.
+pub(crate) fn technical_json(
+    symbol: &str,
+    currency: Option<&str>,
+    period: &str,
+    interval: &str,
+    closes: &[f64],
+    highs: &[f64],
+    lows: &[f64],
+    volumes: &[u64],
+) -> serde_json::Value {
+    let current = closes.last().copied().unwrap_or(f64::NAN);
+    let r4 = |v: Option<f64>| round_opt(v, 4);
+    let atr = technical::atr(highs, lows, closes, 14);
+    let rsi = technical::rsi(closes, 14);
+    let (bullish, bearish) = technical_bias(closes, current);
+    let verdict = match bullish.cmp(&bearish) {
+        _ if bullish + bearish == 0 => None,
+        std::cmp::Ordering::Greater => Some("bullish"),
+        std::cmp::Ordering::Less => Some("bearish"),
+        std::cmp::Ordering::Equal => Some("neutral"),
+    };
+    serde_json::json!({
+        "symbol": symbol,
+        "currency": currency,
+        "period": period,
+        "interval": interval,
+        "bars": closes.len(),
+        "price": current,
+        "sma_10": r4(technical::sma(closes, 10)),
+        "sma_20": r4(technical::sma(closes, 20)),
+        "sma_50": r4(technical::sma(closes, 50)),
+        "sma_100": r4(technical::sma(closes, 100)),
+        "sma_200": r4(technical::sma(closes, 200)),
+        "ema_12": r4(technical::ema(closes, 12)),
+        "ema_26": r4(technical::ema(closes, 26)),
+        "rsi_14": round_opt(rsi, 2),
+        "rsi_signal": rsi.map(technical::rsi_signal),
+        "macd": technical::macd(closes).map(|(line, signal, hist)| serde_json::json!({
+            "line": round(line, 4),
+            "signal": round(signal, 4),
+            "histogram": round(hist, 4),
+            "trend": technical::macd_signal(hist),
+        })),
+        "bollinger": technical::bollinger_bands(closes, 20).map(|(upper, middle, lower)| {
+            let position = if current > upper {
+                "above_upper"
+            } else if current < lower {
+                "below_lower"
+            } else {
+                "within"
+            };
+            serde_json::json!({
+                "upper": round(upper, 4),
+                "middle": round(middle, 4),
+                "lower": round(lower, 4),
+                "position": position,
+            })
+        }),
+        "atr_14": r4(atr),
+        "atr_percent": atr.map(|a| round(a / current * 100.0, 2)),
+        "vwap": r4(technical::vwap(highs, lows, closes, volumes)),
+        "bias": {
+            "verdict": verdict,
+            "bullish": bullish,
+            "bearish": bearish,
+        },
+    })
+}
+
+pub async fn cmd_technical(symbol: &str, period: &str, market: Market, fmt: Format) -> Result<()> {
     let resolved = market::resolve_symbol(symbol, market);
     let client = YahooClient::new().await?;
 
@@ -48,6 +151,11 @@ pub async fn cmd_technical(symbol: &str, period: &str, market: Market) -> Result
     }
 
     let current = *closes.last().unwrap();
+    if fmt == Format::Json {
+        return output::print_json(&technical_json(
+            &resolved, cur, period, interval, &closes, &highs, &lows, &volumes,
+        ));
+    }
     print_header(&format!("Technical Analysis: {}", resolved));
     println!("  Current Price: {}\n", format_price(current, cur).bold());
 
@@ -193,37 +301,7 @@ pub async fn cmd_technical(symbol: &str, period: &str, market: Market) -> Result
 
     // Overall technical summary
     print_section("Technical Summary");
-    let mut bullish = 0i32;
-    let mut bearish = 0i32;
-
-    if let Some(ma50) = technical::sma(&closes, 50) {
-        if current > ma50 {
-            bullish += 1;
-        } else {
-            bearish += 1;
-        }
-    }
-    if let Some(ma200) = technical::sma(&closes, 200) {
-        if current > ma200 {
-            bullish += 1;
-        } else {
-            bearish += 1;
-        }
-    }
-    if let Some(rsi) = technical::rsi(&closes, 14) {
-        if rsi < 30.0 {
-            bullish += 1;
-        } else if rsi > 70.0 {
-            bearish += 1;
-        }
-    }
-    if let Some((_, _, hist)) = technical::macd(&closes) {
-        if hist > 0.0 {
-            bullish += 1;
-        } else {
-            bearish += 1;
-        }
-    }
+    let (bullish, bearish) = technical_bias(&closes, current);
 
     let total = bullish + bearish;
     if total > 0 {
@@ -297,80 +375,27 @@ pub async fn cmd_technical(symbol: &str, period: &str, market: Market) -> Result
     Ok(())
 }
 
-pub async fn cmd_history(symbol: &str, period: &str, market: Market, json: bool) -> Result<()> {
+/// `history --csv` columns; the bars come from [`views::history`].
+impl CsvRow for views::Bar {
+    const COLUMNS: &'static [&'static str] = &["time", "open", "high", "low", "close", "volume"];
+}
+
+pub async fn cmd_history(symbol: &str, period: &str, market: Market, fmt: Format) -> Result<()> {
     let resolved = market::resolve_symbol(symbol, market);
     let client = YahooClient::new().await?;
+    let hist = views::history(&client, &resolved, period, market).await?;
 
-    let (api_range, interval) = match period {
-        "1d" => ("1d", "5m"),
-        "5d" | "1w" => ("5d", "15m"),
-        "1mo" => ("1mo", "1d"),
-        "3mo" | "6mo" => (period, "1d"),
-        "1y" | "2y" => (period, "1wk"),
-        "5y" | "10y" | "max" => (period, "1mo"),
-        _ => (period, "1d"),
-    };
+    match fmt {
+        Format::Csv => return output::print_csv(&hist.bars),
+        Format::Json => return output::print_json(&hist),
+        Format::Table => {}
+    }
 
-    let chart = client.get_chart(&resolved, api_range, interval).await?;
-    let cur = chart.meta.as_ref().and_then(|m| m.currency.as_deref());
+    let cur = hist.currency.as_deref();
     let csym = market::currency_symbol(cur);
-
-    let timestamps = chart.timestamp.unwrap_or_default();
-    let closes: Vec<Option<f64>> = chart
-        .indicators
-        .quote
-        .first()
-        .and_then(|q| q.close.clone())
-        .unwrap_or_default();
-    let volumes: Vec<Option<u64>> = chart
-        .indicators
-        .quote
-        .first()
-        .and_then(|q| q.volume.clone())
-        .unwrap_or_default();
-
-    if timestamps.is_empty() {
-        bail!(
-            "No price history for {}{}",
-            resolved,
-            market::not_found_hint(market)
-        );
-    }
-
-    if json {
-        let ind = chart.indicators.quote.first();
-        let series = |pick: fn(&crate::api::QuoteIndicator) -> Option<&Vec<Option<f64>>>| {
-            ind.and_then(pick).cloned().unwrap_or_default()
-        };
-        let (opens, highs, lows) = (
-            series(|q| q.open.as_ref()),
-            series(|q| q.high.as_ref()),
-            series(|q| q.low.as_ref()),
-        );
-        let bars: Vec<serde_json::Value> = timestamps
-            .iter()
-            .enumerate()
-            .map(|(i, &ts)| {
-                serde_json::json!({
-                    "time": chrono::DateTime::from_timestamp(ts, 0).map(|d| d.to_rfc3339()),
-                    "open": opens.get(i).copied().flatten(),
-                    "high": highs.get(i).copied().flatten(),
-                    "low": lows.get(i).copied().flatten(),
-                    "close": closes.get(i).copied().flatten(),
-                    "volume": volumes.get(i).copied().flatten(),
-                })
-            })
-            .collect();
-        let out = serde_json::json!({
-            "symbol": resolved,
-            "currency": cur,
-            "period": period,
-            "interval": interval,
-            "bars": bars,
-        });
-        println!("{}", serde_json::to_string_pretty(&out)?);
-        return Ok(());
-    }
+    let timestamps: Vec<i64> = hist.bars.iter().map(|b| b.ts).collect();
+    let closes: Vec<Option<f64>> = hist.bars.iter().map(|b| b.close).collect();
+    let volumes: Vec<Option<u64>> = hist.bars.iter().map(|b| b.volume).collect();
 
     print_header(&format!("Price History: {} ({})", resolved, period));
 

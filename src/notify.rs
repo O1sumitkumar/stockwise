@@ -148,8 +148,9 @@ fn is_loopback(host: &str) -> bool {
 }
 
 impl NotifyConfig {
+    /// From the environment, then `[notify]` in the config file.
     pub fn from_env() -> Self {
-        Self::from_lookup(|key| std::env::var(key).ok())
+        Self::from_lookup(crate::config::notify_setting)
     }
 
     /// Build the config from a key lookup (blank values count as unset).

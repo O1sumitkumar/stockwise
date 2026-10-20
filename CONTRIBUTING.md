@@ -43,11 +43,12 @@ are pure functions with unit tests.
 
 ## Before you open a PR
 
-Run the same checks CI does — all three must pass:
+Run the same checks CI does — all of them must pass:
 
 ```bash
 cargo fmt --all            # format
 cargo clippy --all-targets -- -D warnings   # lint (must be clean)
+cargo clippy --all-targets --no-default-features -- -D warnings   # minimal build (no tui/serve)
 cargo test                 # all tests green
 ```
 
@@ -66,8 +67,10 @@ cargo test                 # all tests green
 
 ## Good first contributions
 
-- `--json` output for another command (`portfolio`, `technical`, `risk`,
-  `backtest`) — see `cmd_quote` / `cmd_history` for the pattern.
+- `--json` / `--csv` output for another command (`analyze`, `peers`, `news`,
+  `picks`, ...) — build rows once and render them with `src/output.rs`; see
+  `cmd_portfolio_show` or `cmd_risk` for the pattern, and add the shape to
+  `docs/commands.md`.
 - More symbols in the India/US universes in `src/market.rs`, or a refresh when
   a ticker changes.
 - Unit tests for an indicator in `src/technical.rs` against a known reference.

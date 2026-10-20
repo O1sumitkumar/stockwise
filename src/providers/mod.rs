@@ -131,8 +131,16 @@ pub enum Selection {
 }
 
 impl Selection {
+    /// From the environment; the provider name may also come from
+    /// `data_provider` in the config file (API keys only from the environment).
     pub fn from_env() -> Self {
-        Self::from_lookup(|k| std::env::var(k).ok())
+        Self::from_lookup(|k| {
+            if k == "STOCKWISE_DATA_PROVIDER" {
+                crate::config::setting(k, |c| c.data_provider.as_ref())
+            } else {
+                std::env::var(k).ok()
+            }
+        })
     }
 
     fn from_lookup(env: impl Fn(&str) -> Option<String>) -> Self {

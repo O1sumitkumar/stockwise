@@ -31,24 +31,80 @@ fn change_for(q: &crate::api::Quote, symbol: &str) -> String {
     )
 }
 
-pub async fn cmd_quote(symbols: &[String], market: Market, json: bool) -> Result<()> {
+/// One quote as `quote --csv` prints it (`quote --json` keeps Yahoo's
+/// camelCase fields).
+#[derive(Debug, Serialize)]
+pub(crate) struct QuoteRow {
+    pub(crate) symbol: Option<String>,
+    pub(crate) name: Option<String>,
+    pub(crate) currency: Option<String>,
+    pub(crate) price: Option<f64>,
+    pub(crate) change: Option<f64>,
+    pub(crate) change_percent: Option<f64>,
+    pub(crate) open: Option<f64>,
+    pub(crate) day_low: Option<f64>,
+    pub(crate) day_high: Option<f64>,
+    pub(crate) year_low: Option<f64>,
+    pub(crate) year_high: Option<f64>,
+    pub(crate) volume: Option<u64>,
+    pub(crate) avg_volume_3m: Option<u64>,
+    pub(crate) market_cap: Option<f64>,
+    pub(crate) pe_ttm: Option<f64>,
+    pub(crate) eps_ttm: Option<f64>,
+    pub(crate) dividend_yield: Option<f64>,
+}
+
+impl CsvRow for QuoteRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "symbol",
+        "name",
+        "currency",
+        "price",
+        "change",
+        "change_percent",
+        "open",
+        "day_low",
+        "day_high",
+        "year_low",
+        "year_high",
+        "volume",
+        "avg_volume_3m",
+        "market_cap",
+        "pe_ttm",
+        "eps_ttm",
+        "dividend_yield",
+    ];
+}
+
+impl From<&crate::api::Quote> for QuoteRow {
+    fn from(q: &crate::api::Quote) -> Self {
+        Self {
+            symbol: q.symbol.clone(),
+            name: q.long_name.clone().or_else(|| q.short_name.clone()),
+            currency: q.currency.clone(),
+            price: q.regular_market_price,
+            change: q.regular_market_change,
+            change_percent: q.regular_market_change_percent,
+            open: q.regular_market_open,
+            day_low: q.regular_market_day_low,
+            day_high: q.regular_market_day_high,
+            year_low: q.fifty_two_week_low,
+            year_high: q.fifty_two_week_high,
+            volume: q.regular_market_volume,
+            avg_volume_3m: q.average_daily_volume_3_month,
+            market_cap: q.market_cap,
+            pe_ttm: q.trailing_pe,
+            eps_ttm: q.eps_trailing_twelve_months,
+            dividend_yield: q.trailing_annual_dividend_yield,
+        }
+    }
+}
+
+pub async fn cmd_quote(symbols: &[String], market: Market, fmt: Format) -> Result<()> {
     let resolved = resolve_symbols(symbols, market);
     let client = YahooClient::new().await?;
-    let sym_refs: Vec<&str> = resolved.iter().map(|s| s.as_str()).collect();
-    let quotes = client.get_quote(&sym_refs).await?;
-
     // Yahoo silently drops unknown symbols; name them instead.
-    let missing: Vec<&str> = resolved
-        .iter()
-        .filter(|r| {
-            !quotes.iter().any(|q| {
-                q.symbol
-                    .as_deref()
-                    .is_some_and(|s| s.eq_ignore_ascii_case(r))
-            })
-        })
-        .map(|s| s.as_str())
-        .collect();
+    let views::QuoteSet { quotes, missing } = views::quotes(&client, &resolved).await?;
     let missing_err = || {
         anyhow::anyhow!(
             "{}",
@@ -63,8 +119,13 @@ pub async fn cmd_quote(symbols: &[String], market: Market, json: bool) -> Result
         return Err(missing_err());
     }
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&quotes)?);
+    if !fmt.is_table() {
+        if fmt == Format::Json {
+            output::print_json(&quotes)?;
+        } else {
+            let rows: Vec<QuoteRow> = quotes.iter().map(QuoteRow::from).collect();
+            output::print_csv(&rows)?;
+        }
         return if missing.is_empty() {
             Ok(())
         } else {
@@ -155,118 +216,51 @@ pub async fn cmd_quote(symbols: &[String], market: Market, json: bool) -> Result
     }
 }
 
-/// One block of `markets` output. `region` is the stable English key used
-/// in `--json`; `title` is what people read.
-struct MarketSection {
-    region: &'static str,
-    title: &'static str,
-    items: Vec<(String, String)>,
+/// `markets --csv` columns; the rows come from [`views::market_sections`].
+impl CsvRow for views::IndexRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "region",
+        "symbol",
+        "name",
+        "price",
+        "change",
+        "change_percent",
+        "currency",
+    ];
 }
 
-fn market_section(kind: Market) -> MarketSection {
-    let owned = |list: &[(&str, &str)]| -> Vec<(String, String)> {
-        list.iter()
-            .map(|(s, n)| (s.to_string(), n.to_string()))
-            .collect()
-    };
-    match kind {
-        Market::In => MarketSection {
-            region: "Indian Markets",
-            title: t(Msg::SectionIndianMarkets),
-            items: owned(market::INDIA_INDICES),
-        },
-        Market::Us => MarketSection {
-            region: "US Markets",
-            title: t(Msg::SectionUsMarkets),
-            items: owned(market::US_INDICES),
-        },
-        Market::Crypto => MarketSection {
-            region: "Crypto",
-            title: t(Msg::SectionCrypto),
-            items: market::crypto_majors()
-                .into_iter()
-                .map(|(s, n)| (s, n.to_string()))
-                .collect(),
-        },
-        Market::Fx => MarketSection {
-            region: "FX",
-            title: t(Msg::SectionFx),
-            items: owned(market::FX_MAJORS),
-        },
-    }
+/// `▲ 1.23 (0.45%)` for an index row, with as many decimals as the price needs.
+fn row_change(r: &views::IndexRow) -> String {
+    format_change_dp(
+        r.change.unwrap_or(0.0),
+        r.change_percent.unwrap_or(0.0),
+        price_decimals(market::AssetClass::of(&r.symbol), r.price.unwrap_or(0.0)),
+    )
 }
 
-/// Sections for `markets`: the active market first, then the other stock
-/// market; crypto and FX are added on request (or lead when selected).
-fn market_sections(market: Market, crypto: bool, fx: bool) -> Vec<Market> {
-    let mut order = match market {
-        Market::Us => vec![Market::Us, Market::In],
-        Market::In => vec![Market::In, Market::Us],
-        Market::Crypto => vec![Market::Crypto, Market::In, Market::Us],
-        Market::Fx => vec![Market::Fx, Market::In, Market::Us],
-    };
-    for (wanted, kind) in [(crypto, Market::Crypto), (fx, Market::Fx)] {
-        if wanted && !order.contains(&kind) {
-            order.push(kind);
-        }
-    }
-    order
-}
-
-pub async fn cmd_markets(market: Market, json: bool, crypto: bool, fx: bool) -> Result<()> {
+pub async fn cmd_markets(market: Market, fmt: Format, crypto: bool, fx: bool) -> Result<()> {
     let client = YahooClient::new().await?;
+    let sections = views::market_sections(&client, market, crypto, fx).await?;
 
-    let mut rows = Vec::new();
-    for section in market_sections(market, crypto, fx)
-        .into_iter()
-        .map(market_section)
-    {
-        let symbols: Vec<&str> = section.items.iter().map(|(sym, _)| sym.as_str()).collect();
-        let quotes = client.get_quote(&symbols).await?;
-        // Match the label by symbol — Yahoo may reorder or drop symbols, so
-        // pairing by position can mislabel an index.
-        let label_for = |q_sym: &str| -> String {
-            section
-                .items
-                .iter()
-                .find(|(sym, _)| sym.eq_ignore_ascii_case(q_sym))
-                .map(|(_, name)| name.clone())
-                .unwrap_or_else(|| q_sym.to_string())
+    if !fmt.is_table() {
+        let rows: Vec<views::IndexRow> = sections.into_iter().flat_map(|s| s.rows).collect();
+        return match fmt {
+            Format::Csv => output::print_csv(&rows),
+            _ => output::print_json(&rows),
         };
+    }
 
-        if json {
-            for q in &quotes {
-                let q_sym = q.symbol.as_deref().unwrap_or("");
-                rows.push(serde_json::json!({
-                    "region": section.region,
-                    "symbol": q_sym,
-                    "name": label_for(q_sym),
-                    "price": q.regular_market_price,
-                    "change": q.regular_market_change,
-                    "change_percent": q.regular_market_change_percent,
-                    "currency": q.currency,
-                }));
-            }
-            continue;
-        }
-
+    for section in &sections {
         print_header(section.title);
-
-        for q in &quotes {
-            let q_sym = q.symbol.as_deref().unwrap_or("");
-            let cur = q.currency.as_deref();
+        for r in &section.rows {
+            let cur = r.currency.as_deref();
             println!(
                 "  {} {}  {}",
-                pad_end(&label_for(q_sym), 16).bold(),
-                price_or_na(q.regular_market_price, cur, q_sym).bold(),
-                change_for(q, q_sym)
+                pad_end(&r.name, 16).bold(),
+                price_or_na(r.price, cur, &r.symbol).bold(),
+                row_change(r)
             );
         }
-    }
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&rows)?);
-        return Ok(());
     }
     println!();
     Ok(())
@@ -276,7 +270,7 @@ pub async fn cmd_markets(market: Market, json: bool, crypto: bool, fx: bool) -> 
 
 pub async fn cmd_dashboard(market: Market) -> Result<()> {
     let client = YahooClient::new().await?;
-    let section = market_section(market);
+    let section = views::section_spec(market);
     let idx_syms: Vec<&str> = section.items.iter().map(|(s, _)| s.as_str()).collect();
     let idx_quotes = client.get_quote(&idx_syms).await?;
 
@@ -419,12 +413,38 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
 
 // ── Search ──
 
-pub async fn cmd_search(query: &str, json: bool) -> Result<()> {
+/// One search hit as `search --csv` prints it (`search --json` keeps
+/// Yahoo's field names).
+#[derive(Debug, Serialize)]
+pub(crate) struct SearchRow {
+    pub(crate) symbol: Option<String>,
+    pub(crate) name: Option<String>,
+    pub(crate) quote_type: Option<String>,
+    pub(crate) exchange: Option<String>,
+}
+
+impl CsvRow for SearchRow {
+    const COLUMNS: &'static [&'static str] = &["symbol", "name", "quote_type", "exchange"];
+}
+
+pub async fn cmd_search(query: &str, fmt: Format) -> Result<()> {
     let client = YahooClient::new().await?;
     let results = client.search(query).await?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&results)?);
-        return Ok(());
+    match fmt {
+        Format::Json => return output::print_json(&results),
+        Format::Csv => {
+            let rows: Vec<SearchRow> = results
+                .iter()
+                .map(|r| SearchRow {
+                    symbol: r.symbol.clone(),
+                    name: r.long_name.clone().or_else(|| r.short_name.clone()),
+                    quote_type: r.quote_type.clone(),
+                    exchange: r.exchange.clone(),
+                })
+                .collect();
+            return output::print_csv(&rows);
+        }
+        Format::Table => {}
     }
     if results.is_empty() {
         bail!("{}", tf(Msg::NoTickersMatch, &[&query]));
@@ -455,18 +475,59 @@ pub async fn cmd_search(query: &str, json: bool) -> Result<()> {
 }
 
 /// `stockwise doctor` — one screen that answers "is my setup working?".
-pub async fn cmd_doctor(market: Market) -> Result<()> {
+pub async fn cmd_doctor(market: Market, sources: crate::config::CliSources) -> Result<()> {
     let ok = |s: &str| format!("{} {}", "✓".green(), s);
     let warn = |s: &str| format!("{} {}", "!".yellow(), s);
     let bad = |s: &str| format!("{} {}", "✗".red(), s);
 
     print_header(&tf(Msg::DoctorTitle, &[&env!("CARGO_PKG_VERSION")]));
 
-    // Defaults
-    let market_src = if std::env::var_os("STOCKWISE_MARKET").is_some() {
-        t(Msg::DoctorMarketFromEnv)
-    } else {
-        t(Msg::DoctorMarketDefault)
+    // Config file and defaults
+    let cfg = crate::config::state();
+    let cfg_path = cfg
+        .and_then(|s| s.path.as_ref())
+        .map_or("unknown (no config directory)".to_string(), |p| {
+            p.display().to_string()
+        });
+    let cfg_invalid = match cfg.map(|s| &s.status) {
+        Some(crate::config::Status::Loaded) => {
+            print_kv("Config file", &ok(&format!("{} (loaded)", cfg_path)));
+            if let Some(p) = crate::config::exposed_secrets() {
+                println!(
+                    "  {:<28} {}",
+                    "",
+                    warn(&format!(
+                        "holds notification secrets and other users can read it — run `chmod 600 {}`",
+                        p.display()
+                    ))
+                );
+            }
+            None
+        }
+        Some(crate::config::Status::Invalid(msg)) => {
+            print_kv("Config file", &bad(&format!("{} (invalid)", cfg_path)));
+            for line in msg.lines() {
+                println!("  {:<28} {}", "", line.red());
+            }
+            Some(cfg_path)
+        }
+        _ => {
+            print_kv(
+                "Config file",
+                &format!(
+                    "{} {}",
+                    cfg_path,
+                    "(none; optional — `stockwise config init` creates one)".dimmed()
+                ),
+            );
+            None
+        }
+    };
+    let market_src = match sources.market {
+        crate::config::Source::Flag => "from -m/--market",
+        crate::config::Source::Env => t(Msg::DoctorMarketFromEnv),
+        crate::config::Source::File => "from the config file",
+        crate::config::Source::Default => t(Msg::DoctorMarketDefault),
     };
     let market_name = match market {
         Market::In => "in (India, NSE)",
@@ -486,6 +547,7 @@ pub async fn cmd_doctor(market: Market) -> Result<()> {
     let lang_src = t(match crate::i18n::lang_source() {
         crate::i18n::LangSource::Flag => Msg::DoctorLangFlag,
         crate::i18n::LangSource::StockwiseLang => Msg::DoctorLangEnv,
+        crate::i18n::LangSource::Config => Msg::DoctorLangConfig,
         crate::i18n::LangSource::Locale => Msg::DoctorLangLocale,
         crate::i18n::LangSource::Default => Msg::DoctorLangDefault,
     });
@@ -621,6 +683,12 @@ pub async fn cmd_doctor(market: Market) -> Result<()> {
     print_kv(t(Msg::DoctorAngel), &broker);
     println!();
 
+    if let Some(path) = cfg_invalid {
+        bail!(
+            "Config file {} is invalid — fix it, or replace it with `stockwise config init --force`",
+            path
+        );
+    }
     if !yahoo {
         bail!("{}", t(Msg::DoctorMarketDataDown));
     }

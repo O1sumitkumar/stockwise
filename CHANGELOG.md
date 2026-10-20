@@ -8,6 +8,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `stockwise tui` — a full-screen, read-only live dashboard: indices,
+  watchlist, portfolio P&L, triggered alerts and a chart of the selected
+  symbol (periods 1d–5y), with symbol search to add to the watchlist. Refresh
+  interval with `-i` (default 30s); works at 80×24 and degrades on smaller
+  terminals; honours `NO_COLOR`. See [docs/tui.md](docs/tui.md).
+- `stockwise serve` — a read-only JSON API (`/api/quote`, `/api/history/{symbol}`,
+  `/api/markets`, `/api/search`, `/api/portfolio`, `/api/watchlist`,
+  `/api/alerts`), `/healthz`, and Prometheus `/metrics` (request counts and
+  latency, Yahoo errors, cache hits, and the intraday daemon's open paper
+  positions, day P&L and kill switch). Loopback only unless `--allow-remote`
+  with a `STOCKWISE_API_TOKEN` bearer token. See [docs/server.md](docs/server.md).
+- Cargo features `tui` and `server` (both default); `--no-default-features`
+  builds without ratatui and axum.
+- `--json` on 17 more commands: `portfolio`, `watch`,
+  `alert list`/`check`, `technical`, `risk`, `backtest`, `screen`, `movers`,
+  `sectors`, `compare`, `correlate`, `sip`, `whatif`, `returns`, `dividends`,
+  `tax` and `sim history`, alongside `quote`, `history`, `markets` and
+  `search`. Keys are snake_case; shapes are documented in docs/commands.md.
+- `--csv` (RFC 4180, header row first) for tables: `portfolio`, `watch`,
+  `alert list`/`check`, `movers`, `screen`, `sectors`, `history` bars,
+  `backtest` trades, `compare`, `correlate`, `returns`, `tax`, `quote`,
+  `markets` and `search`. `--json` and `--csv` are mutually exclusive.
+- Config file (`config.toml` in the platform config directory, or
+  `STOCKWISE_CONFIG`) for `market`, `ai`, `model`, `ollama_host`,
+  `redis_url`, `home`, and a default `-p` per command under `[periods]`.
+  Precedence: flag > environment variable > config file > default, and
+  `--help` shows defaults from the file.
+- `stockwise config [show]`, `config path` and `config init [--force]`.
+- `--no-ai` turns the AI section off when `STOCKWISE_AI` or the config file
+  turn it on.
+- `doctor` reports the config file and whether it parsed.
+
+### Changed
+- `backtest` with too little history is an error (exit 1) instead of a
+  message with exit 0.
+- `movers` leaves out stocks without a change today instead of ranking them
+  at 0%; `correlate` shows N/A instead of 0 when two series can't be compared.
+- `watch` lists symbols that have no live quote (as N/A) instead of hiding
+  them; `dividends` errors when there is no live price instead of dividing by
+  zero.
+- An invalid config file stops every command except `config`, `doctor` and
+  `completions`, with an error naming the file and the key.
+- `quote`, `history` and `markets` gather their data through a shared layer
+  (`src/views.rs`) that the TUI and the server also use, so `--json` and the
+  HTTP API return the same shapes.
+- `portfolio --json/--csv` and `tax --json/--csv` follow the lot-based
+  portfolio: holdings carry `xirr_percent`, totals are in the base currency
+  (`--base`), and holdings without an exchange rate are listed in
+  `unconverted`. `tax --json` reports this tax year's sales, each open
+  holding's short- and long-term gain, and the estimate with and without
+  selling everything today.
+- The config file also covers `lang`, `quote_currency`, `portfolio`,
+  `ai_provider`, `data_provider` and a `[notify]` table for notification
+  channels (API keys stay in environment variables). `config show` and
+  `doctor` warn when the file holds secrets and other users can read it.
+
+### Added
 - `stockwise man` prints the `stockwise.1` man page; `stockwise man --dir DIR`
   writes it plus one `stockwise-<command>.1` page per command. The pages are
   generated from the CLI definition and ship in every release archive under

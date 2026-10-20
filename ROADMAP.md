@@ -32,9 +32,9 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - ✅ Man page (`stockwise.1`) generated from the CLI definition
 
 **Scripting**
-- 📋 `--json` on more commands (`portfolio`, `technical`, `risk`, `backtest`, `screen`)
-- 📋 Config file (`~/.config/stockwise/config.toml`) for market, model, and defaults
-- 📋 `--csv` output for tables, for spreadsheets
+- ✅ `--json` on more commands (`portfolio`, `technical`, `risk`, `backtest`, `screen`)
+- ✅ Config file (`~/.config/stockwise/config.toml`) for market, model, and defaults
+- ✅ `--csv` output for tables, for spreadsheets
 
 **Correctness**
 - ✅ Daemon resilience — survive network blips, square off on Ctrl+C, IST clock + exchange holidays
@@ -69,7 +69,7 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 
 ## 💡 Later — depth (0.5+)
 
-- 💡 Interactive TUI dashboard (ratatui) — live quotes, positions, P&L, alerts
+- ✅ Interactive TUI dashboard (ratatui) — live quotes, positions, P&L, alerts (`stockwise tui`)
 - 💡 Portfolio-level and walk-forward backtesting with Indian costs (STT, brokerage, slippage)
 - 💡 Pluggable strategy system for `backtest` and the intraday bot (TOML rules or WASM)
 - ✅ F&O: option chains, greeks, IV, PCR, max pain — NSE index options and F&O stocks, US
@@ -83,7 +83,7 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - ✅ Data-provider abstraction beyond Yahoo — Alpha Vantage, Massive (Polygon), Twelve Data via
   `STOCKWISE_DATA_PROVIDER`, see [docs/data-providers.md](docs/data-providers.md)
 - 💡 Official NSE feeds as a data provider
-- 💡 Web/REST mode for remote dashboards; Prometheus metrics for the daemon
+- ✅ Web/REST mode for remote dashboards; Prometheus metrics for the daemon (`stockwise serve`)
 - ✅ Docker image and Nix flake
 - 🛠️ Hindi localization (partial) — `--lang hi`: help groups, `quote`, `markets`, `dashboard`,
   `portfolio`, `search`, `doctor`; other commands next

@@ -8,6 +8,7 @@ src/
   commands/          Command handlers — one file per area, each `cmd_*` re-exported
     mod.rs           Shared imports and helpers (period → interval, symbol resolution)
     overview.rs      quote, markets, dashboard, search, doctor
+    setup.rs         config path/show/init
     fundamentals.rs  analyze, compare, peers, dividends, insider, deep
     technicals.rs    technical, history, chart, timeframes, patterns, support, fibs, volume, gaps, stoploss
     risk.rs          risk, correlate, returns, forecast, options moves
@@ -21,7 +22,16 @@ src/
     worker.rs        daemon intraday / longterm loops
     alerting.rs      alert watch loop, notify status/test
     trade.rs         Angel One orders: instrument resolution, preview, confirmation
+    interfaces.rs    tui and serve (behind the `tui` / `server` cargo features)
+  views.rs           Data behind quote/history/markets/portfolio/watchlist/alerts as structs,
+                     shared by the CLI printers, the TUI and the server; `DataSource` trait
+  tui/               `stockwise tui`: app.rs (state + key handling, no I/O), ui.rs (ratatui
+                     drawing), mod.rs (event loop, fetches)
+  server/            `stockwise serve`: axum routes, bearer auth, Prometheus metrics
+  daemon_status.rs   Reads the intraday daemon's daemon_state.json for /metrics
   store.rs           Atomic JSON persistence, data directory (STOCKWISE_HOME)
+  config.rs          Optional config.toml: defaults for market, AI, cache, data dir, periods
+  output.rs          --json / --csv rendering (Format, CsvRow, RFC 4180 quoting)
   portfolio.rs       Lots, FIFO sales, splits/dividends, XIRR cash flows, FX, named portfolios
   tax.rs             Capital-gains rules: holding periods, tax years, set-off (India/US/UK)
   api.rs             Yahoo Finance client (session, quotes, charts, search, cache, retries); routes to a provider
@@ -49,12 +59,25 @@ src/
 
 Adding a command: define it in `Commands` in `main.rs` (and in the `GROUPS`
 help table — a test enforces this), write `cmd_<name>` in the matching
-`commands/*.rs` file, and dispatch to it in `main()`.
+`commands/*.rs` file, and dispatch to it in `main()`. For machine-readable
+output, flatten `TableOutput` (`--json`/`--csv`) or `JsonOutput` (`--json`)
+into the command, build the rows once as `Serialize` structs, and branch on
+`output::Format`; shape tests live in `commands/output_tests.rs`.
+
+## Configuration
+
+`main()` loads the config file before parsing arguments (`config::load`) and
+turns its `market`, `ai` and `[periods]` values into clap defaults, so flags and
+env vars still win and `--help` shows the effective default. Other settings
+are read through `config::setting(env_var, ...)`: env var first, then the file,
+then the caller's built-in default. Precedence is always flag > env var >
+config file > default.
 
 ## Data Flow
 
 ```
-User Input → clap CLI → commands/* → api.rs → Yahoo Finance
+User Input → clap CLI → commands/* → views.rs → api.rs → Yahoo Finance
+              tui/, server/ ───────────↗
                                    → funds.rs → AMFI NAVAll.txt, api.mfapi.in
                                    → derivatives.rs → NSE option chain (India), Yahoo (US)
                                             → providers/* → Alpha Vantage / Massive / Twelve Data (opt-in)
@@ -93,14 +116,14 @@ redis-cli --scan --pattern 'stockwise:*' | xargs redis-cli del   # Clear only St
 
 Falls back to an in-memory cache if Redis isn't running. Connection and response timeouts
 (300/500 ms) keep a missing or hung Redis from slowing commands. Point at another server with
-`STOCKWISE_REDIS_URL`, or set it to `off`.
+`STOCKWISE_REDIS_URL` (or `redis_url` in the config file), or set it to `off`.
 
 Rate limiting: 200ms minimum between requests (5 req/sec). Retry: 3 attempts with exponential backoff; HTTP 429 honours `Retry-After` (capped at 10s) and never sleeps after the last attempt.
 
 ## Data Storage
 
 Location: `~/Library/Application Support/stockwise/` (macOS), `~/.local/share/stockwise/` (Linux), or
-`%LOCALAPPDATA%\stockwise\` (Windows). Set `STOCKWISE_HOME` to use another directory;
+`%LOCALAPPDATA%\stockwise\` (Windows). Set `STOCKWISE_HOME` (or `home` in the config file) to use another directory;
 `stockwise doctor` prints the active path. Files are written atomically (temp file + rename), and
 `angel_config.json` is readable only by you (0600 on Unix).
 
@@ -134,6 +157,11 @@ Location: `~/Library/Application Support/stockwise/` (macOS), `~/.local/share/st
 | `anyhow` | Error handling |
 | `lettre` | SMTP email notifications (rustls) |
 | `notify-rust` | Desktop notifications (optional `desktop-notify` feature) |
+| `ratatui` | Terminal UI for `tui` (re-exports crossterm; `tui` feature) |
+| `axum` | HTTP server for `serve` (`server` feature) |
+
+Both features are on by default; `cargo build --no-default-features` leaves
+them out. CI-style checks should run clippy for both builds.
 
 ## Releases and packaging
 
