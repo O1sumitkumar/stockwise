@@ -351,37 +351,34 @@ pub fn volume_bars(volumes: &[u64], width: usize, height: usize) -> Vec<String> 
         return vec![];
     }
 
-    let max_vol = *volumes.iter().max().unwrap_or(&1) as f64;
-    let blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let max_vol = (*volumes.iter().max().unwrap_or(&1)).max(1) as f64;
+    // Partial blocks in eighths; index 0 = empty.
+    let blocks = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
-    // Downsample to fit width
-    let step = (volumes.len() as f64 / width as f64).max(1.0);
-    let sampled: Vec<u64> = (0..width)
+    // Downsample (bucket-average) to at most `width` columns; never pad with
+    // empty columns when there is less data than width.
+    let cols = width.min(volumes.len()).max(1);
+    let step = volumes.len() as f64 / cols as f64;
+    let sampled: Vec<u64> = (0..cols)
         .map(|i| {
             let start = (i as f64 * step) as usize;
-            let end = ((i + 1) as f64 * step) as usize;
-            let end = end.min(volumes.len());
-            if start >= volumes.len() {
-                0
-            } else {
-                volumes[start..end].iter().sum::<u64>() / (end - start).max(1) as u64
-            }
+            let end = (((i + 1) as f64 * step) as usize).clamp(start + 1, volumes.len());
+            volumes[start..end].iter().sum::<u64>() / (end - start) as u64
         })
         .collect();
 
-    // Build rows from top to bottom
+    // Each column is a vertical bar `height` cells tall at max volume. Row r
+    // (counted from the bottom) shows the part of the bar between r and r+1.
     let mut rows = Vec::new();
     for row in (0..height).rev() {
-        let threshold = (row as f64 / height as f64) * max_vol;
-        let mut line = String::new();
-        for &vol in &sampled {
-            if (vol as f64) > threshold {
-                let intensity = ((vol as f64 / max_vol) * 7.0) as usize;
-                line.push(blocks[intensity.min(7)]);
-            } else {
-                line.push(' ');
-            }
-        }
+        let line: String = sampled
+            .iter()
+            .map(|&vol| {
+                let bar = vol as f64 / max_vol * height as f64;
+                let fill = (bar - row as f64).clamp(0.0, 1.0);
+                blocks[(fill * 8.0).round() as usize]
+            })
+            .collect();
         rows.push(format!("  {}", line.cyan()));
     }
     rows
@@ -644,6 +641,37 @@ mod tests {
         let vols = vec![100, 200, 150, 300, 250, 180, 220];
         let result = volume_bars(&vols, 7, 3);
         assert_eq!(result.len(), 3);
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for c in chars.by_ref() {
+                    if c == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn test_volume_bars_stack_bottom_up() {
+        // One column at max volume, one at half: the max bar fills every row,
+        // the half bar fills only the bottom row.
+        let rows: Vec<String> = volume_bars(&[100, 50], 2, 2)
+            .iter()
+            .map(|r| strip_ansi(r))
+            .collect();
+        assert_eq!(rows, vec!["  █ ", "  ██"]);
+        // Fewer data points than width: no padded empty columns.
+        let rows = volume_bars(&[10, 20, 30], 40, 1);
+        assert_eq!(strip_ansi(&rows[0]).chars().count(), 2 + 3);
     }
 
     #[test]
