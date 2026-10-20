@@ -1,6 +1,10 @@
 //! Paper-trading simulator.
 
 use super::*;
+use crate::clock;
+use crate::daemon::PositionStatus;
+use crate::simulator::{Bar, replay_trade};
+use chrono::{DateTime, NaiveDate, Utc};
 
 pub async fn cmd_sim(
     action: &str,
@@ -8,16 +12,34 @@ pub async fn cmd_sim(
     target: Option<f64>,
     market: Market,
 ) -> Result<()> {
-    let csym = match market {
-        Market::In => "₹",
-        Market::Us => "$",
-    };
+    let csym = market.currency_symbol();
 
     match action {
         "start" => {
+            market.require_stocks("sim start")?;
             let capital = amount.unwrap_or(25000.0);
             let target_pct = target.unwrap_or(2.0);
-            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let now = chrono::Utc::now();
+            let session_date = clock::session_date(market, now);
+            let today = session_date.format("%Y-%m-%d").to_string();
+            // A session belongs to one trading day; `sim settle` replays that
+            // day's bars from the moment of entry.
+            if !clock::is_trading_day(market, session_date) {
+                bail!(
+                    "{} is closed today ({}). Start a session on a trading day.",
+                    clock::exchange(market),
+                    clock::closed_reason(market, now)
+                );
+            }
+            if clock::close_at(market, session_date).is_some_and(|close| now >= close) {
+                bail!(
+                    "{} has closed for today. Start a session before or during the next one ({}).",
+                    clock::exchange(market),
+                    clock::next_open(market, now)
+                        .map(|t| clock::format_local(market, t))
+                        .unwrap_or_default()
+                );
+            }
 
             let mut history = SimHistory::load()?;
             if history
@@ -79,6 +101,7 @@ pub async fn cmd_sim(
                         .iter()
                         .map(|s| s.name.to_string())
                         .collect(),
+                    entered_at: Some(now.to_rfc3339()),
                     exit_price: None,
                     pnl: None,
                     pnl_pct: None,
@@ -115,6 +138,8 @@ pub async fn cmd_sim(
                 market: match market {
                     Market::In => "IN",
                     Market::Us => "US",
+                    Market::Crypto => "CRYPTO",
+                    Market::Fx => "FX",
                 }
                 .into(),
                 capital,
@@ -250,146 +275,7 @@ pub async fn cmd_sim(
             }
             println!();
         }
-        "settle" => {
-            let mut history = SimHistory::load()?;
-            let client = YahooClient::new().await?;
-            let mut settled_any = false;
-
-            for session in history.sessions.iter_mut().filter(|s| !s.settled) {
-                let syms: Vec<&str> = session.trades.iter().map(|t| t.symbol.as_str()).collect();
-                let quotes = client.get_quote(&syms).await?;
-                let mut total_pnl = 0.0_f64;
-                let (mut wins, mut losses) = (0u32, 0u32);
-
-                print_header(&format!("Settling — {}", session.date));
-                println!(
-                    "  {:<14} {:>10} {:>10} {:>12} {:>8}",
-                    "Symbol".bold(),
-                    "Entry".bold(),
-                    "Close".bold(),
-                    "P&L".bold(),
-                    "Result".bold()
-                );
-                println!("  {}", "─".repeat(58).dimmed());
-
-                for trade in session.trades.iter_mut() {
-                    // Settling at a made-up price would write a fake result
-                    // into the track record; nothing is saved before this loop.
-                    let Some(current) = quotes
-                        .iter()
-                        .find(|q| q.symbol.as_deref() == Some(&trade.symbol))
-                        .and_then(|q| q.regular_market_price)
-                    else {
-                        bail!(
-                            "No live price for {}; session not settled. Try again later.",
-                            trade.symbol
-                        );
-                    };
-                    let is_long = trade.direction == "BUY";
-                    let pnl = if is_long {
-                        (current - trade.entry_price) * trade.qty as f64
-                    } else {
-                        (trade.entry_price - current) * trade.qty as f64
-                    };
-                    let pnl_pct = if trade.entry_price != 0.0 {
-                        let move_pct = (current - trade.entry_price) / trade.entry_price * 100.0;
-                        if is_long { move_pct } else { -move_pct }
-                    } else {
-                        0.0
-                    };
-                    let hit_target = if is_long {
-                        current >= trade.target1
-                    } else {
-                        current <= trade.target1
-                    };
-                    let hit_stop = if is_long {
-                        current <= trade.stop_loss
-                    } else {
-                        current >= trade.stop_loss
-                    };
-                    trade.exit_price = Some(current);
-                    trade.pnl = Some(pnl);
-                    trade.pnl_pct = Some(pnl_pct);
-                    trade.hit_target = Some(hit_target);
-                    trade.hit_stop = Some(hit_stop);
-                    total_pnl += pnl;
-                    if pnl > 0.0 {
-                        wins += 1;
-                    } else {
-                        losses += 1;
-                    }
-                    let result = if hit_target {
-                        "WIN".green().bold().to_string()
-                    } else if hit_stop {
-                        "STOPPED".red().to_string()
-                    } else if pnl > 0.0 {
-                        "Profit".green().to_string()
-                    } else {
-                        "Loss".red().to_string()
-                    };
-                    let pnl_str = if pnl >= 0.0 {
-                        format!("+{}{:.0}", csym, pnl).green().to_string()
-                    } else {
-                        format!("-{}{:.0}", csym, pnl.abs()).red().to_string()
-                    };
-                    println!(
-                        "  {:<14} {:>10} {:>10} {:>12} {:>8}",
-                        trade.symbol.cyan(),
-                        format!("{}{:.2}", csym, trade.entry_price),
-                        format!("{}{:.2}", csym, current),
-                        pnl_str,
-                        result
-                    );
-                }
-
-                let total_pnl_pct = (total_pnl / session.capital) * 100.0;
-                session.total_pnl = Some(total_pnl);
-                session.total_pnl_pct = Some(total_pnl_pct);
-                session.win_count = Some(wins);
-                session.loss_count = Some(losses);
-                session.settled = true;
-                settled_any = true;
-
-                println!("  {}", "─".repeat(58).dimmed());
-                let verdict = if total_pnl >= session.capital * (session.target_pct / 100.0) {
-                    format!(
-                        "TARGET MET — {}{:.0} ({:+.2}%)",
-                        csym, total_pnl, total_pnl_pct
-                    )
-                    .green()
-                    .bold()
-                    .to_string()
-                } else if total_pnl > 0.0 {
-                    format!(
-                        "Partial win — {}{:.0} ({:+.2}%)",
-                        csym, total_pnl, total_pnl_pct
-                    )
-                    .yellow()
-                    .to_string()
-                } else {
-                    format!(
-                        "Loss — {}{:.0} ({:.2}%)",
-                        csym,
-                        total_pnl.abs(),
-                        total_pnl_pct
-                    )
-                    .red()
-                    .to_string()
-                };
-                println!("  {} {}", "→".bold(), verdict);
-            }
-            if !settled_any {
-                println!("\n  {} No open simulations.", "→".dimmed());
-            } else {
-                history.save()?;
-                println!(
-                    "\n  {} Run {} for stats.",
-                    "→".dimmed(),
-                    "stockwise sim history".cyan()
-                );
-            }
-            println!();
-        }
+        "settle" => return cmd_sim_settle(false).await,
         "history" | "stats" => return cmd_sim_history(market, Format::Table),
         "reset" => return cmd_sim_reset(false),
         _ => {
@@ -402,7 +288,7 @@ pub async fn cmd_sim(
             );
             println!("    {} — Check live P&L", "stockwise sim status".bold());
             println!(
-                "    {} — Settle at end-of-day",
+                "    {} — Settle from the day's 5-minute bars (after the close)",
                 "stockwise sim settle".bold()
             );
             println!(
@@ -488,7 +374,7 @@ pub(crate) fn sim_history_json(
 pub fn cmd_sim_history(market: Market, fmt: Format) -> Result<()> {
     let csym = match market {
         Market::In => "₹",
-        Market::Us => "$",
+        Market::Us | Market::Crypto | Market::Fx => "$",
     };
     let history = SimHistory::load()?;
     let stats = history.stats();
@@ -613,6 +499,270 @@ pub fn cmd_sim_history(market: Market, fmt: Format) -> Result<()> {
         );
     }
     println!();
+    Ok(())
+}
+
+fn session_market(code: &str) -> Market {
+    if code.eq_ignore_ascii_case("US") {
+        Market::Us
+    } else {
+        Market::In
+    }
+}
+
+/// Bars of one session, finest first: 5-minute bars (Yahoo keeps ~60
+/// days), then hourly (~2 years), then the daily bar. Returns the bars, the
+/// bar length and a label, or None if the exchange has no bars for the day.
+async fn session_bars(
+    client: &YahooClient,
+    symbol: &str,
+    market: Market,
+    date: NaiveDate,
+) -> Result<Option<(Vec<Bar>, chrono::Duration, &'static str)>> {
+    let start = clock::at(market, date, chrono::NaiveTime::MIN).timestamp();
+    let end = start + 24 * 3600;
+    let mut last_err = None;
+    let mut answered = false;
+    for (interval, len, label) in [
+        ("5m", chrono::Duration::minutes(5), "5-minute bars"),
+        ("60m", chrono::Duration::hours(1), "hourly bars"),
+        ("1d", chrono::Duration::days(1), "the daily bar"),
+    ] {
+        match client.get_chart_between(symbol, start, end, interval).await {
+            Ok(chart) => {
+                answered = true;
+                let bars = chart_bars(&chart, market, date);
+                if !bars.is_empty() {
+                    return Ok(Some((bars, len, label)));
+                }
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    match last_err {
+        Some(e) if !answered => Err(e),
+        _ => Ok(None),
+    }
+}
+
+/// OHLC bars from a chart response that belong to `date`, skipping bars
+/// with a missing value (never filled with 0).
+fn chart_bars(chart: &crate::api::ChartData, market: Market, date: NaiveDate) -> Vec<Bar> {
+    let Some(ts) = &chart.timestamp else {
+        return Vec::new();
+    };
+    let Some(q) = chart.indicators.quote.first() else {
+        return Vec::new();
+    };
+    let col = |c: &Option<Vec<Option<f64>>>, i: usize| {
+        c.as_ref().and_then(|v| v.get(i).copied().flatten())
+    };
+    ts.iter()
+        .enumerate()
+        .filter_map(|(i, &t)| {
+            let time = DateTime::from_timestamp(t, 0)?;
+            Some(Bar {
+                time,
+                open: col(&q.open, i)?,
+                high: col(&q.high, i)?,
+                low: col(&q.low, i)?,
+                close: col(&q.close, i)?,
+            })
+        })
+        .filter(|b| clock::session_date(market, b.time) == date)
+        .collect()
+}
+
+/// `sim settle`: close every open session from its own day's intraday bars —
+/// did the stop or the target hit first? — instead of today's price.
+/// Today's session is refused until the market closes, unless `now`.
+pub async fn cmd_sim_settle(now_flag: bool) -> Result<()> {
+    let mut history = SimHistory::load()?;
+    if history.sessions.iter().all(|s| s.settled) {
+        println!("\n  {} No open simulations.\n", "→".dimmed());
+        return Ok(());
+    }
+    let now = Utc::now();
+    let mut client: Option<YahooClient> = None;
+    let mut settled_any = false;
+    let mut skipped: Vec<String> = Vec::new();
+
+    for session in history.sessions.iter_mut().filter(|s| !s.settled) {
+        let market = session_market(&session.market);
+        let csym = match market {
+            Market::In => "₹",
+            Market::Us | Market::Crypto | Market::Fx => "$",
+        };
+        let Ok(date) = NaiveDate::parse_from_str(&session.date, "%Y-%m-%d") else {
+            skipped.push(format!("{}: not a valid session date", session.date));
+            continue;
+        };
+        if let Some(close) = clock::close_at(market, date)
+            && now < close
+            && !now_flag
+        {
+            skipped.push(format!(
+                "{}: the {} session hasn't closed yet — settle after {}, or pass --now to settle at the latest bar",
+                session.date,
+                clock::exchange(market),
+                clock::format_local(market, close)
+            ));
+            continue;
+        }
+        if client.is_none() {
+            client = Some(YahooClient::new().await?);
+        }
+        let client = client.as_ref().expect("client was just created");
+
+        // Replay every trade before touching the session, so a missing
+        // chart leaves it open instead of half-settled.
+        let mut results = Vec::new();
+        let mut problem = None;
+        for trade in &session.trades {
+            let entered_at = trade
+                .entered_at
+                .as_deref()
+                .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+                .map(|t| t.with_timezone(&Utc));
+            match session_bars(client, &trade.symbol, market, date).await {
+                Ok(Some((bars, len, label))) => {
+                    match replay_trade(trade, &bars, len, market, entered_at) {
+                        Some(r) => results.push((r, label)),
+                        None => {
+                            problem = Some(format!("no bars for {} after the entry", trade.symbol));
+                            break;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    problem = Some(format!(
+                        "no price bars for {} on that day{}",
+                        trade.symbol,
+                        clock::holiday(market, date)
+                            .map(|h| format!(" ({} holiday: {})", clock::exchange(market), h))
+                            .unwrap_or_default()
+                    ));
+                    break;
+                }
+                Err(e) => {
+                    problem = Some(format!("could not fetch {}: {:#}", trade.symbol, e));
+                    break;
+                }
+            }
+        }
+        if let Some(p) = problem {
+            skipped.push(format!("{}: {} — left open", session.date, p));
+            continue;
+        }
+
+        print_header(&format!("Settling — {}", session.date));
+        println!(
+            "  {:<14} {:>10} {:>10} {:>12}  {}",
+            "Symbol".bold(),
+            "Entry".bold(),
+            "Exit".bold(),
+            "P&L".bold(),
+            "Result".bold()
+        );
+        println!("  {}", "─".repeat(64).dimmed());
+        let mut total_pnl = 0.0_f64;
+        let (mut wins, mut losses) = (0u32, 0u32);
+        let mut sources: Vec<&str> = Vec::new();
+        for (trade, (r, label)) in session.trades.iter_mut().zip(&results) {
+            trade.exit_price = Some(r.exit_price);
+            trade.pnl = Some(r.pnl);
+            trade.pnl_pct = Some(r.pnl_pct);
+            trade.hit_target = Some(r.status == PositionStatus::T2Hit);
+            trade.hit_stop = Some(r.status == PositionStatus::StopHit);
+            total_pnl += r.pnl;
+            if r.pnl > 0.0 {
+                wins += 1;
+            } else {
+                losses += 1;
+            }
+            if !sources.contains(label) {
+                sources.push(label);
+            }
+            let at = clock::local(market, r.exit_time).format("%H:%M");
+            let result = match r.status {
+                PositionStatus::T2Hit => format!("TARGET {}", at).green().bold().to_string(),
+                PositionStatus::StopHit if r.t1_booked => {
+                    format!("T1, then stop {}", at).yellow().to_string()
+                }
+                PositionStatus::StopHit => format!("STOPPED {}", at).red().to_string(),
+                _ => format!("Exit {}", at).dimmed().to_string(),
+            };
+            let pnl_str = if r.pnl >= 0.0 {
+                format!("+{}{:.0}", csym, r.pnl).green().to_string()
+            } else {
+                format!("-{}{:.0}", csym, r.pnl.abs()).red().to_string()
+            };
+            println!(
+                "  {:<14} {:>10} {:>10} {:>12}  {}",
+                trade.symbol.cyan(),
+                format!("{}{:.2}", csym, trade.entry_price),
+                format!("{}{:.2}", csym, r.exit_price),
+                pnl_str,
+                result
+            );
+        }
+
+        let total_pnl_pct = (total_pnl / session.capital) * 100.0;
+        session.total_pnl = Some(total_pnl);
+        session.total_pnl_pct = Some(total_pnl_pct);
+        session.win_count = Some(wins);
+        session.loss_count = Some(losses);
+        session.settled = true;
+        settled_any = true;
+
+        println!("  {}", "─".repeat(64).dimmed());
+        let verdict = if total_pnl >= session.capital * (session.target_pct / 100.0) {
+            format!(
+                "TARGET MET — {}{:.0} ({:+.2}%)",
+                csym, total_pnl, total_pnl_pct
+            )
+            .green()
+            .bold()
+            .to_string()
+        } else if total_pnl > 0.0 {
+            format!(
+                "Partial win — {}{:.0} ({:+.2}%)",
+                csym, total_pnl, total_pnl_pct
+            )
+            .yellow()
+            .to_string()
+        } else {
+            format!(
+                "Loss — {}{:.0} ({:.2}%)",
+                csym,
+                total_pnl.abs(),
+                total_pnl_pct
+            )
+            .red()
+            .to_string()
+        };
+        println!("  {} {}", "→".bold(), verdict);
+        println!(
+            "  {} Replayed from {}; a bar that touched both the stop and a target counts as the stop.",
+            "→".dimmed(),
+            sources.join(" and ")
+        );
+    }
+
+    if settled_any {
+        history.save()?;
+    }
+    for s in &skipped {
+        println!("  {} {}", "!".yellow(), s);
+    }
+    if !settled_any && !skipped.is_empty() {
+        bail!("No session settled.");
+    }
+    println!(
+        "\n  {} Run {} for stats.\n",
+        "→".dimmed(),
+        "stockwise sim history".cyan()
+    );
     Ok(())
 }
 

@@ -1,9 +1,10 @@
+use crate::providers::{self, MarketData};
 use anyhow::{Context, Result, bail};
 use reqwest::header;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
@@ -119,10 +120,13 @@ struct CacheEntry {
     expires: Instant,
 }
 
-struct HybridCache {
+pub(crate) struct HybridCache {
     redis: Option<redis::aio::MultiplexedConnection>,
     memory: HashMap<String, CacheEntry>,
 }
+
+/// The cache shared by Yahoo and an alternative data provider.
+pub(crate) type SharedCache = Arc<tokio::sync::Mutex<HybridCache>>;
 
 impl HybridCache {
     async fn new() -> Self {
@@ -136,7 +140,7 @@ impl HybridCache {
         self.redis.is_some()
     }
 
-    async fn get(&mut self, key: &str) -> Option<String> {
+    pub(crate) async fn get(&mut self, key: &str) -> Option<String> {
         let redis_key = format!("{}{}", REDIS_KEY_PREFIX, key);
 
         // Try Redis first
@@ -172,7 +176,7 @@ impl HybridCache {
         hit
     }
 
-    async fn set(&mut self, key: String, data: String, ttl: Duration) {
+    pub(crate) async fn set(&mut self, key: String, data: String, ttl: Duration) {
         let ttl_secs = ttl.as_secs() as i64;
         let redis_key = format!("{}{}", REDIS_KEY_PREFIX, key);
 
@@ -297,6 +301,10 @@ pub struct Quote {
     pub beta: Option<f64>,
     #[serde(rename = "dividendYield")]
     pub dividend_yield: Option<f64>,
+    /// Which provider supplied the price when it wasn't Yahoo
+    /// (`STOCKWISE_DATA_PROVIDER`); omitted from JSON otherwise.
+    #[serde(rename = "dataSource", skip_serializing_if = "Option::is_none")]
+    pub data_source: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -314,6 +322,38 @@ pub struct ChartData {
     pub meta: Option<ChartMeta>,
     pub timestamp: Option<Vec<i64>>,
     pub indicators: Indicators,
+    /// Present when requested with `events=div,splits`.
+    #[serde(default)]
+    pub events: Option<ChartEvents>,
+}
+
+/// Dividends and splits from the chart API, keyed by an opaque bucket
+/// timestamp — use each event's own `date`.
+#[derive(Debug, Default, Deserialize)]
+pub struct ChartEvents {
+    #[serde(default)]
+    pub dividends: HashMap<String, DividendEvent>,
+    #[serde(default)]
+    pub splits: HashMap<String, SplitEvent>,
+    /// Currency of the dividend amounts (from the chart's metadata).
+    #[serde(skip)]
+    pub currency: Option<String>,
+}
+
+/// Cash dividend per share. Yahoo adjusts past amounts for later splits
+/// (RELIANCE's ₹9 in 2023 shows as ₹4.50 after its 2024 1:1 bonus).
+#[derive(Debug, Deserialize)]
+pub struct DividendEvent {
+    pub amount: f64,
+    pub date: i64,
+}
+
+/// A split, or a bonus issue (Yahoo reports a 1:1 bonus as a 2:1 split).
+#[derive(Debug, Deserialize)]
+pub struct SplitEvent {
+    pub date: i64,
+    pub numerator: f64,
+    pub denominator: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -380,7 +420,10 @@ pub struct YahooClient {
     crumb: String,
     cookie: String,
     last_request: Mutex<Instant>,
-    cache: tokio::sync::Mutex<HybridCache>,
+    cache: SharedCache,
+    /// Opt-in alternative provider (`STOCKWISE_DATA_PROVIDER`). Quotes,
+    /// charts and search go there first; Yahoo fills the gaps.
+    provider: Option<providers::Provider>,
 }
 
 impl YahooClient {
@@ -469,14 +512,35 @@ impl YahooClient {
             }
         }
 
-        let cache = HybridCache::new().await;
+        let cache = Arc::new(tokio::sync::Mutex::new(HybridCache::new().await));
+        let provider = match providers::Selection::from_env() {
+            providers::Selection::Ready(p) => Some(p.with_cache(cache.clone())),
+            providers::Selection::Yahoo => None,
+            // Misconfigured: say so (doctor explains), keep working on Yahoo.
+            providers::Selection::MissingKey(kind) => {
+                eprintln!(
+                    "  \u{24d8} STOCKWISE_DATA_PROVIDER names {} but {} is not set; using Yahoo Finance",
+                    kind.name(),
+                    kind.key_env()
+                );
+                None
+            }
+            providers::Selection::Unknown(name) => {
+                eprintln!(
+                    "  \u{24d8} Unknown STOCKWISE_DATA_PROVIDER '{}' (alphavantage, massive, twelvedata); using Yahoo Finance",
+                    name
+                );
+                None
+            }
+        };
 
         Ok(Self {
             client,
             crumb,
             cookie: cookie_str,
             last_request: Mutex::new(Instant::now() - Duration::from_secs(1)),
-            cache: tokio::sync::Mutex::new(cache),
+            cache,
+            provider,
         })
     }
 
@@ -590,7 +654,34 @@ impl YahooClient {
         }
     }
 
+    /// Quotes for `symbols`. With a data provider configured, it prices the
+    /// symbols it covers and Yahoo fills every other field and symbol; a
+    /// provider error or exhausted free tier falls back to Yahoo alone.
     pub async fn get_quote(&self, symbols: &[&str]) -> Result<Vec<Quote>> {
+        let Some(provider) = &self.provider else {
+            return self.yahoo_quote(symbols).await;
+        };
+        let covered: Vec<&str> = symbols
+            .iter()
+            .copied()
+            .filter(|s| provider.supports(s))
+            .collect();
+        // Bulk scans (movers, screeners) stay on Yahoo when the free tier
+        // can't price them all: one table never mixes sources or freshness.
+        if covered.is_empty() || covered.len() as u32 > provider.remaining() {
+            return self.yahoo_quote(symbols).await;
+        }
+        let from_provider = provider.quotes(&covered).await.unwrap_or_default();
+        let yahoo = match self.yahoo_quote(symbols).await {
+            Ok(q) => q,
+            Err(e) if from_provider.is_empty() => return Err(e),
+            Err(_) => Vec::new(),
+        };
+        Ok(combine_quotes(symbols, from_provider, yahoo))
+    }
+
+    /// Quotes straight from Yahoo Finance, ignoring any configured provider.
+    pub async fn yahoo_quote(&self, symbols: &[&str]) -> Result<Vec<Quote>> {
         let joined = symbols.join(",");
         let url = build_url(
             "https://query2.finance.yahoo.com/v7/finance/quote",
@@ -604,7 +695,26 @@ impl YahooClient {
         Ok(resp.quote_response.result)
     }
 
+    /// Price history. A configured data provider serves daily, weekly and
+    /// monthly bars when its plan covers the whole range; otherwise (and for
+    /// intraday bars) Yahoo does.
     pub async fn get_chart(&self, symbol: &str, range: &str, interval: &str) -> Result<ChartData> {
+        if let Some(provider) = &self.provider
+            && provider.supports(symbol)
+            && let Ok(chart) = provider.chart(symbol, range, interval).await
+        {
+            return Ok(chart);
+        }
+        self.yahoo_chart(symbol, range, interval).await
+    }
+
+    /// Price history straight from Yahoo Finance.
+    pub async fn yahoo_chart(
+        &self,
+        symbol: &str,
+        range: &str,
+        interval: &str,
+    ) -> Result<ChartData> {
         // Yahoo has no "1w" range; StockWise accepts it as an alias for 5 days.
         let range = if range == "1w" { "5d" } else { range };
         let url = build_url(
@@ -636,6 +746,66 @@ impl YahooClient {
             .context("No chart data returned")
     }
 
+    /// Bars between two instants (Unix seconds), e.g. one past session's
+    /// 5-minute bars. Yahoo keeps 5-minute bars for about 60 days and hourly
+    /// bars for about two years.
+    pub async fn get_chart_between(
+        &self,
+        symbol: &str,
+        start: i64,
+        end: i64,
+        interval: &str,
+    ) -> Result<ChartData> {
+        let (period1, period2) = (start.to_string(), end.to_string());
+        let url = build_url(
+            "https://query1.finance.yahoo.com/v8/finance/chart",
+            Some(symbol),
+            &[
+                ("period1", &period1),
+                ("period2", &period2),
+                ("interval", interval),
+            ],
+        );
+        let body = self.fetch(&url, Duration::from_secs(600)).await?;
+        let resp: ChartResponse =
+            serde_json::from_str(&body).context("Failed to parse chart response")?;
+        resp.chart
+            .result
+            .and_then(|r| r.into_iter().next())
+            .context("No chart data returned")
+    }
+
+    /// Dividends and splits for `symbol` from `since` (Unix seconds) to today.
+    pub async fn get_corporate_actions(&self, symbol: &str, since: i64) -> Result<ChartEvents> {
+        // End at the next midnight so the URL (and its cache entry) is stable for the day.
+        let day = 86_400;
+        let until = (chrono::Utc::now().timestamp() / day + 1) * day;
+        // At least a month back, so the range always has a monthly bar.
+        let since = since.min(until - 40 * day);
+        let (from, to) = (since.to_string(), until.to_string());
+        let url = build_url(
+            "https://query1.finance.yahoo.com/v8/finance/chart",
+            Some(symbol),
+            &[
+                ("period1", from.as_str()),
+                ("period2", to.as_str()),
+                ("interval", "1mo"),
+                ("events", "div,splits"),
+            ],
+        );
+        let body = self.fetch(&url, Duration::from_secs(600)).await?;
+        let resp: ChartResponse =
+            serde_json::from_str(&body).context("Failed to parse chart response")?;
+        let data = resp
+            .chart
+            .result
+            .and_then(|mut r| (!r.is_empty()).then(|| r.remove(0)))
+            .with_context(|| format!("No data for {}", symbol))?;
+        let mut events = data.events.unwrap_or_default();
+        events.currency = data.meta.and_then(|m| m.currency);
+        Ok(events)
+    }
+
     pub fn crumb(&self) -> &str {
         &self.crumb
     }
@@ -652,7 +822,20 @@ impl YahooClient {
         self.fetch(url, Duration::from_secs(300)).await
     }
 
+    /// Symbol search: the data provider's matches when it has any, else
+    /// Yahoo's.
     pub async fn search(&self, query: &str) -> Result<Vec<SearchResult>> {
+        if let Some(provider) = &self.provider
+            && let Ok(results) = provider.search(query).await
+            && !results.is_empty()
+        {
+            return Ok(results);
+        }
+        self.yahoo_search(query).await
+    }
+
+    /// Symbol search straight from Yahoo Finance.
+    pub async fn yahoo_search(&self, query: &str) -> Result<Vec<SearchResult>> {
         let url = build_url(
             "https://query2.finance.yahoo.com/v1/finance/search",
             None,
@@ -665,9 +848,109 @@ impl YahooClient {
     }
 }
 
+impl MarketData for YahooClient {
+    fn name(&self) -> &'static str {
+        "Yahoo Finance"
+    }
+
+    async fn quotes(&self, symbols: &[&str]) -> Result<Vec<Quote>> {
+        self.yahoo_quote(symbols).await
+    }
+
+    async fn chart(&self, symbol: &str, range: &str, interval: &str) -> Result<ChartData> {
+        self.yahoo_chart(symbol, range, interval).await
+    }
+
+    async fn search(&self, query: &str) -> Result<Vec<SearchResult>> {
+        self.yahoo_search(query).await
+    }
+}
+
+/// Merge provider quotes into Yahoo's, in Yahoo's order, keeping symbols
+/// only one side returned. Symbols match case-insensitively.
+fn combine_quotes(symbols: &[&str], from_provider: Vec<Quote>, yahoo: Vec<Quote>) -> Vec<Quote> {
+    let same = |q: &Quote, s: &str| {
+        q.symbol
+            .as_deref()
+            .is_some_and(|x| x.eq_ignore_ascii_case(s))
+    };
+    let mut provider = from_provider;
+    let mut yahoo = yahoo;
+    let mut out = Vec::with_capacity(symbols.len());
+    for symbol in symbols {
+        let y = yahoo
+            .iter()
+            .position(|q| same(q, symbol))
+            .map(|i| yahoo.remove(i));
+        match provider.iter().position(|q| same(q, symbol)) {
+            Some(i) => {
+                let p = provider.remove(i);
+                // Keep Yahoo's spelling of the symbol, which callers match on.
+                let symbol = y
+                    .as_ref()
+                    .and_then(|q| q.symbol.clone())
+                    .or(p.symbol.clone());
+                let mut merged = providers::merge_quote(p, y);
+                merged.symbol = symbol;
+                out.push(merged);
+            }
+            None => out.extend(y),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn combine_quotes_overlays_provider_prices_in_request_order() {
+        let q = |sym: &str, price: f64, src: Option<&str>| Quote {
+            symbol: Some(sym.into()),
+            regular_market_price: Some(price),
+            data_source: src.map(str::to_string),
+            ..Default::default()
+        };
+        let yahoo = vec![q("TCS.NS", 3500.0, None), q("AAPL", 230.0, None)];
+        let provider = vec![
+            q("AAPL", 236.0, Some("Alpha Vantage")),
+            q("MSFT", 410.0, Some("Alpha Vantage")),
+        ];
+        let out = combine_quotes(&["AAPL", "TCS.NS", "MSFT", "NOPE"], provider, yahoo);
+        let got: Vec<(&str, f64, Option<&str>)> = out
+            .iter()
+            .map(|q| {
+                (
+                    q.symbol.as_deref().unwrap(),
+                    q.regular_market_price.unwrap(),
+                    q.data_source.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("AAPL", 236.0, Some("Alpha Vantage")),
+                ("TCS.NS", 3500.0, None),
+                ("MSFT", 410.0, Some("Alpha Vantage")),
+            ]
+        );
+    }
+
+    #[test]
+    fn data_source_is_left_out_of_yahoo_json() {
+        let json = serde_json::to_value(Quote::default()).unwrap();
+        assert!(json.get("dataSource").is_none());
+        let tagged = Quote {
+            data_source: Some("Twelve Data".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(tagged).unwrap()["dataSource"],
+            "Twelve Data"
+        );
+    }
 
     #[test]
     fn build_url_encodes_ampersand_in_symbols() {

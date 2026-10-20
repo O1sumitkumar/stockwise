@@ -53,6 +53,184 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `quote`, `history` and `markets` gather their data through a shared layer
   (`src/views.rs`) that the TUI and the server also use, so `--json` and the
   HTTP API return the same shapes.
+- `portfolio --json/--csv` and `tax --json/--csv` follow the lot-based
+  portfolio: holdings carry `xirr_percent`, totals are in the base currency
+  (`--base`), and holdings without an exchange rate are listed in
+  `unconverted`. `tax --json` reports this tax year's sales, each open
+  holding's short- and long-term gain, and the estimate with and without
+  selling everything today.
+- The config file also covers `lang`, `quote_currency`, `portfolio`,
+  `ai_provider`, `data_provider` and a `[notify]` table for notification
+  channels (API keys stay in environment variables). `config show` and
+  `doctor` warn when the file holds secrets and other users can read it.
+
+### Added
+- `stockwise man` prints the `stockwise.1` man page; `stockwise man --dir DIR`
+  writes it plus one `stockwise-<command>.1` page per command. The pages are
+  generated from the CLI definition and ship in every release archive under
+  `man/`.
+- Docker image `ghcr.io/iamsaquib8/stockwise` for linux/amd64 and linux/arm64,
+  published on every release. It runs as a non-root user and keeps data in the
+  `/data` volume.
+- Nix flake: `nix run github:iamsaquib8/stockwise`, `nix profile install`, and
+  `nix develop` for a dev shell. Installs man pages and shell completions.
+- Package manifests in `packaging/` for Homebrew, Scoop, winget and the AUR
+  (`stockwise-bin`), filled in from each release's checksums by
+  `packaging/render.sh`. Releases push the formula to the
+  `iamsaquib8/homebrew-tap` tap when a `HOMEBREW_TAP_TOKEN` secret is set, and
+  attach `stockwise.json` so `scoop install <release URL>` works.
+- `mf` — Indian mutual funds from AMFI's public NAV file: `mf search`, `mf nav`,
+  `mf history` (NAV chart, 1M–10Y trailing returns, since-inception CAGR, max
+  drawdown) and `mf sip` (monthly SIP with XIRR on the actual purchase dates).
+  NAV history comes from api.mfapi.in; both are cached in the data directory
+  for 12 hours. `--json` on every subcommand.
+- `mf screen` ranks a category's growth-option schemes by 1Y/3Y/5Y return
+  (bare `mf screen` lists categories). Expense ratios are not in AMFI's feed,
+  so they are not shown for Indian schemes.
+- `mf overlap A B` — shared top holdings, holdings and sector overlap, and
+  expense ratios for funds Yahoo Finance has holdings for (mainly US ETFs and
+  mutual funds). Indian schemes and NSE ETFs report "no holdings data".
+- `options chain` (OI, change in OI, volume, IV, delta, gamma, theta, vega,
+  rho), `options pcr` (put/call ratio and open-interest walls) and
+  `options maxpain`. Indian symbols use NSE's option chain (index options and
+  F&O stocks), US symbols (`-m us`) use Yahoo Finance. Black-Scholes greeks
+  with an implied-volatility solver, valued at the data timestamp.
+
+### Changed
+- `options` is now a command group. `stockwise options SYMBOL` still shows
+  expected moves, also available as `options moves SYMBOL`. `mf` and
+  `options` are listed under a new "Funds & F&O" help group.
+
+### Fixed
+- `options` (expected moves) treated a missing price as 0; it now reports an
+  error.
+- **Crypto and forex markets.** `-m crypto` resolves bare coins (`BTC` →
+  `BTC-USD`; `--quote-currency inr` / `STOCKWISE_QUOTE_CURRENCY` for `BTC-INR`)
+  and `-m fx` resolves pairs (`USDINR`, `usd/inr` → `USDINR=X`). Prices show
+  4 decimals for FX and up to 8 for low-priced coins; `quote` notes 24/7
+  (crypto) and weekday-only (FX) trading. `markets --crypto --fx` adds top
+  coins and major pairs. Session-, sector- and fundamentals-based commands
+  (`sectors`, `screen`, `intraday`, `daemon`, ...) explain that they need a
+  stock market instead of running on coins.
+- **Data providers.** `STOCKWISE_DATA_PROVIDER=alphavantage|massive|twelvedata`
+  with the provider's API key routes quotes, daily history and search through
+  Alpha Vantage, Massive (formerly Polygon.io) or Twelve Data. Yahoo fills the
+  fields and symbols a provider lacks and takes over on errors or exhausted
+  free tiers. `doctor` shows which provider answered; `quote` names it, and
+  `quote --json` adds `dataSource`. See docs/data-providers.md.
+- **Cloud AI, opt-in.** `STOCKWISE_AI_PROVIDER=openai|anthropic|gemini` with
+  `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` uses a hosted model
+  for `report` and `--ai` (same prompts as Ollama, which stays the default).
+  The first request of a run prints a notice that data is being sent;
+  `doctor` shows provider and model, never the key. `STOCKWISE_MODEL`
+  overrides the default model (`gpt-6.1-sol`, `claude-opus-5-5`,
+  `gemini-3.8-flash`). See docs/ai.md.
+- **Hindi (partial).** `--lang hi`, `STOCKWISE_LANG=hi`, or a `hi_*` locale
+  translates help group titles, the main command descriptions, `quote`,
+  `markets`, `dashboard`, `portfolio`, `search`, `doctor` and common errors.
+  Lakh/crore amounts read `₹16.27 लाख करोड़`. `--json` output is unchanged.
+- `doctor` shows the active language and where it came from.
+
+### Changed
+- `quote`, `markets` and `dashboard` show `N/A` for a missing price or range
+  instead of `0.00`.
+- AI section titles name the provider (`AI Analysis (Ollama)`) instead of
+  always saying Ollama.
+- EUR, GBP and JPY amounts show `€`, `£` and `¥` instead of `$`.
+- `stockwise alert watch [--interval 60] [--once]` — checks alerts while
+  each alert's market is open and announces every trigger once (re-arms when
+  the price moves back, at most once a day; remembered across restarts).
+- Notifications for `alert watch` and the intraday daemon: Telegram, Slack
+  and Discord webhooks, email over SMTP (rustls), and desktop pop-ups with
+  the `desktop-notify` build feature. Configured with `STOCKWISE_*`
+  environment variables; `stockwise notify` shows them and `stockwise notify
+  test` sends a test message. Secrets are never printed or sent anywhere but
+  their own endpoint.
+- Exchange clock: IST for NSE and US Eastern (with daylight saving) for
+  NYSE, with the NSE 2026 and NYSE 2026–2028 holiday calendars and NYSE
+  early closes.
+- `sim settle --now` settles today's session before the close.
+
+### Changed
+- `sim settle` replays each session's own 5-minute bars (falling back to
+  hourly, then daily bars for old sessions): the stop or target that was hit
+  first decides each trade, otherwise it exits at the 15:15 bar. It used to
+  settle every session, from any date, at today's price. Today's session is
+  refused until the market closes.
+- `sim start` refuses to open a session when the market is closed for the
+  day (weekend, holiday, or after the close).
+- `daemon intraday` follows the exchange clock instead of the machine's time
+  zone, skips exchange holidays, and with `-m us` trades NYSE hours.
+- Intraday plans (`intraday`, `sim start`, the daemon) never need more than
+  the capital in total, and the daemon's 30% per-position limit is applied.
+
+### Fixed
+- `daemon intraday` exited on the first network error, losing the day's
+  paper positions. Errors are now logged and retried with backoff; the state
+  is saved to `daemon_state.json` (`daemon_state_us.json` for `-m us`) every
+  tick and resumed after a restart.
+- Ctrl+C in `daemon intraday` now squares off at the last prices, records
+  the day in the simulator history and exits 0, as the banner promised.
+- Positions closed at the second target were not counted by the 3% daily
+  loss kill switch; the kill switch also no longer re-fires every tick.
+- The daemon kept waiting forever after a day with no qualified trades.
+- Daemon P&L right after a first-target partial booking counted the booked
+  half at the current price instead of the target price.
+- Intraday plans could put a long's stop above the entry (support above the
+  price) or a short's below it; such levels are now ignored.
+- The daemon monitors positions from the moment it enters them, not only
+  from 15 minutes after the open, and ignores zero quotes.
+- **Lot-level holdings.** Every purchase is a lot with its own quantity, price,
+  date and source. `portfolio add ... --date YYYY-MM-DD` records the real
+  purchase date; `portfolio lots SYMBOL` shows a holding's lots, sales and
+  dividends, and `--lot N --date` corrects a purchase date.
+- `portfolio sell SYMBOL SHARES [PRICE] [--date]` sells oldest lots first
+  (FIFO) and keeps the realized P&L for `tax`.
+- Portfolio XIRR: `portfolio` shows a money-weighted annual return per holding
+  and for the whole portfolio (including closed positions and dividends).
+- `portfolio actions [SYMBOL] [--apply]` lists splits, bonus issues and
+  dividends since you bought (from Yahoo) and, with `--apply`, adjusts lots and
+  records dividends. Idempotent; nothing changes without `--apply`. `divcal`
+  shows the dividends received.
+- Named portfolios: global `--portfolio NAME` / `STOCKWISE_PORTFOLIO`, stored as
+  `portfolios/NAME.json` with their own wealth history; `portfolio list`.
+- Mixed-currency portfolios: INR and USD holdings are totalled in one currency
+  at the live `USDINR=X` rate (`portfolio --base inr|usd`; default: the
+  market's currency). Also in `dashboard`, `wealth`, `rebalance` and the
+  long-term daemon.
+- `import` reads a purchase/trade date column and a buy/sell column, so a lot
+  list or a tradebook (e.g. Zerodha Console) imports with real dates, realized
+  sales and splits applied as they happened. A holding that already has lots
+  from elsewhere is only rebuilt with `import --replace`.
+
+### Changed
+- `tax in|us|uk` classifies each lot by its own purchase date, shows realized
+  gains (sales this tax year) separately from unrealized ones, and applies the
+  set-off rules: in India a short-term loss offsets STCG then LTCG, a long-term
+  loss only LTCG, before the ₹1.25 lakh exemption; losses left over are shown
+  as carry forward. Holdings in another currency are listed but not included.
+  UK CGT uses the 24% higher rate (was 20%).
+- `portfolio.json` has a new format (version 2). Older files are upgraded on
+  first load — each holding becomes one lot dated when it was added, flagged as
+  an estimated date — and the original is kept once as `portfolio.json.bak`.
+  StockWise 0.3.0 can still read the new file.
+- `import` without dates and `trade holdings` keep existing lots and only adjust
+  the quantity, instead of overwriting the average cost.
+- `portfolio list` now lists your portfolios; use `portfolio` or
+  `portfolio show` for holdings.
+- `import` exits with an error when a file has no usable rows, an unrecognized
+  date, or nothing it could apply.
+- `portfolio sell`, `import` and `trade holdings` refuse to match shares while
+  a split or bonus isn't applied to your lots yet, and point to
+  `portfolio actions --apply`.
+- `wealth` snapshots are always in the market's currency.
+
+### Fixed
+- Tax holding periods used the day a holding was added to StockWise, and adding
+  shares kept the first purchase's date for all of them.
+- Portfolio totals added INR and USD amounts together.
+- `portfolio sell`, `lots`, `remove` and `actions` find a holding saved as typed
+  (e.g. `AAPL` while the market is India).
 
 ## [0.3.0] - 2026-10-21
 

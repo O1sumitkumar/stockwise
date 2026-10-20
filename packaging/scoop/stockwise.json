@@ -1,0 +1,32 @@
+{
+    "version": "@VERSION@",
+    "description": "Stock market toolkit for your terminal: Indian (NSE/BSE) and US stocks",
+    "homepage": "https://github.com/iamsaquib8/stockwise",
+    "license": "MIT",
+    "notes": "Not financial advice. Run 'stockwise doctor' to check your setup.",
+    "suggest": {
+        "vcredist": "extras/vcredist2022"
+    },
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/iamsaquib8/stockwise/releases/download/v@VERSION@/stockwise-x86_64-pc-windows-msvc.zip",
+            "hash": "@SHA256_X86_64_PC_WINDOWS_MSVC@",
+            "extract_dir": "stockwise-x86_64-pc-windows-msvc"
+        }
+    },
+    "bin": "stockwise.exe",
+    "checkver": {
+        "github": "https://github.com/iamsaquib8/stockwise"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/iamsaquib8/stockwise/releases/download/v$version/stockwise-x86_64-pc-windows-msvc.zip",
+                "hash": {
+                    "url": "$url.sha256"
+                },
+                "extract_dir": "stockwise-x86_64-pc-windows-msvc"
+            }
+        }
+    }
+}

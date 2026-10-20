@@ -2,6 +2,35 @@
 
 use super::*;
 
+/// Localized name of a market, for titles.
+fn market_title(market: Market) -> &'static str {
+    t(match market {
+        Market::In => Msg::MarketIndia,
+        Market::Us => Msg::MarketUs,
+        Market::Crypto => Msg::MarketCrypto,
+        Market::Fx => Msg::MarketFx,
+    })
+}
+
+/// A price with the precision its asset class needs, or a dimmed N/A —
+/// never a made-up 0.
+fn price_or_na(val: Option<f64>, currency: Option<&str>, symbol: &str) -> String {
+    val.map_or_else(
+        || "N/A".dimmed().to_string(),
+        |v| format_asset_price(v, currency, symbol),
+    )
+}
+
+/// `▲ 1.23 (0.45%)`, with as many decimals as the price needs.
+fn change_for(q: &crate::api::Quote, symbol: &str) -> String {
+    let price = q.regular_market_price.unwrap_or(0.0);
+    format_change_dp(
+        q.regular_market_change.unwrap_or(0.0),
+        q.regular_market_change_percent.unwrap_or(0.0),
+        price_decimals(market::AssetClass::of(symbol), price),
+    )
+}
+
 /// One quote as `quote --csv` prints it (`quote --json` keeps Yahoo's
 /// camelCase fields).
 #[derive(Debug, Serialize)]
@@ -78,9 +107,11 @@ pub async fn cmd_quote(symbols: &[String], market: Market, fmt: Format) -> Resul
     let views::QuoteSet { quotes, missing } = views::quotes(&client, &resolved).await?;
     let missing_err = || {
         anyhow::anyhow!(
-            "No quote for {}{}",
-            missing.join(", "),
-            market::not_found_hint(market)
+            "{}",
+            tf(
+                Msg::NoQuoteFor,
+                &[&missing.join(", "), &market::not_found_hint(market)]
+            )
         )
     };
 
@@ -102,78 +133,79 @@ pub async fn cmd_quote(symbols: &[String], market: Market, fmt: Format) -> Resul
         };
     }
 
+    let now = chrono::Utc::now();
     for q in &quotes {
         let symbol = q.symbol.as_deref().unwrap_or("???");
         let name = q
             .long_name
             .as_deref()
             .or(q.short_name.as_deref())
-            .unwrap_or("Unknown");
-        let price = q.regular_market_price.unwrap_or(0.0);
-        let change = q.regular_market_change.unwrap_or(0.0);
-        let change_pct = q.regular_market_change_percent.unwrap_or(0.0);
+            .unwrap_or(t(Msg::Unknown));
         let cur = q.currency.as_deref();
+        let px = |v: Option<f64>| price_or_na(v, cur, symbol);
+        let na = || "N/A".dimmed().to_string();
 
         print_header(&format!("{} — {}", symbol, name));
 
         println!(
             "  {}  {}",
-            format_price(price, cur).bold(),
-            format_change(change, change_pct)
+            px(q.regular_market_price).bold(),
+            change_for(q, symbol)
         );
+        if let Some(note) = market::session_note(market::AssetClass::of(symbol), now) {
+            println!("  {}", t(note).dimmed());
+        }
 
         println!();
+        print_kv(t(Msg::Open), &px(q.regular_market_open));
         print_kv(
-            "Open",
-            &format_price(q.regular_market_open.unwrap_or(0.0), cur),
-        );
-        print_kv(
-            "Day Range",
+            t(Msg::DayRange),
             &format!(
                 "{} — {}",
-                format_price(q.regular_market_day_low.unwrap_or(0.0), cur),
-                format_price(q.regular_market_day_high.unwrap_or(0.0), cur)
+                px(q.regular_market_day_low),
+                px(q.regular_market_day_high)
             ),
         );
         print_kv(
-            "52-Week Range",
+            t(Msg::WeekRange52),
             &format!(
                 "{} — {}",
-                format_price(q.fifty_two_week_low.unwrap_or(0.0), cur),
-                format_price(q.fifty_two_week_high.unwrap_or(0.0), cur)
+                px(q.fifty_two_week_low),
+                px(q.fifty_two_week_high)
             ),
         );
+        // FX has no exchange volume (Yahoo reports 0).
+        if market::AssetClass::of(symbol) != market::AssetClass::Fx {
+            print_kv(
+                t(Msg::Volume),
+                &q.regular_market_volume.map_or_else(na, format_volume),
+            );
+            print_kv(
+                t(Msg::AvgVolume3M),
+                &q.average_daily_volume_3_month
+                    .map_or_else(na, format_volume),
+            );
+        }
         print_kv(
-            "Volume",
-            &format_volume(q.regular_market_volume.unwrap_or(0)),
-        );
-        print_kv(
-            "Avg Volume (3M)",
-            &format_volume(q.average_daily_volume_3_month.unwrap_or(0)),
-        );
-        print_kv(
-            "Market Cap",
+            t(Msg::MarketCap),
             &q.market_cap
-                .map_or("N/A".to_string(), |v| format_large_number(v, cur)),
+                .map_or_else(na, |v| format_large_number(v, cur)),
         );
-        print_kv("P/E (TTM)", &format_optional_f64(q.trailing_pe, ""));
+        print_kv(t(Msg::PeTtm), &format_optional_f64(q.trailing_pe, ""));
         print_kv(
-            "EPS (TTM)",
+            t(Msg::EpsTtm),
             &format_optional_f64(q.eps_trailing_twelve_months, ""),
         );
-        print_kv(
-            "50-Day MA",
-            &format_optional_price(q.fifty_day_average, cur),
-        );
-        print_kv(
-            "200-Day MA",
-            &format_optional_price(q.two_hundred_day_average, cur),
-        );
+        print_kv(t(Msg::Ma50), &px(q.fifty_day_average));
+        print_kv(t(Msg::Ma200), &px(q.two_hundred_day_average));
 
         if let Some(div) = q.trailing_annual_dividend_yield
             && div > 0.0
         {
-            print_kv("Dividend Yield", &format!("{:.2}%", div * 100.0));
+            print_kv(t(Msg::DividendYield), &format!("{:.2}%", div * 100.0));
+        }
+        if let Some(source) = &q.data_source {
+            println!("\n  {}", tf(Msg::DataFrom, &[source]).dimmed());
         }
     }
     println!();
@@ -197,31 +229,36 @@ impl CsvRow for views::IndexRow {
     ];
 }
 
-pub async fn cmd_markets(market: Market, fmt: Format) -> Result<()> {
+/// `▲ 1.23 (0.45%)` for an index row, with as many decimals as the price needs.
+fn row_change(r: &views::IndexRow) -> String {
+    format_change_dp(
+        r.change.unwrap_or(0.0),
+        r.change_percent.unwrap_or(0.0),
+        price_decimals(market::AssetClass::of(&r.symbol), r.price.unwrap_or(0.0)),
+    )
+}
+
+pub async fn cmd_markets(market: Market, fmt: Format, crypto: bool, fx: bool) -> Result<()> {
     let client = YahooClient::new().await?;
-    let sections = views::market_sections(&client, market).await?;
+    let sections = views::market_sections(&client, market, crypto, fx).await?;
 
     if !fmt.is_table() {
-        let rows: Vec<views::IndexRow> = sections.into_iter().flat_map(|(_, rows)| rows).collect();
+        let rows: Vec<views::IndexRow> = sections.into_iter().flat_map(|s| s.rows).collect();
         return match fmt {
             Format::Csv => output::print_csv(&rows),
             _ => output::print_json(&rows),
         };
     }
 
-    for (title, rows) in &sections {
-        print_header(title);
-        for r in rows {
-            let price = r.price.unwrap_or(0.0);
-            let change = r.change.unwrap_or(0.0);
-            let change_pct = r.change_percent.unwrap_or(0.0);
+    for section in &sections {
+        print_header(section.title);
+        for r in &section.rows {
             let cur = r.currency.as_deref();
-
             println!(
-                "  {:<16} {}  {}",
-                r.name.bold(),
-                format_price(price, cur).bold(),
-                format_change(change, change_pct)
+                "  {} {}  {}",
+                pad_end(&r.name, 16).bold(),
+                price_or_na(r.price, cur, &r.symbol).bold(),
+                row_change(r)
             );
         }
     }
@@ -233,32 +270,31 @@ pub async fn cmd_markets(market: Market, fmt: Format) -> Result<()> {
 
 pub async fn cmd_dashboard(market: Market) -> Result<()> {
     let client = YahooClient::new().await?;
-    let (indices, market_title) = match market {
-        Market::Us => (market::US_INDICES, "US"),
-        Market::In => (market::INDIA_INDICES, "India"),
-    };
-    let idx_syms: Vec<&str> = indices.iter().map(|(s, _)| *s).collect();
+    let section = views::section_spec(market);
+    let idx_syms: Vec<&str> = section.items.iter().map(|(s, _)| s.as_str()).collect();
     let idx_quotes = client.get_quote(&idx_syms).await?;
 
-    print_header(&format!("Dashboard — {}", market_title));
-    print_section("Market Indices");
+    print_header(&tf(Msg::DashboardTitle, &[&market_title(market)]));
+    print_section(t(match market {
+        Market::In | Market::Us => Msg::MarketIndices,
+        Market::Crypto => Msg::TopCoins,
+        Market::Fx => Msg::MajorPairs,
+    }));
     for q in &idx_quotes {
         // Match by symbol: Yahoo may reorder or drop symbols.
         let q_sym = q.symbol.as_deref().unwrap_or("");
-        let label = indices
+        let label = section
+            .items
             .iter()
-            .find(|(sym, _)| *sym == q_sym)
-            .map(|(_, n)| *n)
+            .find(|(sym, _)| sym.eq_ignore_ascii_case(q_sym))
+            .map(|(_, n)| n.as_str())
             .unwrap_or(q_sym);
         let cur = q.currency.as_deref();
         println!(
-            "  {:<16} {}  {}",
-            label,
-            format_price(q.regular_market_price.unwrap_or(0.0), cur).bold(),
-            format_change(
-                q.regular_market_change.unwrap_or(0.0),
-                q.regular_market_change_percent.unwrap_or(0.0)
-            )
+            "  {} {}  {}",
+            pad_end(label, 16),
+            price_or_na(q.regular_market_price, cur, q_sym).bold(),
+            change_for(q, q_sym)
         );
     }
 
@@ -269,34 +305,17 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
             .iter()
             .map(|h| h.symbol.clone())
             .collect();
-        let p_refs: Vec<&str> = p_syms.iter().map(|s| s.as_str()).collect();
-        let p_quotes = client.get_quote(&p_refs).await?;
-        let mut total_cost = 0.0_f64;
-        let mut total_value = 0.0_f64;
-        for h in &portfolio.holdings {
-            // Skip holdings without a live price instead of valuing them at 0.
-            if let Some(price) = p_quotes
-                .iter()
-                .find(|q| q.symbol.as_deref() == Some(&h.symbol))
-                .and_then(|q| q.regular_market_price)
-            {
-                total_cost += h.shares * h.avg_cost;
-                total_value += h.shares * price;
-            }
-        }
+        // Totals in one currency; holdings without a price or rate are skipped
+        // instead of being valued at 0 or added in the wrong currency.
+        let val = super::portfolio::value_holdings(&client, &p_syms, market, None).await?;
+        let totals = val.totals(&portfolio);
+        let (total_cost, total_value) = (totals.cost, totals.value);
         let pnl = total_value - total_cost;
-        let pnl_pct = if total_cost > 0.0 {
-            (pnl / total_cost) * 100.0
-        } else {
-            0.0
-        };
-        let cur = p_quotes.first().and_then(|q| q.currency.as_deref());
+        let pnl_pct = totals.pnl_pct();
+        let cur = Some(val.base());
         let csym = market::currency_symbol(cur);
-        print_section(&format!(
-            "Portfolio ({} holdings)",
-            portfolio.holdings.len()
-        ));
-        print_kv("Total Value", &format_price(total_value, cur));
+        print_section(&tf(Msg::PortfolioCount, &[&portfolio.holdings.len()]));
+        print_kv(t(Msg::TotalValue), &format_price(total_value, cur));
         let pnl_str = if pnl >= 0.0 {
             format!("+{}{:.2} (+{:.2}%)", csym, pnl, pnl_pct)
                 .green()
@@ -308,16 +327,21 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
                 .bold()
                 .to_string()
         };
-        print_kv("P&L", &pnl_str);
+        print_kv(t(Msg::PnL), &pnl_str);
+        if let Some(note) = val.fx_note() {
+            println!("  {}", note.dimmed());
+        }
+        totals.print_exclusions();
     }
 
     let wl = Watchlist::load()?;
     if !wl.symbols.is_empty() {
         let w_refs: Vec<&str> = wl.symbols.iter().map(|s| s.as_str()).collect();
         let w_quotes = client.get_quote(&w_refs).await?;
-        print_section(&format!("Watchlist ({} symbols)", wl.symbols.len()));
+        print_section(&tf(Msg::WatchlistCount, &[&wl.symbols.len()]));
         for q in &w_quotes {
             let cur = q.currency.as_deref();
+            let sym = q.symbol.as_deref().unwrap_or("???");
             let pct = q.regular_market_change_percent.unwrap_or(0.0);
             let pct_str = if pct >= 0.0 {
                 format!("+{:.2}%", pct).green().to_string()
@@ -326,8 +350,8 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
             };
             println!(
                 "  {:<12} {}  {}",
-                q.symbol.as_deref().unwrap_or("???"),
-                format_price(q.regular_market_price.unwrap_or(0.0), cur),
+                sym,
+                price_or_na(q.regular_market_price, cur, sym),
                 pct_str
             );
         }
@@ -362,21 +386,26 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
             }
         }
         if !triggered.is_empty() {
-            print_section("Triggered Alerts");
-            for t in &triggered {
-                println!("  {} {}", "⚠".yellow(), t.red());
+            print_section(t(Msg::TriggeredAlerts));
+            for line in &triggered {
+                println!("  {} {}", "⚠".yellow(), line.red());
             }
         }
     }
     println!();
     if portfolio.holdings.is_empty() && wl.symbols.is_empty() && store.alerts.is_empty() {
-        print_section("Get started");
-        println!(
-            "  stockwise portfolio add TCS 10 3500     track a holding (symbol, shares, cost)"
-        );
-        println!("  stockwise import kite holdings.csv      or import from your broker");
-        println!("  stockwise watch add INFY HDFCBANK       watch a few stocks");
-        println!("  stockwise alert add RELIANCE below 1200 get alerted on a price level");
+        print_section(t(Msg::GetStarted));
+        for (cmd, what) in [
+            ("stockwise portfolio add TCS 10 3500", Msg::GetStartedTrack),
+            ("stockwise import kite holdings.csv", Msg::GetStartedImport),
+            ("stockwise watch add INFY HDFCBANK", Msg::GetStartedWatch),
+            (
+                "stockwise alert add RELIANCE below 1200",
+                Msg::GetStartedAlert,
+            ),
+        ] {
+            println!("  {:<39} {}", cmd, t(what));
+        }
         println!();
     }
     Ok(())
@@ -418,15 +447,15 @@ pub async fn cmd_search(query: &str, fmt: Format) -> Result<()> {
         Format::Table => {}
     }
     if results.is_empty() {
-        bail!("No tickers match '{}'", query);
+        bail!("{}", tf(Msg::NoTickersMatch, &[&query]));
     }
-    print_header(&format!("Search: {}", query));
+    print_header(&tf(Msg::SearchTitle, &[&query]));
     println!(
-        "  {:<14} {:<30} {:>10} {:>10}",
-        "Symbol".bold(),
-        "Name".bold(),
-        "Type".bold(),
-        "Exchange".bold()
+        "  {} {} {} {}",
+        pad_end(t(Msg::Symbol), 14).bold(),
+        pad_end(t(Msg::Name), 30).bold(),
+        pad_start(t(Msg::Type), 10).bold(),
+        pad_start(t(Msg::Exchange), 10).bold()
     );
     println!("  {}", "─".repeat(68).dimmed());
     for r in &results {
@@ -445,15 +474,13 @@ pub async fn cmd_search(query: &str, fmt: Format) -> Result<()> {
     Ok(())
 }
 
-// ── Intraday Bot ──
-
 /// `stockwise doctor` — one screen that answers "is my setup working?".
 pub async fn cmd_doctor(market: Market, sources: crate::config::CliSources) -> Result<()> {
     let ok = |s: &str| format!("{} {}", "✓".green(), s);
     let warn = |s: &str| format!("{} {}", "!".yellow(), s);
     let bad = |s: &str| format!("{} {}", "✗".red(), s);
 
-    print_header(&format!("StockWise {} — doctor", env!("CARGO_PKG_VERSION")));
+    print_header(&tf(Msg::DoctorTitle, &[&env!("CARGO_PKG_VERSION")]));
 
     // Config file and defaults
     let cfg = crate::config::state();
@@ -465,6 +492,16 @@ pub async fn cmd_doctor(market: Market, sources: crate::config::CliSources) -> R
     let cfg_invalid = match cfg.map(|s| &s.status) {
         Some(crate::config::Status::Loaded) => {
             print_kv("Config file", &ok(&format!("{} (loaded)", cfg_path)));
+            if let Some(p) = crate::config::exposed_secrets() {
+                println!(
+                    "  {:<28} {}",
+                    "",
+                    warn(&format!(
+                        "holds notification secrets and other users can read it — run `chmod 600 {}`",
+                        p.display()
+                    ))
+                );
+            }
             None
         }
         Some(crate::config::Status::Invalid(msg)) => {
@@ -487,23 +524,42 @@ pub async fn cmd_doctor(market: Market, sources: crate::config::CliSources) -> R
         }
     };
     let market_src = match sources.market {
-        crate::config::Source::Flag => "from -m/--market".to_string(),
-        crate::config::Source::Env => "from STOCKWISE_MARKET".to_string(),
-        crate::config::Source::File => "from the config file".to_string(),
-        crate::config::Source::Default => {
-            "default; change with -m, STOCKWISE_MARKET or the config file".to_string()
-        }
+        crate::config::Source::Flag => "from -m/--market",
+        crate::config::Source::Env => t(Msg::DoctorMarketFromEnv),
+        crate::config::Source::File => "from the config file",
+        crate::config::Source::Default => t(Msg::DoctorMarketDefault),
     };
     let market_name = match market {
         Market::In => "in (India, NSE)",
         Market::Us => "us",
+        Market::Crypto => "crypto",
+        Market::Fx => "fx",
     };
-    print_kv("Market", &format!("{} — {}", market_name, market_src));
+    let market_name = if market == Market::Crypto {
+        format!("{} (vs {})", market_name, market::quote_currency())
+    } else {
+        market_name.to_string()
+    };
+    print_kv(
+        t(Msg::DoctorMarket),
+        &format!("{} — {}", market_name, market_src),
+    );
+    let lang_src = t(match crate::i18n::lang_source() {
+        crate::i18n::LangSource::Flag => Msg::DoctorLangFlag,
+        crate::i18n::LangSource::StockwiseLang => Msg::DoctorLangEnv,
+        crate::i18n::LangSource::Config => Msg::DoctorLangConfig,
+        crate::i18n::LangSource::Locale => Msg::DoctorLangLocale,
+        crate::i18n::LangSource::Default => Msg::DoctorLangDefault,
+    });
+    print_kv(
+        t(Msg::DoctorLanguage),
+        &format!("{} — {}", crate::i18n::lang().code(), lang_src),
+    );
 
     // Data directory
     match crate::store::data_dir() {
         Ok(dir) => {
-            print_kv("Data directory", &ok(&dir.display().to_string()));
+            print_kv(t(Msg::DoctorDataDir), &ok(&dir.display().to_string()));
             let files = [
                 "portfolio.json",
                 "watchlist.json",
@@ -517,22 +573,22 @@ pub async fn cmd_doctor(market: Market, sources: crate::config::CliSources) -> R
                 .filter(|f| dir.join(f).exists())
                 .collect();
             print_kv(
-                "Data files",
+                t(Msg::DoctorDataFiles),
                 &if present.is_empty() {
-                    "none yet (created on first use)".to_string()
+                    t(Msg::DoctorNoFilesYet).to_string()
                 } else {
                     present.join(", ")
                 },
             );
         }
-        Err(e) => print_kv("Data directory", &bad(&format!("{:#}", e))),
+        Err(e) => print_kv(t(Msg::DoctorDataDir), &bad(&format!("{:#}", e))),
     }
 
-    // Market data
+    // Market data: Yahoo is always needed (fundamentals, news, fallback).
     let started = std::time::Instant::now();
     let yahoo = match YahooClient::new().await {
         Ok(client) => client
-            .get_quote(&["^GSPC"])
+            .yahoo_quote(&["^GSPC"])
             .await
             .map(|q| !q.is_empty())
             .unwrap_or(false),
@@ -541,60 +597,90 @@ pub async fn cmd_doctor(market: Market, sources: crate::config::CliSources) -> R
     print_kv(
         "Yahoo Finance",
         &if yahoo {
-            ok(&format!("reachable ({} ms)", started.elapsed().as_millis()))
+            ok(&tf(Msg::DoctorReachable, &[&started.elapsed().as_millis()]))
         } else {
-            bad("unreachable — check your internet connection or proxy")
+            bad(t(Msg::DoctorYahooUnreachable))
         },
     );
+
+    // Optional data provider
+    use crate::providers::{MarketData, Selection};
+    let provider_line = match Selection::from_env() {
+        Selection::Yahoo => t(Msg::DoctorProviderDefault).dimmed().to_string(),
+        Selection::Unknown(value) => warn(&tf(Msg::DoctorProviderUnknown, &[&value])),
+        Selection::MissingKey(kind) => warn(&tf(
+            Msg::DoctorProviderNoKey,
+            &[&kind.name(), &kind.key_env()],
+        )),
+        Selection::Ready(provider) => {
+            let probe = provider.probe_symbol();
+            let started = std::time::Instant::now();
+            match provider.quotes(&[probe]).await {
+                Ok(q) if q.iter().any(|q| q.regular_market_price.is_some()) => ok(&tf(
+                    Msg::DoctorProviderAnswered,
+                    &[&provider.name(), &probe, &started.elapsed().as_millis()],
+                )),
+                Ok(_) => warn(&tf(
+                    Msg::DoctorProviderFellBack,
+                    &[&provider.name(), &"no price returned"],
+                )),
+                Err(e) => warn(&tf(
+                    Msg::DoctorProviderFellBack,
+                    &[&provider.name(), &format!("{:#}", e)],
+                )),
+            }
+        }
+    };
+    print_kv(t(Msg::DoctorDataProvider), &provider_line);
 
     // Cache
     let redis = crate::api::connect_redis().await.is_some();
     print_kv(
-        "Redis cache",
+        t(Msg::DoctorRedis),
         &if redis {
-            ok("connected")
+            ok(t(Msg::DoctorConnected))
         } else {
-            "not used (optional; in-memory cache instead)"
-                .dimmed()
-                .to_string()
+            t(Msg::DoctorRedisNotUsed).dimmed().to_string()
         },
     );
 
-    // AI
+    // AI — provider and model, never the key itself.
     let ai = crate::ai::AiClient::connect().await;
-    print_kv(
-        "Ollama (AI)",
-        &match ai.has_model().await {
-            Some(true) => ok(&format!(
-                "model {} ready — use `report` or add --ai",
-                ai.model()
+    let ai_line = if ai.config_error().is_some() {
+        let value = std::env::var("STOCKWISE_AI_PROVIDER").unwrap_or_default();
+        bad(&tf(Msg::DoctorAiUnknown, &[&value.trim()]))
+    } else {
+        let provider = ai.provider();
+        match provider.key_env() {
+            Some(key_env) if ai.has_api_key() => ok(&tf(
+                Msg::DoctorCloudReady,
+                &[&provider.name(), &ai.model(), &key_env],
             )),
-            Some(false) => warn(&format!(
-                "running, but model {} is not pulled — run `ollama pull {}`",
-                ai.model(),
-                ai.model()
-            )),
-            None => "not running (optional; needed for `report` and --ai)"
-                .dimmed()
-                .to_string(),
-        },
-    );
+            Some(key_env) => warn(&tf(Msg::DoctorCloudNoKey, &[&provider.name(), &key_env])),
+            None => match ai.has_model().await {
+                Some(true) => ok(&tf(Msg::DoctorOllamaReady, &[&ai.model()])),
+                Some(false) => warn(&tf(Msg::DoctorOllamaNoModel, &[&ai.model()])),
+                None => t(Msg::DoctorOllamaDown).dimmed().to_string(),
+            },
+        }
+    };
+    print_kv(t(Msg::DoctorAi), &ai_line);
 
     // Broker
     let broker = match crate::angel::AngelConfig::load() {
-        Ok(c) if c.is_configured() => ok(&format!(
-            "configured for {}{}",
-            c.client_id,
-            c.max_order_value
-                .map(|v| format!(", max order ₹{:.0}", v))
-                .unwrap_or_default()
+        Ok(c) if c.is_configured() => ok(&tf(
+            Msg::DoctorAngelConfigured,
+            &[
+                &c.client_id,
+                &c.max_order_value
+                    .map(|v| tf(Msg::DoctorAngelMaxOrder, &[&format!("{:.0}", v)]))
+                    .unwrap_or_default(),
+            ],
         )),
-        Ok(_) => "not configured (optional; `trade setup` for live trading)"
-            .dimmed()
-            .to_string(),
+        Ok(_) => t(Msg::DoctorAngelNotConfigured).dimmed().to_string(),
         Err(e) => warn(&format!("{:#}", e)),
     };
-    print_kv("Angel One", &broker);
+    print_kv(t(Msg::DoctorAngel), &broker);
     println!();
 
     if let Some(path) = cfg_invalid {
@@ -604,7 +690,7 @@ pub async fn cmd_doctor(market: Market, sources: crate::config::CliSources) -> R
         );
     }
     if !yahoo {
-        bail!("Market data is unreachable");
+        bail!("{}", t(Msg::DoctorMarketDataDown));
     }
     Ok(())
 }

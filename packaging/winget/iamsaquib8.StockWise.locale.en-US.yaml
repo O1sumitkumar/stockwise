@@ -1,0 +1,31 @@
+#: Template: packaging/render.sh fills @VERSION@ and drops these #: lines.
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.9.0.schema.json
+
+PackageIdentifier: iamsaquib8.StockWise
+PackageVersion: "@VERSION@"
+PackageLocale: en-US
+Publisher: iamsaquib8
+PublisherUrl: https://github.com/iamsaquib8
+PublisherSupportUrl: https://github.com/iamsaquib8/stockwise/issues
+PackageName: StockWise
+PackageUrl: https://github.com/iamsaquib8/stockwise
+License: MIT
+LicenseUrl: https://github.com/iamsaquib8/stockwise/blob/master/LICENSE
+ShortDescription: Stock market toolkit for your terminal for Indian (NSE/BSE) and US stocks.
+Description: |-
+  StockWise is a command-line tool for quotes, charts, screeners, backtests, SIP math,
+  paper trading and portfolio tracking for Indian (NSE/BSE) and US stocks. No API keys
+  or account needed. Not financial advice.
+Moniker: stockwise
+Tags:
+  - cli
+  - finance
+  - stocks
+  - trading
+  - nse
+  - bse
+  - portfolio
+  - backtesting
+ReleaseNotesUrl: https://github.com/iamsaquib8/stockwise/releases/tag/v@VERSION@
+ManifestType: defaultLocale
+ManifestVersion: 1.9.0

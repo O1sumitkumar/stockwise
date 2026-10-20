@@ -66,14 +66,7 @@ pub(crate) fn setting_rows(
         .unwrap_or_else(|e| format!("unknown ({e:#})"));
 
     let mut rows = vec![
-        row(
-            "market",
-            match market {
-                Market::In => "in",
-                Market::Us => "us",
-            },
-            sources.market,
-        ),
+        row("market", crate::value_name(market), sources.market),
         row("ai", crate::ai::auto_ai_enabled().to_string(), sources.ai),
         row(
             "model",
@@ -91,7 +84,59 @@ pub(crate) fn setting_rows(
             home,
             config::setting_source("STOCKWISE_HOME", |c| c.home.as_ref()),
         ),
+        row(
+            "lang",
+            crate::i18n::lang().code(),
+            match crate::i18n::lang_source() {
+                crate::i18n::LangSource::Flag => Source::Flag,
+                crate::i18n::LangSource::StockwiseLang => Source::Env,
+                crate::i18n::LangSource::Config => Source::File,
+                crate::i18n::LangSource::Locale | crate::i18n::LangSource::Default => {
+                    Source::Default
+                }
+            },
+        ),
+        row(
+            "quote_currency",
+            crate::market::quote_currency().to_ascii_lowercase(),
+            sources.quote_currency,
+        ),
+        row(
+            "portfolio",
+            crate::portfolio::active().unwrap_or("default"),
+            sources.portfolio,
+        ),
+        row(
+            "ai_provider",
+            crate::ai::configured_provider()
+                .map_or_else(|e| format!("invalid ({e:#})"), |p| p.name().to_string()),
+            config::setting_source("STOCKWISE_AI_PROVIDER", |c| c.ai_provider.as_ref()),
+        ),
+        row(
+            "data_provider",
+            config::setting("STOCKWISE_DATA_PROVIDER", |c| c.data_provider.as_ref())
+                .unwrap_or_else(|| "yahoo".into()),
+            config::setting_source("STOCKWISE_DATA_PROVIDER", |c| c.data_provider.as_ref()),
+        ),
     ];
+    for (env, _) in crate::notify::ENV_VARS {
+        let Some(key) = config::notify_key(env) else {
+            continue;
+        };
+        let source = if std::env::var(env).is_ok_and(|v| !v.trim().is_empty()) {
+            Source::Env
+        } else if cfg.notify.contains_key(&key) {
+            Source::File
+        } else {
+            continue;
+        };
+        let value = if config::is_secret_notify_key(&key) {
+            "(set)".to_string()
+        } else {
+            config::notify_setting(env).unwrap_or_default()
+        };
+        rows.push(row(&format!("notify.{}", key), value, source));
+    }
     for (command, period) in periods {
         let source = if cfg.periods.contains_key(command) {
             Source::File
@@ -140,6 +185,17 @@ pub fn cmd_config_show(
             .to_string(),
     };
     print_kv("Config file", &format!("{} {}", path_str, note));
+    if let Some(p) = config::exposed_secrets() {
+        println!(
+            "  {:<28} {}",
+            "",
+            format!(
+                "! holds notification secrets and other users can read it — run `chmod 600 {}`",
+                p.display()
+            )
+            .yellow()
+        );
+    }
     if let Some(msg) = error {
         for line in msg.lines() {
             println!("  {:<28} {}", "", line.red());

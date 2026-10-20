@@ -3,9 +3,10 @@
 //! means the docs (and anyone's scripts) need to change too.
 
 use super::fundamentals::{CompareRow, dividend_json};
-use super::holdings::{alert_check_rows, holding_rows, tax_report, watch_rows};
+use super::holdings::{alert_check_rows, tax_report, watch_rows};
 use super::markets::{MoverRow, mover_rows};
 use super::overview::QuoteRow;
+use super::portfolio::{Valuation, portfolio_report};
 use super::risk::{correlation_csv, correlation_matrix, return_row, risk_json};
 use super::sim::sim_history_json;
 use super::strategies::{backtest_json, trade_rows};
@@ -13,7 +14,8 @@ use super::technicals::technical_json;
 use super::*;
 use crate::api::Quote;
 use crate::output::{missing_columns, to_csv};
-use crate::portfolio::Holding;
+use crate::portfolio::{Lot, Portfolio};
+use crate::tax::{self, Country};
 
 fn quote(symbol: &str, price: Option<f64>, change_pct: Option<f64>) -> Quote {
     Quote {
@@ -25,13 +27,22 @@ fn quote(symbol: &str, price: Option<f64>, change_pct: Option<f64>) -> Quote {
     }
 }
 
-fn holding(symbol: &str, shares: f64, avg_cost: f64, added_at: &str) -> Holding {
-    Holding {
-        symbol: symbol.into(),
-        shares,
-        avg_cost,
-        added_at: added_at.into(),
+/// A portfolio with one lot per (symbol, shares, price, date).
+fn lots(entries: &[(&str, f64, f64, &str)]) -> Portfolio {
+    let mut p = Portfolio::default();
+    for (symbol, qty, price, date) in entries {
+        p.add_lot(symbol, Lot::new(*qty, *price, *date, "test"));
     }
+    p
+}
+
+fn day(s: &str) -> chrono::NaiveDate {
+    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+}
+
+fn valued(p: &Portfolio, quotes: Vec<Quote>) -> Valuation {
+    let symbols: Vec<String> = p.holdings.iter().map(|h| h.symbol.clone()).collect();
+    Valuation::new(quotes, &symbols, Market::In, None)
 }
 
 fn keys(v: &serde_json::Value) -> Vec<&str> {
@@ -62,23 +73,29 @@ fn closes(n: usize) -> Vec<f64> {
 
 #[test]
 fn portfolio_totals_skip_holdings_without_a_price() {
-    let holdings = [
-        holding("TCS.NS", 10.0, 3000.0, "2025-01-02"),
-        holding("GONE.NS", 5.0, 100.0, "2025-01-02"),
-    ];
-    let quotes = [quote("TCS.NS", Some(3300.0), Some(1.0))];
-    let (rows, totals) = holding_rows(&holdings, &quotes);
+    let p = lots(&[
+        ("TCS.NS", 10.0, 3000.0, "2025-01-02"),
+        ("GONE.NS", 5.0, 100.0, "2025-01-02"),
+    ]);
+    let val = valued(&p, vec![quote("TCS.NS", Some(3300.0), Some(1.0))]);
+    let report = portfolio_report(&p, &val, day("2026-01-02"));
+    let rows = &report.holdings;
+    let totals = &report.totals;
 
     assert_eq!(rows.len(), 2, "unpriced holdings stay in the rows");
     assert_eq!(rows[0].value, Some(33000.0));
     assert_eq!(rows[0].pnl, Some(3000.0));
     assert_eq!(rows[0].pnl_percent, Some(10.0));
     assert_eq!(rows[0].weight_percent, Some(100.0));
+    let xirr = rows[0].xirr_percent.unwrap();
+    assert!((xirr - 10.0).abs() < 0.1, "one year at +10%: {xirr}");
     assert_eq!(rows[1].price, None);
     assert_eq!(rows[1].value, None, "a missing price is never valued at 0");
     assert_eq!(totals.cost_basis, 30000.0);
     assert_eq!(totals.value, 33000.0);
     assert_eq!(totals.pnl_percent, 10.0);
+    assert_eq!(totals.currency.as_deref(), Some("INR"));
+    assert_eq!(report.unpriced, ["GONE.NS"]);
 
     let row = serde_json::to_value(&rows[0]).unwrap();
     assert_eq!(
@@ -93,23 +110,28 @@ fn portfolio_totals_skip_holdings_without_a_price() {
             "pnl",
             "pnl_percent",
             "weight_percent",
+            "xirr_percent",
             "currency"
         ]
     );
     assert_eq!(
-        keys(&serde_json::to_value(&totals).unwrap()),
+        keys(&serde_json::to_value(totals).unwrap()),
         ["cost_basis", "value", "pnl", "pnl_percent", "currency"]
+    );
+    assert_eq!(
+        keys(&serde_json::to_value(&report).unwrap()),
+        ["holdings", "totals", "unpriced", "unconverted"]
     );
     assert_columns(&rows[0]);
 }
 
 #[test]
 fn portfolio_csv_leaves_missing_prices_empty() {
-    let holdings = [holding("GONE.NS", 5.0, 100.0, "2025-01-02")];
-    let (rows, _) = holding_rows(&holdings, &[]);
+    let p = lots(&[("GONE.NS", 5.0, 100.0, "2025-01-02")]);
+    let report = portfolio_report(&p, &valued(&p, Vec::new()), day("2026-01-02"));
     assert_eq!(
-        to_csv(&rows).unwrap().lines().nth(1),
-        Some("GONE.NS,5.0,100.0,500.0,,,,,,")
+        to_csv(&report.holdings).unwrap().lines().nth(1),
+        Some("GONE.NS,5.0,100.0,500.0,,,,,,,INR")
     );
 }
 
@@ -149,46 +171,38 @@ fn alert_check_never_triggers_without_a_price() {
 
 #[test]
 fn tax_report_splits_terms_and_skips_unpriced() {
-    let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
-    let holdings = [
-        holding("OLD.NS", 10.0, 100.0, "2024-01-01"),
-        holding("NEW.NS", 10.0, 100.0, "2026-05-01"),
-        holding("GONE.NS", 10.0, 100.0, "2026-05-01"),
-    ];
+    let p = lots(&[
+        ("OLD.NS", 10.0, 100.0, "2024-01-01"),
+        ("NEW.NS", 10.0, 100.0, "2026-05-01"),
+        ("GONE.NS", 10.0, 100.0, "2026-05-01"),
+    ]);
     let quotes = [
         quote("OLD.NS", Some(150.0), None),
         quote("NEW.NS", Some(80.0), None),
     ];
-    let (rows, sum, unpriced) = tax_report("in", &holdings, &quotes, today).unwrap();
-    assert_eq!(unpriced, ["GONE.NS"]);
-    assert_eq!(rows[0].term, "long");
-    assert_eq!(rows[0].gain, 500.0);
-    assert_eq!(rows[1].term, "short");
-    assert_eq!(rows[1].gain, -200.0);
-    assert_eq!(rows[1].tax, 0.0);
-    assert_eq!(sum.long_term_gains, 500.0);
-    assert_eq!(sum.short_term_losses, 200.0);
+    let r = tax_report(Country::India, &p, &quotes, day("2026-06-01"));
+    assert_eq!(r.unpriced, ["GONE.NS"]);
+    assert_eq!(r.holdings[0].long_term_gain, 500.0);
+    assert_eq!(r.holdings[0].short_term_gain, 0.0);
+    assert_eq!(r.holdings[1].short_term_gain, -200.0);
+    assert_eq!(r.unrealized.lt_gain, 500.0);
+    assert_eq!(r.unrealized.st_loss, 200.0);
+    assert!(r.sales.is_empty());
     // ₹500 LTCG is under the ₹1.25L exemption.
-    assert_eq!(sum.total_tax, 0.0);
-    assert!(tax_report("fr", &holdings, &quotes, today).is_err());
+    assert_eq!(tax::estimate(Country::India, r.unrealized).total(), 0.0);
 
     assert_eq!(
-        keys(&serde_json::to_value(&sum).unwrap()),
+        keys(&serde_json::to_value(&r.holdings[0]).unwrap()),
         [
-            "short_term_gains",
-            "short_term_losses",
-            "long_term_gains",
-            "long_term_losses",
-            "stcg_rate_percent",
-            "ltcg_rate_percent",
-            "ltcg_exemption",
-            "stcg_tax",
-            "ltcg_tax",
-            "total_tax",
-            "tax_saved_by_losses"
+            "symbol",
+            "cost",
+            "value",
+            "short_term_gain",
+            "long_term_gain",
+            "estimated_dates"
         ]
     );
-    assert_columns(&rows[0]);
+    assert_columns(&r.holdings[0]);
 }
 
 #[test]

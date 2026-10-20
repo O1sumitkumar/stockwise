@@ -32,9 +32,25 @@ pub struct Config {
     pub redis_url: Option<String>,
     /// Data directory; a leading `~` means the home directory.
     pub home: Option<String>,
+    /// Output language: `en` or `hi`.
+    pub lang: Option<String>,
+    /// Currency bare crypto tickers are quoted in (`usd`, `inr`, ...).
+    pub quote_currency: Option<String>,
+    /// Named portfolio to use (see `--portfolio`).
+    pub portfolio: Option<String>,
+    /// AI provider: `ollama` (default), `openai`, `anthropic` or `gemini`.
+    /// API keys stay in environment variables.
+    pub ai_provider: Option<String>,
+    /// Market-data provider: `yahoo` (default), `alphavantage`, `massive`
+    /// or `twelvedata`. API keys stay in environment variables.
+    pub data_provider: Option<String>,
     /// Default `--period` per command, e.g. `technical = "6mo"`.
     #[serde(default)]
     pub periods: BTreeMap<String, String>,
+    /// Notification channels, keyed like `STOCKWISE_<KEY>` without the
+    /// prefix: `telegram_token = "..."`. Environment variables win.
+    #[serde(default)]
+    pub notify: BTreeMap<String, String>,
 }
 
 static EMPTY: Config = Config {
@@ -44,8 +60,36 @@ static EMPTY: Config = Config {
     ollama_host: None,
     redis_url: None,
     home: None,
+    lang: None,
+    quote_currency: None,
+    portfolio: None,
+    ai_provider: None,
+    data_provider: None,
     periods: BTreeMap::new(),
+    notify: BTreeMap::new(),
 };
+
+/// The `[notify]` key for a `STOCKWISE_*` notification variable.
+pub fn notify_key(env: &str) -> Option<String> {
+    env.strip_prefix("STOCKWISE_").map(str::to_ascii_lowercase)
+}
+
+/// A notification setting: the environment variable, else `[notify]` in the
+/// config file.
+pub fn notify_setting(env: &str) -> Option<String> {
+    std::env::var(env)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| notify_key(env).and_then(|k| get().notify.get(&k).cloned()))
+}
+
+/// `[notify]` keys that hold secrets.
+const SECRET_NOTIFY_KEYS: &[&str] = &[
+    "telegram_token",
+    "slack_webhook",
+    "discord_webhook",
+    "smtp_password",
+];
 
 /// Where the config file was looked for and what came of it.
 #[derive(Debug)]
@@ -63,6 +107,39 @@ pub enum Status {
     /// The file could not be read or is invalid. The message names the file
     /// and the offending key.
     Invalid(String),
+}
+
+/// The config file's path when it holds notification secrets and other
+/// users can read it (Unix permissions).
+pub fn exposed_secrets() -> Option<&'static Path> {
+    let state = state()?;
+    if state.status != Status::Loaded {
+        return None;
+    }
+    let has_secret = SECRET_NOTIFY_KEYS.iter().any(|k| {
+        state
+            .config
+            .notify
+            .get(*k)
+            .is_some_and(|v| !v.trim().is_empty())
+    });
+    let path = state.path.as_deref().filter(|_| has_secret)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path).ok()?.permissions().mode();
+        (mode & 0o077 != 0).then_some(path)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// Whether `key` (a `[notify]` key) holds a secret, so `config show` masks it.
+pub fn is_secret_notify_key(key: &str) -> bool {
+    SECRET_NOTIFY_KEYS.contains(&key)
 }
 
 /// Where an effective setting came from.
@@ -92,6 +169,8 @@ impl std::fmt::Display for Source {
 pub struct CliSources {
     pub market: Source,
     pub ai: Source,
+    pub quote_currency: Source,
+    pub portfolio: Source,
 }
 
 /// Config file path: `STOCKWISE_CONFIG`, else `<config dir>/stockwise/config.toml`.
@@ -165,9 +244,60 @@ impl Config {
             ("ollama_host", &self.ollama_host),
             ("redis_url", &self.redis_url),
             ("home", &self.home),
+            ("lang", &self.lang),
+            ("quote_currency", &self.quote_currency),
+            ("portfolio", &self.portfolio),
+            ("ai_provider", &self.ai_provider),
+            ("data_provider", &self.data_provider),
         ] {
             if value.as_deref().is_some_and(|v| v.trim().is_empty()) {
                 bail!("`{}` is empty — remove the line to use the default", key);
+            }
+        }
+        if let Some(l) = &self.lang
+            && !crate::i18n::is_lang(l)
+        {
+            bail!("`lang` = \"{}\" is not a language; use \"en\" or \"hi\"", l);
+        }
+        if let Some(c) = &self.quote_currency
+            && !(c.trim().len() == 3 && c.trim().chars().all(|ch| ch.is_ascii_alphabetic()))
+        {
+            bail!(
+                "`quote_currency` = \"{}\" is not a 3-letter currency code (e.g. \"usd\", \"inr\")",
+                c
+            );
+        }
+        if let Some(p) = &self.portfolio {
+            crate::portfolio::normalize_name(Some(p)).context("`portfolio`")?;
+        }
+        if let Some(p) = &self.ai_provider
+            && crate::ai::AiProvider::parse(p).is_none()
+        {
+            bail!(
+                "`ai_provider` = \"{}\" is not a provider; use ollama, openai, anthropic or gemini",
+                p
+            );
+        }
+        if let Some(p) = &self.data_provider
+            && !p.trim().eq_ignore_ascii_case("yahoo")
+            && crate::providers::ProviderKind::parse(p).is_none()
+        {
+            bail!(
+                "`data_provider` = \"{}\" is not a provider; use yahoo, alphavantage, massive or twelvedata",
+                p
+            );
+        }
+        let known: Vec<String> = crate::notify::ENV_VARS
+            .iter()
+            .filter_map(|(env, _)| notify_key(env))
+            .collect();
+        for key in self.notify.keys() {
+            if !known.contains(key) {
+                bail!(
+                    "`notify.{}` is not a setting; use one of {}",
+                    key,
+                    known.join(", ")
+                );
             }
         }
         for (command, period) in &self.periods {
@@ -190,7 +320,12 @@ pub fn market_value(s: &str) -> Result<&'static str> {
     match crate::market::Market::from_str(s, true) {
         Ok(crate::market::Market::In) => Ok("in"),
         Ok(crate::market::Market::Us) => Ok("us"),
-        Err(_) => bail!("`market` = \"{}\" is not a market; use \"in\" or \"us\"", s),
+        Ok(crate::market::Market::Crypto) => Ok("crypto"),
+        Ok(crate::market::Market::Fx) => Ok("fx"),
+        Err(_) => bail!(
+            "`market` = \"{}\" is not a market; use \"in\", \"us\", \"crypto\" or \"fx\"",
+            s
+        ),
     }
 }
 
@@ -291,6 +426,26 @@ pub const TEMPLATE: &str = r#"# StockWise configuration.
 # Env: STOCKWISE_HOME. Default: shown by `stockwise doctor`.
 # home = "~/stockwise"
 
+# Output language: "en" or "hi" (Hindi). Env: STOCKWISE_LANG. Flag: --lang.
+# lang = "en"
+
+# Currency bare crypto tickers are quoted in with `-m crypto` (BTC → BTC-USD).
+# Env: STOCKWISE_QUOTE_CURRENCY. Flag: --quote-currency.
+# quote_currency = "usd"
+
+# Named portfolio to use ("default" is portfolio.json).
+# Env: STOCKWISE_PORTFOLIO. Flag: --portfolio.
+# portfolio = "default"
+
+# AI provider for `report` and --ai: "ollama" (local, default), "openai",
+# "anthropic" or "gemini". Cloud API keys stay in environment variables
+# (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY). Env: STOCKWISE_AI_PROVIDER.
+# ai_provider = "ollama"
+
+# Market-data provider: "yahoo" (default), "alphavantage", "massive" or
+# "twelvedata". API keys stay in environment variables. Env: STOCKWISE_DATA_PROVIDER.
+# data_provider = "yahoo"
+
 # Default --period per command. Periods: 1d 5d 1w 1mo 3mo 6mo ytd 1y 2y 5y 10y max.
 [periods]
 # deep = "3mo"
@@ -307,6 +462,23 @@ pub const TEMPLATE: &str = r#"# StockWise configuration.
 # options = "1mo"
 # backtest = "2y"
 # sip = "5y"
+
+# Notification channels for `alert watch` and the daemon (`stockwise notify test`).
+# Each key is the STOCKWISE_* variable without the prefix; the variable wins.
+# If you put tokens or passwords here, keep this file private (chmod 600).
+[notify]
+# telegram_token = ""
+# telegram_chat_id = ""
+# slack_webhook = ""
+# discord_webhook = ""
+# smtp_host = "smtp.gmail.com"
+# smtp_port = "587"
+# smtp_tls = "starttls"
+# smtp_user = ""
+# smtp_password = ""
+# email_from = ""
+# email_to = ""
+# desktop_notify = "1"
 "#;
 
 /// Write [`TEMPLATE`] to `path`, refusing to replace an existing file
@@ -469,6 +641,51 @@ mod tests {
             "an empty env var counts as unset"
         );
         assert_eq!(resolve(None, None), None);
+    }
+
+    #[test]
+    fn newer_settings_parse_and_are_validated() {
+        let cfg = parse(
+            "lang = \"hi\"\nquote_currency = \"inr\"\nportfolio = \"long-term\"\n\
+             ai_provider = \"anthropic\"\ndata_provider = \"twelvedata\"\n\
+             [notify]\ntelegram_chat_id = \"42\"\nsmtp_host = \"smtp.example.com\"\n",
+            CMDS,
+        )
+        .unwrap();
+        assert_eq!(cfg.lang.as_deref(), Some("hi"));
+        assert_eq!(
+            cfg.notify.get("telegram_chat_id").map(String::as_str),
+            Some("42")
+        );
+        assert!(parse("data_provider = \"yahoo\"\n", CMDS).is_ok());
+
+        assert!(err("lang = \"klingon\"\n").contains("`lang`"));
+        assert!(err("quote_currency = \"dollars\"\n").contains("`quote_currency`"));
+        assert!(err("portfolio = \"a/b\"\n").contains("`portfolio`"));
+        assert!(err("ai_provider = \"skynet\"\n").contains("`ai_provider`"));
+        assert!(err("data_provider = \"bloomberg\"\n").contains("`data_provider`"));
+        let e = err("[notify]\ntelegram = \"x\"\n");
+        assert!(
+            e.contains("`notify.telegram`") && e.contains("telegram_token"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn notify_keys_mirror_the_env_vars() {
+        assert_eq!(
+            notify_key("STOCKWISE_SMTP_PASSWORD").as_deref(),
+            Some("smtp_password")
+        );
+        assert!(is_secret_notify_key("smtp_password"));
+        assert!(!is_secret_notify_key("smtp_host"));
+        for (env, _) in crate::notify::ENV_VARS {
+            let key = notify_key(env).unwrap();
+            assert!(
+                TEMPLATE.contains(&format!("# {} = ", key)),
+                "template lacks {key}"
+            );
+        }
     }
 
     #[test]

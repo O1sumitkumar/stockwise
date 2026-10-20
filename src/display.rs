@@ -1,4 +1,5 @@
-use crate::market;
+use crate::i18n::{Msg, t};
+use crate::market::{self, AssetClass};
 use colored::Colorize;
 
 pub fn format_price(val: f64, currency: Option<&str>) -> String {
@@ -6,14 +7,76 @@ pub fn format_price(val: f64, currency: Option<&str>) -> String {
     format!("{}{:.2}", sym, val)
 }
 
+/// Decimal places for a price: stocks and indices use 2, FX pairs 4, and
+/// crypto enough to show low-priced coins (2 above 1, then 4, then 8).
+pub fn price_decimals(class: AssetClass, price: f64) -> usize {
+    match class {
+        AssetClass::Fx => 4,
+        AssetClass::Crypto => match price.abs() {
+            p if p >= 1.0 => 2,
+            p if p >= 0.01 => 4,
+            _ => 8,
+        },
+        AssetClass::Stock | AssetClass::Index => 2,
+    }
+}
+
+/// Like `format_price`, with the precision `symbol`'s asset class needs
+/// (`USDINR=X` → ₹84.1234, `DOGE-USD` → $0.1234).
+pub fn format_asset_price(val: f64, currency: Option<&str>, symbol: &str) -> String {
+    let dp = price_decimals(AssetClass::of(symbol), val);
+    format!("{}{:.*}", market::currency_symbol(currency), dp, val)
+}
+
 pub fn format_change(val: f64, pct: f64) -> String {
+    format_change_dp(val, pct, 2)
+}
+
+/// `format_change` with `dp` decimals for the absolute change (FX and
+/// low-priced coins move in fractions of a unit).
+pub fn format_change_dp(val: f64, pct: f64, dp: usize) -> String {
     let arrow = if val >= 0.0 { "▲" } else { "▼" };
-    let text = format!("{} {:.2} ({:.2}%)", arrow, val, pct);
+    let text = format!("{} {:.*} ({:.2}%)", arrow, dp, val, pct);
     if val >= 0.0 {
         text.green().bold().to_string()
     } else {
         text.red().bold().to_string()
     }
+}
+
+/// Columns a string takes in a terminal. Devanagari vowel signs, virama and
+/// nukta combine with the previous letter and take no column of their own,
+/// so `"मूल्य".chars().count()` (5) overstates its width (3).
+pub fn display_width(text: &str) -> usize {
+    text.chars().filter(|c| !is_zero_width(*c)).count()
+}
+
+fn is_zero_width(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0900}'..='\u{0902}'
+            | '\u{093A}'
+            | '\u{093C}'
+            | '\u{0941}'..='\u{0948}'
+            | '\u{094D}'
+            | '\u{0951}'..='\u{0957}'
+            | '\u{0962}'..='\u{0963}'
+            | '\u{200B}'..='\u{200D}'
+            | '\u{FE00}'..='\u{FE0F}'
+    )
+}
+
+/// Left-align `text` in `width` terminal columns (format's `{:<w}` counts
+/// chars, which misaligns Hindi labels).
+pub fn pad_end(text: &str, width: usize) -> String {
+    let fill = width.saturating_sub(display_width(text));
+    format!("{}{}", text, " ".repeat(fill))
+}
+
+/// Right-align `text` in `width` terminal columns.
+pub fn pad_start(text: &str, width: usize) -> String {
+    let fill = width.saturating_sub(display_width(text));
+    format!("{}{}", " ".repeat(fill), text)
 }
 
 pub fn format_large_number(val: f64, currency: Option<&str>) -> String {
@@ -40,14 +103,25 @@ fn format_large_number_usd(val: f64, sym: &str) -> String {
 }
 
 fn format_large_number_inr(val: f64, sym: &str) -> String {
+    // Lakhs and crores in every language; Hindi spells the units out.
     if val >= 1_000_000_000_000.0 {
-        format!("{}{:.2}L Cr", sym, val / 1_000_000_000_000.0)
+        format!(
+            "{}{:.2}{}",
+            sym,
+            val / 1_000_000_000_000.0,
+            t(Msg::UnitLakhCrore)
+        )
     } else if val >= 10_000_000_000.0 {
-        format!("{}{:.2}K Cr", sym, val / 10_000_000_000.0)
+        format!(
+            "{}{:.2}{}",
+            sym,
+            val / 10_000_000_000.0,
+            t(Msg::UnitThousandCrore)
+        )
     } else if val >= 10_000_000.0 {
-        format!("{}{:.2} Cr", sym, val / 10_000_000.0)
+        format!("{}{:.2}{}", sym, val / 10_000_000.0, t(Msg::UnitCrore))
     } else if val >= 100_000.0 {
-        format!("{}{:.2}L", sym, val / 100_000.0)
+        format!("{}{:.2}{}", sym, val / 100_000.0, t(Msg::UnitLakh))
     } else if val >= 1_000.0 {
         format!("{}{:.1}K", sym, val / 1_000.0)
     } else {
@@ -128,7 +202,7 @@ pub fn print_section(text: &str) {
 }
 
 pub fn print_kv(key: &str, value: &str) {
-    println!("  {:<28} {}", key.dimmed(), value);
+    println!("  {} {}", pad_end(key, 28).dimmed(), value);
 }
 
 pub fn rating_bar(score: f64, max: f64) -> String {
@@ -328,5 +402,65 @@ mod tests {
     fn test_format_optional_pct_none() {
         let result = format_optional_pct(None);
         assert!(result.contains("N/A"));
+    }
+
+    #[test]
+    fn price_decimals_by_asset_class() {
+        assert_eq!(price_decimals(AssetClass::Stock, 0.5), 2);
+        assert_eq!(price_decimals(AssetClass::Index, 25_000.0), 2);
+        assert_eq!(price_decimals(AssetClass::Fx, 84.1), 4);
+        assert_eq!(price_decimals(AssetClass::Crypto, 104_000.0), 2);
+        assert_eq!(price_decimals(AssetClass::Crypto, 0.1734), 4);
+        assert_eq!(price_decimals(AssetClass::Crypto, 0.000_012_34), 8);
+    }
+
+    #[test]
+    fn format_asset_price_uses_class_precision() {
+        assert_eq!(
+            format_asset_price(84.123_456, Some("INR"), "USDINR=X"),
+            "\u{20B9}84.1235"
+        );
+        assert_eq!(
+            format_asset_price(1.085_21, Some("USD"), "EURUSD=X"),
+            "$1.0852"
+        );
+        assert_eq!(
+            format_asset_price(0.173_456, Some("USD"), "DOGE-USD"),
+            "$0.1735"
+        );
+        assert_eq!(
+            format_asset_price(0.000_012_345, Some("USD"), "SHIB-USD"),
+            "$0.00001234"
+        );
+        assert_eq!(
+            format_asset_price(104_250.5, Some("USD"), "BTC-USD"),
+            "$104250.50"
+        );
+        assert_eq!(
+            format_asset_price(3500.0, Some("INR"), "TCS.NS"),
+            "\u{20B9}3500.00"
+        );
+        assert_eq!(
+            format_asset_price(150.25, Some("JPY"), "USDJPY=X"),
+            "\u{00A5}150.2500"
+        );
+    }
+
+    #[test]
+    fn format_change_dp_shows_small_moves() {
+        let fx = format_change_dp(0.0123, 0.015, 4);
+        assert!(fx.contains("0.0123"), "{fx}");
+        assert!(format_change(0.0123, 0.015).contains("0.01"));
+    }
+
+    #[test]
+    fn display_width_ignores_combining_marks() {
+        assert_eq!(display_width("Price"), 5);
+        assert_eq!(display_width("मूल्य"), 3);
+        assert_eq!(display_width("कीमत"), 4);
+        assert_eq!(pad_end("मूल्य", 6), "मूल्य   ");
+        assert_eq!(pad_start("P&L", 5), "  P&L");
+        // Never truncates.
+        assert_eq!(pad_end("too long", 3), "too long");
     }
 }

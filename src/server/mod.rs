@@ -111,8 +111,14 @@ fn json<T: serde::Serialize>(v: T) -> ApiResult {
 }
 
 #[derive(Deserialize)]
-struct MarketParam {
+struct MarketsParams {
     market: Option<String>,
+    /// Add the crypto section (`markets --crypto`).
+    #[serde(default)]
+    crypto: bool,
+    /// Add the currency section (`markets --fx`).
+    #[serde(default)]
+    fx: bool,
 }
 
 impl<D> AppState<D> {
@@ -120,7 +126,7 @@ impl<D> AppState<D> {
         match param {
             None | Some("") => Ok(self.market),
             Some(m) => Market::from_str(m, true).map_err(|_| {
-                ApiError::BadRequest(format!("Unknown market '{}' (use in or us)", m))
+                ApiError::BadRequest(format!("Unknown market '{}' (use in, us, crypto or fx)", m))
             }),
         }
     }
@@ -217,11 +223,11 @@ async fn history<D: DataSource>(
     json(hist)
 }
 
-/// `GET /api/markets` — the `markets --json` array.
-async fn markets<D: DataSource>(State(st): Shared<D>, Query(p): Query<MarketParam>) -> ApiResult {
+/// `GET /api/markets?crypto=true&fx=true` — the `markets --json` array.
+async fn markets<D: DataSource>(State(st): Shared<D>, Query(p): Query<MarketsParams>) -> ApiResult {
     let market = st.market_for(p.market.as_deref())?;
     json(
-        views::markets(&st.source, market)
+        views::markets(&st.source, market, p.crypto, p.fx)
             .await
             .map_err(ApiError::from_data)?,
     )
@@ -243,10 +249,33 @@ async fn search<D: DataSource>(State(st): Shared<D>, Query(p): Query<SearchParam
     json(st.source.search(q).await.map_err(ApiError::from_data)?)
 }
 
-/// `GET /api/portfolio` — holdings valued at live prices, with totals.
-async fn portfolio<D: DataSource>(State(st): Shared<D>) -> ApiResult {
+#[derive(Deserialize)]
+struct PortfolioParams {
+    market: Option<String>,
+    /// Currency for the totals (`portfolio --base`): inr or usd.
+    base: Option<String>,
+}
+
+/// `GET /api/portfolio?base=usd` — the `portfolio --json` object.
+async fn portfolio<D: DataSource>(
+    State(st): Shared<D>,
+    Query(p): Query<PortfolioParams>,
+) -> ApiResult {
+    let market = st.market_for(p.market.as_deref())?;
+    let base = match p.base.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(b) if b.eq_ignore_ascii_case("inr") || b.eq_ignore_ascii_case("usd") => {
+            Some(b.to_uppercase())
+        }
+        Some(b) => {
+            return Err(ApiError::BadRequest(format!(
+                "Unknown base currency '{}' (use inr or usd)",
+                b
+            )));
+        }
+    };
     json(
-        views::portfolio(&st.source)
+        views::portfolio(&st.source, market, base.as_deref())
             .await
             .map_err(ApiError::from_data)?,
     )
@@ -497,6 +526,8 @@ pub async fn run(bind: &str, allow_remote: bool, market: Market) -> Result<()> {
         match market {
             Market::In => "in (bare tickers get .NS; override with ?market=us)",
             Market::Us => "us (override with ?market=in)",
+            Market::Crypto => "crypto (bare tickers are coins; override with ?market=in)",
+            Market::Fx => "fx (bare tickers are currency pairs; override with ?market=in)",
         },
     );
     crate::display::print_kv(

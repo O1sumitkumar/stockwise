@@ -62,11 +62,8 @@ pub(crate) fn mover_rows(quotes: &[crate::api::Quote], n: usize) -> (Vec<MoverRo
 
 pub async fn cmd_movers(market: Market, fmt: Format) -> Result<()> {
     let client = YahooClient::new().await?;
-    let symbols = match market {
-        Market::Us => market::US_POPULAR,
-        Market::In => market::INDIA_POPULAR,
-    };
-    let sym_refs: Vec<&str> = symbols.to_vec();
+    let symbols = market.universe();
+    let sym_refs: Vec<&str> = symbols.iter().map(String::as_str).collect();
     let quotes = client.get_quote(&sym_refs).await?;
     let (gainers, losers) = mover_rows(&quotes, 10);
     match fmt {
@@ -83,10 +80,7 @@ pub async fn cmd_movers(market: Market, fmt: Format) -> Result<()> {
         Format::Table => {}
     }
 
-    let market_name = match market {
-        Market::Us => "US",
-        Market::In => "India",
-    };
+    let market_name = market.label();
 
     for (title, rows) in [("Top Gainers", &gainers), ("Top Losers", &losers)] {
         print_header(&format!("{} — {}", title, market_name));
@@ -103,7 +97,7 @@ pub async fn cmd_movers(market: Market, fmt: Format) -> Result<()> {
             println!(
                 "  {:<14} {:>10} {:>10} {:>14}",
                 r.symbol.cyan(),
-                format_price(r.price, r.currency.as_deref()),
+                format_asset_price(r.price, r.currency.as_deref(), &r.symbol),
                 if r.side == "gainer" {
                     pct.green()
                 } else {
@@ -135,11 +129,10 @@ impl CsvRow for SectorRow {
 }
 
 pub async fn cmd_sectors(market: Market, fmt: Format) -> Result<()> {
+    market.require_stocks("sectors")?;
     let client = YahooClient::new().await?;
-    let (sectors, title) = match market {
-        Market::Us => (market::US_SECTOR_ETFS, "US Sector Performance"),
-        Market::In => (market::INDIA_SECTOR_INDICES, "India Sector Performance"),
-    };
+    let sectors = market.sectors();
+    let title = format!("{} Sector Performance", market.label());
     let symbols: Vec<&str> = sectors.iter().map(|(s, _)| *s).collect();
     let mut quotes = client.get_quote(&symbols).await?;
     // Best first; sectors without a change today go last.
@@ -173,7 +166,7 @@ pub async fn cmd_sectors(market: Market, fmt: Format) -> Result<()> {
         };
     }
 
-    print_header(title);
+    print_header(&title);
     println!(
         "  {:<18} {:>10} {:>10} {:>20}",
         "Sector".bold(),
@@ -656,12 +649,10 @@ impl CsvRow for ScreenRow {
 }
 
 pub async fn cmd_screen(category: &str, market: Market, fmt: Format) -> Result<()> {
+    market.require_stocks("screen")?;
     let client = YahooClient::new().await?;
-    let symbols = match market {
-        Market::Us => market::US_POPULAR,
-        Market::In => market::INDIA_POPULAR,
-    };
-    let sym_refs: Vec<&str> = symbols.to_vec();
+    let symbols = market.universe();
+    let sym_refs: Vec<&str> = symbols.iter().map(String::as_str).collect();
     let quotes = client.get_quote(&sym_refs).await?;
 
     let (title, mut filtered): (String, Vec<&crate::api::Quote>) = match category {
@@ -767,7 +758,7 @@ pub async fn cmd_screen(category: &str, market: Market, fmt: Format) -> Result<(
                 q.regular_market_change_percent.unwrap_or(0.0)
             ));
         }
-        print_section("Ollama AI Analysis");
+        print_section(&format!("AI Analysis ({})", ai.provider().name()));
         if let Ok(analysis) = ai.analyze_screen(&data).await {
             for line in analysis.lines() {
                 println!("  {}", line);
@@ -782,21 +773,13 @@ pub async fn cmd_screen(category: &str, market: Market, fmt: Format) -> Result<(
 // ── Dashboard ──
 
 pub async fn cmd_picks(market: Market) -> Result<()> {
+    market.require_stocks("picks")?;
     let client = YahooClient::new().await?;
-    let symbols = match market {
-        Market::Us => market::US_POPULAR,
-        Market::In => market::INDIA_POPULAR,
-    };
-    let sym_refs: Vec<&str> = symbols.to_vec();
+    let symbols = market.universe();
+    let sym_refs: Vec<&str> = symbols.iter().map(String::as_str).collect();
     let quotes = client.get_quote(&sym_refs).await?;
 
-    print_header(&format!(
-        "Top Picks — {} Market",
-        match market {
-            Market::Us => "US",
-            Market::In => "India",
-        }
-    ));
+    print_header(&format!("Top Picks — {} Market", market.label()));
     println!(
         "  {} Scoring {} stocks across 8 factors...\n",
         "⟳".yellow(),
@@ -1014,15 +997,14 @@ pub async fn cmd_earnings(_market: Market) -> Result<()> {
 // ── Long-Term Wealth Bot ──
 
 pub async fn cmd_rotation(market: Market) -> Result<()> {
+    market.require_stocks("rotation")?;
     let client = YahooClient::new().await?;
-    let (sectors, title) = match market {
-        Market::Us => (market::US_SECTOR_ETFS, "US Sector Rotation"),
-        Market::In => (market::INDIA_SECTOR_INDICES, "India Sector Rotation"),
-    };
+    let sectors = market.sectors();
+    let title = format!("{} Sector Rotation", market.label());
     let syms: Vec<&str> = sectors.iter().map(|(s, _)| *s).collect();
     let quotes = client.get_quote(&syms).await?;
 
-    print_header(title);
+    print_header(&title);
     println!(
         "  {:<16} {:>10} {:>10} {:>10} {:>10}",
         "Sector".bold(),
@@ -1085,12 +1067,10 @@ pub async fn cmd_rotation(market: Market) -> Result<()> {
 // ── Quality-Growth Matrix ──
 
 pub async fn cmd_matrix(market: Market) -> Result<()> {
+    market.require_stocks("matrix")?;
     let client = YahooClient::new().await?;
-    let symbols = match market {
-        Market::Us => market::US_POPULAR,
-        Market::In => market::INDIA_POPULAR,
-    };
-    let sym_refs: Vec<&str> = symbols.to_vec();
+    let symbols = market.universe();
+    let sym_refs: Vec<&str> = symbols.iter().map(String::as_str).collect();
     let quotes = client.get_quote(&sym_refs).await?;
 
     print_header("Quality vs Growth Matrix");
@@ -1160,12 +1140,10 @@ pub async fn cmd_matrix(market: Market) -> Result<()> {
 // ── Earnings Surprise ──
 
 pub async fn cmd_surprise(market: Market) -> Result<()> {
+    market.require_stocks("surprise")?;
     let client = YahooClient::new().await?;
-    let symbols = match market {
-        Market::Us => market::US_POPULAR,
-        Market::In => market::INDIA_POPULAR,
-    };
-    let sym_refs: Vec<&str> = symbols.to_vec();
+    let symbols = market.universe();
+    let sym_refs: Vec<&str> = symbols.iter().map(String::as_str).collect();
     let quotes = client.get_quote(&sym_refs).await?;
 
     print_header("Earnings Momentum");
@@ -1238,11 +1216,8 @@ pub async fn cmd_surprise(market: Market) -> Result<()> {
 
 pub async fn cmd_heatmap(market: Market) -> Result<()> {
     let client = YahooClient::new().await?;
-    let symbols = match market {
-        Market::In => market::INDIA_POPULAR,
-        Market::Us => market::US_POPULAR,
-    };
-    let refs: Vec<&str> = symbols.to_vec();
+    let symbols = market.universe();
+    let refs: Vec<&str> = symbols.iter().map(String::as_str).collect();
     let mut quotes = client.get_quote(&refs).await?;
     quotes.sort_by(|a, b| {
         b.regular_market_change_percent
@@ -1251,13 +1226,7 @@ pub async fn cmd_heatmap(market: Market) -> Result<()> {
             .unwrap()
     });
 
-    print_header(&format!(
-        "{} Market Heatmap",
-        match market {
-            Market::In => "India",
-            Market::Us => "US",
-        }
-    ));
+    print_header(&format!("{} Market Heatmap", market.label()));
     println!();
 
     for q in &quotes {
@@ -1286,11 +1255,9 @@ pub async fn cmd_heatmap(market: Market) -> Result<()> {
 // ── Patterns (candlestick pattern detection) ──
 
 pub async fn cmd_sectorcmp(sector1: &str, sector2: &str, market: Market) -> Result<()> {
+    market.require_stocks("sectorcmp")?;
     let client = YahooClient::new().await?;
-    let sectors = match market {
-        Market::Us => market::US_SECTOR_ETFS,
-        Market::In => market::INDIA_SECTOR_INDICES,
-    };
+    let sectors = market.sectors();
     let find = |name: &str| -> Option<&str> {
         sectors
             .iter()

@@ -16,16 +16,17 @@ watchlist or alerts, or touch the broker. Broker credentials are never read.
 ## Endpoints
 
 All responses are JSON except `/metrics`. Bare tickers follow the server's
-market (`-m`, default India: `TCS` → `TCS.NS`); `quote`, `history` and
-`markets` accept `?market=in|us` to override it per request.
+market (`-m`, default India: `TCS` → `TCS.NS`); `quote`, `history`,
+`markets` and `portfolio` accept `?market=in|us|crypto|fx` to override it per
+request.
 
 | Endpoint | Returns | Same as |
 |----------|---------|---------|
 | `GET /api/quote?symbols=RELIANCE,TCS` | Array of Yahoo quote objects (camelCase fields). Up to 50 symbols. Unknown symbols are listed in the `X-Stockwise-Missing` header; 404 if none are known | `quote --json` |
 | `GET /api/history/{symbol}?period=1mo` | `{symbol, currency, period, interval, bars: [{time, open, high, low, close, volume}]}`. Periods as in the CLI; default `1mo` | `history --json` |
-| `GET /api/markets` | Array of `{region, symbol, name, price, change, change_percent, currency}`, your market first | `markets --json` |
+| `GET /api/markets?crypto=true&fx=true` | Array of `{region, symbol, name, price, change, change_percent, currency}`, your market first; `crypto` / `fx` add those sections | `markets --json` |
 | `GET /api/search?q=tata motors` | Array of `{symbol, shortname, longname, quoteType, exchange}` | `search --json` |
-| `GET /api/portfolio` | Holdings valued at live prices, with totals (below) | `portfolio --json` |
+| `GET /api/portfolio?base=usd` | Holdings (lots, FIFO cost) valued at live prices, totals in one currency (below); `base` is `inr` or `usd` | `portfolio --json` |
 | `GET /api/watchlist` | Array of `{symbol, price, change, change_percent, volume, currency}` in watchlist order | `watch --json` |
 | `GET /api/alerts` | Array of `{index, symbol, condition, target, price, currency, status}`; `status` is `triggered`, `waiting` or `no_price` | `alert check --json` |
 | `GET /healthz` | `{"status": "ok", "version": "..."}` — never needs a token | |
@@ -38,16 +39,22 @@ market (`-m`, default India: `TCS` → `TCS.NS`); `quote`, `history` and
   "holdings": [
     {"symbol": "TCS.NS", "shares": 10.0, "avg_cost": 3500.0, "cost_basis": 35000.0,
      "price": 4100.0, "value": 41000.0, "pnl": 6000.0, "pnl_percent": 17.14,
-     "weight_percent": 100.0, "currency": "INR"}
+     "weight_percent": 100.0, "xirr_percent": 15.2, "currency": "INR"}
   ],
   "totals": {"cost_basis": 35000.0, "value": 41000.0, "pnl": 6000.0,
              "pnl_percent": 17.14, "currency": "INR"},
-  "unpriced": []
+  "unpriced": [],
+  "unconverted": []
 }
 ```
 
-A holding without a live price has `null` price, value, P&L and weight, is
+A holding's money values are in its own currency; `totals` and
+`weight_percent` are converted to the base currency at the live rate. A
+holding without a live price has `null` price, value, P&L and weight, is
 listed in `unpriced`, and is left out of the totals — it is never valued at 0.
+One whose currency couldn't be converted is listed in `unconverted`. The
+server uses the active portfolio (`--portfolio` / `STOCKWISE_PORTFOLIO` when
+it was started).
 Likewise an alert without a price has `"price": null, "status": "no_price"`
 and never counts as triggered.
 

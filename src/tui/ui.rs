@@ -3,7 +3,6 @@
 
 use super::app::{App, CHART_PERIODS, Focus, Mode, Series};
 use crate::display::format_price;
-use crate::market::Market;
 use crate::views::{AlertCheckRow, IndexRow};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -179,10 +178,7 @@ fn render_too_small(f: &mut Frame, area: Rect, theme: &Theme) {
 }
 
 fn render_header(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let market = match app.market {
-        Market::In => "India",
-        Market::Us => "US",
-    };
+    let market = app.market.label();
     let mut left = vec![
         Span::styled(" StockWise ", theme.title),
         Span::raw(market),
@@ -985,7 +981,10 @@ mod tests {
 
     #[test]
     fn loading_state_before_first_snapshot() {
-        let app = App::new(Market::In, std::time::Duration::from_secs(30));
+        let app = App::new(
+            crate::market::Market::In,
+            std::time::Duration::from_secs(30),
+        );
         let screen = text(&draw(&app, 80, 24, Theme::new(true)));
         assert!(screen.contains("loading…"));
         assert!(screen.contains("Loading…"));

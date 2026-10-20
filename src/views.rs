@@ -145,39 +145,85 @@ pub struct IndexRow {
     pub currency: Option<String>,
 }
 
-/// Index lists in display order: the selected market first.
-pub fn index_sections(
-    market: Market,
-) -> [(&'static str, &'static [(&'static str, &'static str)]); 2] {
-    match market {
-        Market::Us => [
-            ("US Markets", market::US_INDICES),
-            ("Indian Markets", market::INDIA_INDICES),
-        ],
-        Market::In => [
-            ("Indian Markets", market::INDIA_INDICES),
-            ("US Markets", market::US_INDICES),
-        ],
+/// What one block of `markets` lists. `region` is the stable English key
+/// used in JSON; `title` is what people read, in their language.
+pub struct SectionSpec {
+    pub region: &'static str,
+    pub title: &'static str,
+    /// (symbol, display name)
+    pub items: Vec<(String, String)>,
+}
+
+pub fn section_spec(kind: Market) -> SectionSpec {
+    use crate::i18n::{Msg, t};
+    let owned = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+        list.iter()
+            .map(|(s, n)| (s.to_string(), n.to_string()))
+            .collect()
+    };
+    match kind {
+        Market::In => SectionSpec {
+            region: "Indian Markets",
+            title: t(Msg::SectionIndianMarkets),
+            items: owned(market::INDIA_INDICES),
+        },
+        Market::Us => SectionSpec {
+            region: "US Markets",
+            title: t(Msg::SectionUsMarkets),
+            items: owned(market::US_INDICES),
+        },
+        Market::Crypto => SectionSpec {
+            region: "Crypto",
+            title: t(Msg::SectionCrypto),
+            items: market::crypto_majors()
+                .into_iter()
+                .map(|(s, n)| (s, n.to_string()))
+                .collect(),
+        },
+        Market::Fx => SectionSpec {
+            region: "FX",
+            title: t(Msg::SectionFx),
+            items: owned(market::FX_MAJORS),
+        },
     }
 }
 
-/// Rows for one region, in the order Yahoo returned them. Labels are matched
+/// Sections for `markets`: the active market first, then the other stock
+/// market; crypto and FX are added on request (or lead when selected).
+pub fn section_order(market: Market, crypto: bool, fx: bool) -> Vec<Market> {
+    let mut order = match market {
+        Market::Us => vec![Market::Us, Market::In],
+        Market::In => vec![Market::In, Market::Us],
+        Market::Crypto => vec![Market::Crypto, Market::In, Market::Us],
+        Market::Fx => vec![Market::Fx, Market::In, Market::Us],
+    };
+    for (wanted, kind) in [(crypto, Market::Crypto), (fx, Market::Fx)] {
+        if wanted && !order.contains(&kind) {
+            order.push(kind);
+        }
+    }
+    order
+}
+
+fn label_for<'a>(items: &'a [(String, String)], symbol: &'a str) -> &'a str {
+    items
+        .iter()
+        .find(|(sym, _)| sym.eq_ignore_ascii_case(symbol))
+        .map_or(symbol, |(_, name)| name.as_str())
+}
+
+/// Rows for one section, in the order Yahoo returned them. Labels are matched
 /// by symbol — Yahoo may reorder or drop symbols, so pairing by position
 /// could mislabel an index.
-pub fn index_rows(region: &str, indices: &[(&str, &str)], quotes: &[Quote]) -> Vec<IndexRow> {
+pub fn index_rows(region: &str, items: &[(String, String)], quotes: &[Quote]) -> Vec<IndexRow> {
     quotes
         .iter()
         .map(|q| {
             let q_sym = q.symbol.as_deref().unwrap_or("");
-            let name = indices
-                .iter()
-                .find(|(sym, _)| *sym == q_sym)
-                .map(|(_, name)| *name)
-                .unwrap_or(q_sym);
             IndexRow {
                 region: region.to_string(),
                 symbol: q_sym.to_string(),
-                name: name.to_string(),
+                name: label_for(items, q_sym).to_string(),
                 price: q.regular_market_price,
                 change: q.regular_market_change,
                 change_percent: q.regular_market_change_percent,
@@ -187,25 +233,46 @@ pub fn index_rows(region: &str, indices: &[(&str, &str)], quotes: &[Quote]) -> V
         .collect()
 }
 
-/// Both regions' indices, one request per region, selected market first.
+pub struct MarketSection {
+    pub region: &'static str,
+    pub title: &'static str,
+    pub rows: Vec<IndexRow>,
+}
+
+/// The `markets` sections, one quote request each.
 pub async fn market_sections(
     src: &impl DataSource,
     market: Market,
-) -> Result<Vec<(&'static str, Vec<IndexRow>)>> {
+    crypto: bool,
+    fx: bool,
+) -> Result<Vec<MarketSection>> {
     let mut out = Vec::new();
-    for (title, indices) in index_sections(market) {
-        let symbols: Vec<&str> = indices.iter().map(|(sym, _)| *sym).collect();
+    for spec in section_order(market, crypto, fx)
+        .into_iter()
+        .map(section_spec)
+    {
+        let symbols: Vec<&str> = spec.items.iter().map(|(sym, _)| sym.as_str()).collect();
         let quotes = src.quotes(&symbols).await?;
-        out.push((title, index_rows(title, indices, &quotes)));
+        out.push(MarketSection {
+            region: spec.region,
+            title: spec.title,
+            rows: index_rows(spec.region, &spec.items, &quotes),
+        });
     }
     Ok(out)
 }
 
-pub async fn markets(src: &impl DataSource, market: Market) -> Result<Vec<IndexRow>> {
-    Ok(market_sections(src, market)
+/// `markets --json`: every section's rows.
+pub async fn markets(
+    src: &impl DataSource,
+    market: Market,
+    crypto: bool,
+    fx: bool,
+) -> Result<Vec<IndexRow>> {
+    Ok(market_sections(src, market, crypto, fx)
         .await?
         .into_iter()
-        .flat_map(|(_, rows)| rows)
+        .flat_map(|s| s.rows)
         .collect())
 }
 
@@ -314,41 +381,34 @@ pub async fn history(
 // (`commands::holdings`); these wrap them so `/api/*` and the TUI return
 // exactly what `--json` prints.
 
-pub(crate) use crate::commands::{AlertCheckRow, HoldingRow, PortfolioTotals, WatchRow};
+pub(crate) use crate::commands::{AlertCheckRow, WatchRow};
 
-/// `portfolio --json`: holdings, totals over the priced holdings, and the
-/// symbols left out for lack of a price (never valued at 0).
-#[derive(Debug, Default, Serialize)]
-pub struct PortfolioView {
-    pub holdings: Vec<HoldingRow>,
-    pub totals: PortfolioTotals,
-    pub unpriced: Vec<String>,
-}
+/// `portfolio --json`: holdings (lots, FIFO cost), totals in one base
+/// currency, and the symbols left out of the totals (never valued at 0).
+pub(crate) type PortfolioView = crate::commands::PortfolioReport;
 
-/// Value `portfolio` at `quotes`. Only the holdings' own quotes are used, so
-/// the totals' currency is a holding's, whatever else `quotes` contains.
-pub fn portfolio_view(portfolio: &Portfolio, quotes: &[Quote]) -> PortfolioView {
+/// Value `portfolio` from `quotes` (which may hold other symbols too),
+/// fetching exchange rates only when holdings mix currencies.
+pub async fn portfolio_view(
+    src: &impl DataSource,
+    portfolio: &Portfolio,
+    quotes: &[Quote],
+    market: Market,
+) -> PortfolioView {
+    let symbols: Vec<String> = portfolio
+        .holdings
+        .iter()
+        .map(|h| h.symbol.clone())
+        .collect();
     let own: Vec<Quote> = quotes
         .iter()
-        .filter(|q| {
-            portfolio
-                .holdings
-                .iter()
-                .any(|h| q.symbol.as_deref() == Some(h.symbol.as_str()))
-        })
+        .filter(|q| q.symbol.as_ref().is_some_and(|s| symbols.contains(s)))
         .cloned()
         .collect();
-    let (holdings, totals) = crate::commands::holding_rows(&portfolio.holdings, &own);
-    let unpriced = holdings
-        .iter()
-        .filter(|r| r.price.is_none())
-        .map(|r| r.symbol.clone())
-        .collect();
-    PortfolioView {
-        holdings,
-        totals,
-        unpriced,
-    }
+    let mut val = crate::commands::Valuation::new(own, &symbols, market, None);
+    let currencies = val.currencies(&symbols);
+    val.add_rates(src, &currencies).await;
+    crate::commands::portfolio_report(portfolio, &val, chrono::Local::now().date_naive())
 }
 
 /// A local data file (portfolio, watchlist, alerts) could not be read — as
@@ -385,11 +445,13 @@ async fn quotes_for(src: &impl DataSource, symbols: &[&str]) -> Result<Vec<Quote
     }
 }
 
-pub async fn portfolio(src: &impl DataSource) -> Result<PortfolioView> {
-    let p = local(src.portfolio())?;
-    let symbols = unique_symbols(p.holdings.iter().map(|h| h.symbol.as_str()));
-    let quotes = quotes_for(src, &symbols).await?;
-    Ok(portfolio_view(&p, &quotes))
+/// `portfolio --json`, with totals in `base` (or the holdings' currency).
+pub async fn portfolio(
+    src: &impl DataSource,
+    market: Market,
+    base: Option<&str>,
+) -> Result<PortfolioView> {
+    crate::commands::load_portfolio_report(src, market, base).await
 }
 
 /// `watch --json`: one row per watched symbol, in watchlist order.
@@ -423,25 +485,30 @@ pub struct Snapshot {
 /// Home-market indices (in list order, unpriced ones kept), watchlist,
 /// portfolio and alerts in one batched quote request.
 pub async fn snapshot(src: &impl DataSource, market: Market) -> Result<Snapshot> {
-    let (region, indices) = index_sections(market)[0];
+    let spec = section_spec(market);
     let p = local(src.portfolio())?;
     let wl = local(src.watchlist())?;
     let store = local(src.alerts())?;
     let symbols = unique_symbols(
-        indices
+        spec.items
             .iter()
-            .map(|(s, _)| *s)
+            .map(|(s, _)| s.as_str())
             .chain(wl.symbols.iter().map(String::as_str))
             .chain(p.holdings.iter().map(|h| h.symbol.as_str()))
             .chain(store.alerts.iter().map(|a| a.symbol.as_str())),
     );
     let quotes = src.quotes(&symbols).await?;
-    let indices = indices
+    let indices = spec
+        .items
         .iter()
         .map(|(sym, name)| {
-            let q = find_quote(&quotes, sym);
+            let q = quotes.iter().find(|q| {
+                q.symbol
+                    .as_deref()
+                    .is_some_and(|s| s.eq_ignore_ascii_case(sym))
+            });
             IndexRow {
-                region: region.to_string(),
+                region: spec.region.to_string(),
                 symbol: sym.to_string(),
                 name: name.to_string(),
                 price: q.and_then(|q| q.regular_market_price),
@@ -454,7 +521,7 @@ pub async fn snapshot(src: &impl DataSource, market: Market) -> Result<Snapshot>
     Ok(Snapshot {
         indices,
         watchlist: crate::commands::watch_rows(&wl.symbols, &quotes),
-        portfolio: portfolio_view(&p, &quotes),
+        portfolio: portfolio_view(src, &p, &quotes, market).await,
         alerts: crate::commands::alert_check_rows(&store.alerts, &quotes),
     })
 }
@@ -526,6 +593,7 @@ pub mod fixtures {
                     volume: Some(closes.iter().map(|_| Some(1000)).collect()),
                 }],
             },
+            events: None,
         }
     }
 
@@ -630,6 +698,7 @@ pub mod fixtures {
         fn portfolio(&self) -> Result<Portfolio> {
             Ok(Portfolio {
                 holdings: self.portfolio.holdings.clone(),
+                ..Default::default()
             })
         }
         fn watchlist(&self) -> Result<Watchlist> {
@@ -693,7 +762,7 @@ mod tests {
 
     #[test]
     fn markets_json_shape_is_pinned() {
-        let rows = block(markets(&Fixture::default(), Market::In)).unwrap();
+        let rows = block(markets(&Fixture::default(), Market::In, false, false)).unwrap();
         let first = serde_json::to_string(&rows[0]).unwrap();
         assert_eq!(
             first,
@@ -748,7 +817,7 @@ mod tests {
 
     #[test]
     fn portfolio_view_excludes_unpriced_holdings_from_totals() {
-        let v = block(portfolio(&Fixture::default())).unwrap();
+        let v = block(portfolio(&Fixture::default(), Market::In, None)).unwrap();
         assert_eq!(v.holdings.len(), 3);
         // TCS 10 @ 3500 → 4100; INFY 5 @ 1600 → 1500.
         assert_eq!(v.totals.cost_basis, 35000.0 + 8000.0);
@@ -767,9 +836,11 @@ mod tests {
     #[test]
     fn portfolio_json_matches_portfolio_json_flag() {
         // Same keys as `portfolio --json` (pinned in commands/output_tests.rs).
-        let v = serde_json::to_value(block(portfolio(&Fixture::default())).unwrap()).unwrap();
+        let v =
+            serde_json::to_value(block(portfolio(&Fixture::default(), Market::In, None)).unwrap())
+                .unwrap();
         let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(keys, ["holdings", "totals", "unpriced"]);
+        assert_eq!(keys, ["holdings", "totals", "unpriced", "unconverted"]);
         let totals: Vec<&str> = v["totals"]
             .as_object()
             .unwrap()
@@ -794,7 +865,7 @@ mod tests {
             quote("^NSEI", Some(24800.0), 0.5, "INR"),
             quote("AAPL", Some(150.0), 1.0, "USD"),
         ];
-        let v = portfolio_view(&p, &quotes);
+        let v = block(portfolio_view(&Fixture::default(), &p, &quotes, Market::In));
         assert_eq!(v.totals.currency.as_deref(), Some("USD"));
         assert_eq!(v.totals.value, 300.0);
     }
@@ -806,7 +877,7 @@ mod tests {
             ..Default::default()
         };
         *f.fail.lock().unwrap() = Some("offline".into());
-        let v = block(portfolio(&f)).unwrap();
+        let v = block(portfolio(&f, Market::In, None)).unwrap();
         assert!(v.holdings.is_empty());
         assert_eq!(v.totals.value, 0.0);
     }
@@ -850,7 +921,7 @@ mod tests {
                 bail!("/home/me/portfolio.json is not valid JSON")
             }
         }
-        let err = block(portfolio(&Broken)).unwrap_err();
+        let err = block(portfolio(&Broken, Market::In, None)).unwrap_err();
         assert!(err.downcast_ref::<LocalData>().is_some());
         // Market data errors are not tagged.
         let f = Fixture::default();
