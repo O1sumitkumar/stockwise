@@ -1,15 +1,29 @@
-# StockWise
+<p align="center">
+  <img src="assets/banner.svg" alt="StockWise — stock market toolkit for your terminal" width="820">
+</p>
 
-**A stock market toolkit for your terminal — built for Indian (NSE/BSE) and US
-stocks.** Quotes, charts, screeners, backtests, SIP math, paper trading, and
-portfolio tracking in one fast Rust binary. No API keys, no account, no
-browser tabs.
+<p align="center">
+  <a href="https://github.com/iamsaquib8/stockwise/actions/workflows/ci.yml"><img src="https://github.com/iamsaquib8/stockwise/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://crates.io/crates/stockwise"><img src="https://img.shields.io/crates/v/stockwise.svg" alt="crates.io"></a>
+  <a href="https://crates.io/crates/stockwise"><img src="https://img.shields.io/crates/d/stockwise.svg" alt="Downloads"></a>
+  <a href="https://github.com/iamsaquib8/stockwise/releases/latest"><img src="https://img.shields.io/github/v/release/iamsaquib8/stockwise?label=binaries" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="#install"><img src="https://img.shields.io/badge/rustc-1.88+-blue.svg" alt="MSRV 1.88"></a>
+</p>
 
-[![CI](https://github.com/iamsaquib8/stockwise/actions/workflows/ci.yml/badge.svg)](https://github.com/iamsaquib8/stockwise/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/stockwise.svg)](https://crates.io/crates/stockwise)
-[![Downloads](https://img.shields.io/crates/d/stockwise.svg)](https://crates.io/crates/stockwise)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![MSRV](https://img.shields.io/badge/rustc-1.88+-blue.svg)](#install)
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#tour">Tour</a> ·
+  <a href="docs/commands.md">Commands</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
+  <a href="ROADMAP.md">Roadmap</a>
+</p>
+
+**StockWise is a stock market toolkit for your terminal, built for Indian
+(NSE/BSE) and US stocks.** Quotes, charts, screeners, backtests, SIP math, paper
+trading, and portfolio tracking in one fast Rust binary. No API keys, no
+account, no browser tabs.
 
 <p align="center">
   <img src="assets/history.svg" alt="stockwise history AAPL -m us -p 6mo: a braille price chart with volume bars in the terminal" width="760">

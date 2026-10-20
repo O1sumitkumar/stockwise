@@ -1,4 +1,19 @@
-# Demo assets
+# Assets
+
+## Brand
+
+- `logo.svg` — square app icon (256×256).
+- `banner.svg` — README header.
+- `social-preview.svg` / `.png` — 1280×640 card for link previews. Upload the PNG
+  in GitHub → Settings → General → Social preview.
+
+To re-render the PNG after editing the SVG (needs Google Chrome):
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+  --hide-scrollbars --window-size=1280,640 \
+  --screenshot=assets/social-preview.png "file://$PWD/assets/social-preview.svg"
+```
 
 ## Screenshots (README)
 

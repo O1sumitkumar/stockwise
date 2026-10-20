@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="StockWise — stock market toolkit for your terminal">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2d3045"/>
+      <stop offset="1" stop-color="#1a1b25"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#8be9fd"/>
+      <stop offset="1" stop-color="#50fa7b"/>
+    </linearGradient>
+    <style>
+      text { font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, 'DejaVu Sans Mono', monospace; }
+    </style>
+  </defs>
+  <rect width="1280" height="640" fill="url(#bg)"/>
+
+  <!-- faint background chart -->
+  <g fill="#50fa7b" opacity="0.08">
+    <circle cx="80" cy="560" r="7"/><circle cx="150" cy="540" r="7"/><circle cx="220" cy="550" r="7"/>
+    <circle cx="290" cy="515" r="7"/><circle cx="360" cy="500" r="7"/><circle cx="430" cy="510" r="7"/>
+    <circle cx="500" cy="470" r="7"/><circle cx="570" cy="455" r="7"/><circle cx="640" cy="470" r="7"/>
+    <circle cx="710" cy="430" r="7"/><circle cx="780" cy="400" r="7"/><circle cx="850" cy="415" r="7"/>
+    <circle cx="920" cy="370" r="7"/><circle cx="990" cy="345" r="7"/><circle cx="1060" cy="355" r="7"/>
+    <circle cx="1130" cy="310" r="7"/><circle cx="1200" cy="280" r="7"/>
+  </g>
+
+  <!-- icon -->
+  <g transform="translate(100 150) scale(0.9)">
+    <rect width="256" height="256" rx="56" fill="#191a24" opacity="0.7"/>
+    <path d="M52 62 l22 18 -22 18" fill="none" stroke="#8be9fd" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="86" y="90" width="34" height="10" rx="5" fill="#8be9fd"/>
+    <g fill="#6272a4" opacity="0.55">
+      <rect x="52" y="196" width="14" height="14" rx="3"/>
+      <rect x="76" y="188" width="14" height="22" rx="3"/>
+      <rect x="100" y="198" width="14" height="12" rx="3"/>
+      <rect x="124" y="184" width="14" height="26" rx="3"/>
+      <rect x="148" y="192" width="14" height="18" rx="3"/>
+      <rect x="172" y="178" width="14" height="32" rx="3"/>
+      <rect x="196" y="186" width="14" height="24" rx="3"/>
+    </g>
+    <g fill="url(#line)">
+      <circle cx="59" cy="166" r="6"/><circle cx="77" cy="156" r="6"/><circle cx="95" cy="160" r="6"/>
+      <circle cx="113" cy="146" r="6"/><circle cx="131" cy="138" r="6"/><circle cx="149" cy="142" r="6"/>
+      <circle cx="167" cy="122" r="6"/><circle cx="185" cy="106" r="6"/><circle cx="203" cy="84" r="7"/>
+    </g>
+  </g>
+
+  <text x="390" y="250" font-size="92" font-weight="700" fill="#f8f8f2">StockWise</text>
+  <text x="394" y="312" font-size="34" fill="#8be9fd">Stock market toolkit for your terminal</text>
+  <text x="394" y="372" font-size="24" fill="#9aa0bf">NSE · BSE · NYSE · NASDAQ</text>
+  <text x="394" y="410" font-size="24" fill="#9aa0bf">quotes · charts · screeners · backtests</text>
+  <text x="394" y="448" font-size="24" fill="#9aa0bf">SIP math · paper trading · portfolio &amp; tax</text>
+
+  <rect x="394" y="490" width="560" height="56" rx="12" fill="#191a24" opacity="0.8"/>
+  <text x="418" y="527" font-size="24" fill="#50fa7b">$</text>
+  <text x="446" y="527" font-size="24" fill="#f8f8f2">cargo install stockwise</text>
+
+  <text x="1180" y="600" font-size="20" fill="#6272a4" text-anchor="end">github.com/iamsaquib8/stockwise</text>
+</svg>

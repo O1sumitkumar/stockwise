@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-label="StockWise — stock market toolkit for your terminal">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2d3045"/>
+      <stop offset="1" stop-color="#1e1f2b"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#8be9fd"/>
+      <stop offset="1" stop-color="#50fa7b"/>
+    </linearGradient>
+    <style>
+      text { font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, 'DejaVu Sans Mono', monospace; }
+    </style>
+  </defs>
+  <rect width="1200" height="300" rx="24" fill="url(#bg)"/>
+
+  <!-- icon (same shapes as logo.svg, scaled to 180px) -->
+  <g transform="translate(60 60) scale(0.703)">
+    <rect width="256" height="256" rx="56" fill="#191a24" opacity="0.6"/>
+    <path d="M52 62 l22 18 -22 18" fill="none" stroke="#8be9fd" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="86" y="90" width="34" height="10" rx="5" fill="#8be9fd"/>
+    <g fill="#6272a4" opacity="0.55">
+      <rect x="52" y="196" width="14" height="14" rx="3"/>
+      <rect x="76" y="188" width="14" height="22" rx="3"/>
+      <rect x="100" y="198" width="14" height="12" rx="3"/>
+      <rect x="124" y="184" width="14" height="26" rx="3"/>
+      <rect x="148" y="192" width="14" height="18" rx="3"/>
+      <rect x="172" y="178" width="14" height="32" rx="3"/>
+      <rect x="196" y="186" width="14" height="24" rx="3"/>
+    </g>
+    <g fill="url(#line)">
+      <circle cx="59" cy="166" r="6"/>
+      <circle cx="77" cy="156" r="6"/>
+      <circle cx="95" cy="160" r="6"/>
+      <circle cx="113" cy="146" r="6"/>
+      <circle cx="131" cy="138" r="6"/>
+      <circle cx="149" cy="142" r="6"/>
+      <circle cx="167" cy="122" r="6"/>
+      <circle cx="185" cy="106" r="6"/>
+      <circle cx="203" cy="84" r="7"/>
+    </g>
+  </g>
+
+  <text x="290" y="135" font-size="76" font-weight="700" fill="#f8f8f2">StockWise</text>
+  <text x="292" y="185" font-size="27" fill="#8be9fd">Stock market toolkit for your terminal</text>
+  <text x="292" y="228" font-size="19" fill="#9aa0bf">NSE · BSE · NYSE · NASDAQ  —  quotes, charts, screeners,</text>
+  <text x="292" y="256" font-size="19" fill="#9aa0bf">backtests, SIP math, paper trading. One binary, no API keys.</text>
+</svg>
