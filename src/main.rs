@@ -285,14 +285,8 @@ enum Commands {
     Dividends { symbol: String },
 
     // ── Strategies & bots ──
-    /// Backtest a trading strategy on history
-    Backtest {
-        symbol: String,
-        #[arg(short, long, value_enum, ignore_case = true, default_value = "rsi")]
-        strategy: Strategy,
-        #[arg(short, long, default_value = "2y", value_parser = PERIODS)]
-        period: String,
-    },
+    /// Backtest a strategy: one stock, a portfolio, or walk-forward
+    Backtest(Box<BacktestArgs>),
 
     /// SIP / DCA simulator — what if you invested X every month
     Sip {
@@ -319,6 +313,10 @@ enum Commands {
         amount: f64,
         /// Target return for the day, in percent (e.g. 1.5)
         target: f64,
+        /// Add a strategy's entry/exit rule as an extra signal: a built-in, a file in your
+        /// strategies folder, or file:PATH.toml (as in `backtest -s`)
+        #[arg(short, long)]
+        strategy: Option<String>,
     },
 
     /// Long-term picks for a monthly SIP budget
@@ -566,23 +564,187 @@ enum ScreenCategory {
     Bluechip,
 }
 
+/// `backtest SYMBOL` runs one stock; the subcommands run the other forms.
+#[derive(Args)]
+#[command(
+    args_conflicts_with_subcommands = true,
+    subcommand_negates_reqs = true,
+    after_help = "Examples:\n  \
+stockwise backtest INFY -s macd                       one stock, Indian costs, next-open fills\n  \
+stockwise backtest TCS -s rsi -P oversold=25 --json   override a parameter, JSON output\n  \
+stockwise backtest portfolio TCS INFY HDFCBANK -s sma --rebalance monthly\n  \
+stockwise backtest walkforward RELIANCE -s rsi --train 1y --test 3mo\n  \
+stockwise backtest strategies                         built-in and your own strategies\n\n\
+Strategy files, costs and fills: docs/backtesting.md"
+)]
+struct BacktestArgs {
+    #[command(subcommand)]
+    action: Option<BacktestCmd>,
+    /// Ticker, e.g. INFY (India) or AAPL with -m us
+    #[arg(required = true)]
+    symbol: Option<String>,
+    #[arg(short, long, default_value = "2y", value_parser = PERIODS)]
+    period: String,
+    #[command(flatten)]
+    flags: BacktestFlags,
+}
+
+#[derive(Subcommand)]
+enum BacktestCmd {
+    /// One strategy across several stocks sharing one pot of capital
+    Portfolio {
+        /// Tickers, e.g. TCS INFY HDFCBANK
+        #[arg(required = true, num_args = 1..)]
+        symbols: Vec<String>,
+        /// Capital split: equal, inverse-vol, or one weight per symbol (0.5,0.3,0.2)
+        #[arg(long, default_value = "equal", value_parser = backtest::engine::Weights::parse)]
+        weights: backtest::engine::Weights,
+        /// Bring every symbol back to its weight each month or quarter
+        #[arg(long, value_enum, ignore_case = true, default_value = "none")]
+        rebalance: RebalanceArg,
+        #[arg(short, long, default_value = "2y", value_parser = PERIODS)]
+        period: String,
+        #[command(flatten)]
+        flags: BacktestFlags,
+    },
+    /// Tune parameters on rolling train windows; report only the unseen test windows
+    #[command(alias = "wf")]
+    Walkforward {
+        /// Ticker, e.g. RELIANCE
+        symbol: String,
+        /// Train window, in trading time: 6mo, 1y, 2y, 90d
+        #[arg(long, default_value = "1y", value_parser = backtest::walkforward::parse_window)]
+        train: usize,
+        /// Test window after each train window: 1mo, 3mo, 6mo
+        #[arg(long, default_value = "3mo", value_parser = backtest::walkforward::parse_window)]
+        test: usize,
+        #[arg(short, long, default_value = "5y", value_parser = PERIODS)]
+        period: String,
+        #[command(flatten)]
+        flags: BacktestFlags,
+    },
+    /// List built-in and your own strategies, or check strategy files for errors
+    Strategies {
+        /// Strategy files to check instead of listing everything
+        files: Vec<String>,
+        /// Print JSON instead of a list
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// Options shared by every form of `backtest`.
+#[derive(Args, Clone)]
+struct BacktestFlags {
+    /// Strategy: rsi, macd, sma, bb, vwap, mr, a file in your strategies folder, or file:PATH.toml
+    #[arg(short, long, default_value = "rsi")]
+    strategy: String,
+    /// Set a strategy parameter, e.g. -P oversold=25 (repeatable)
+    #[arg(
+        short = 'P',
+        long = "param",
+        value_name = "NAME=VALUE",
+        value_parser = backtest::rules::parse_param_override
+    )]
+    params: Vec<(String, f64)>,
+    /// Trading costs; auto = India delivery for INR stocks, US otherwise
+    #[arg(long, value_enum, ignore_case = true, default_value = "auto")]
+    costs: CostsArg,
+    /// Brokerage per order: 20 (flat), 0.03% or 20,0.03% (whichever is lower)
+    #[arg(long, value_parser = backtest::costs::Brokerage::parse)]
+    brokerage: Option<backtest::costs::Brokerage>,
+    /// Slippage per fill, in basis points [default: 5, or 0 with --costs none]
+    #[arg(long, value_name = "BPS", value_parser = non_negative)]
+    slippage_bps: Option<f64>,
+    /// When a signal fills: the next bar's open, or the signal bar's close (look-ahead)
+    #[arg(long, value_enum, ignore_case = true, default_value = "next-open")]
+    fill: FillArg,
+    /// Starting capital, in the stock's currency
+    #[arg(long, default_value = "100000", value_parser = positive)]
+    capital: f64,
+    /// Print JSON instead of a report
+    #[arg(long)]
+    json: bool,
+}
+
+impl From<BacktestFlags> for commands::BacktestOpts {
+    fn from(f: BacktestFlags) -> Self {
+        use backtest::costs::CostPreset;
+        Self {
+            strategy: f.strategy,
+            params: f.params,
+            costs: match f.costs {
+                CostsArg::Auto => CostPreset::Auto,
+                CostsArg::None => CostPreset::None,
+                CostsArg::InDelivery => CostPreset::InDelivery,
+                CostsArg::InIntraday => CostPreset::InIntraday,
+                CostsArg::Us => CostPreset::Us,
+            },
+            brokerage: f.brokerage,
+            slippage_bps: f.slippage_bps,
+            fill: match f.fill {
+                FillArg::NextOpen => backtest::engine::Fill::NextOpen,
+                FillArg::Close => backtest::engine::Fill::Close,
+            },
+            capital: f.capital,
+            json: f.json,
+        }
+    }
+}
+
 #[derive(Clone, Copy, ValueEnum)]
-enum Strategy {
-    /// RSI oversold/overbought
-    Rsi,
-    /// MACD crossover
-    Macd,
-    /// SMA crossover
-    #[value(alias = "sma_crossover")]
-    Sma,
-    /// Bollinger Band reversion
-    #[value(alias = "bollinger")]
-    Bb,
-    /// VWAP crossover
-    Vwap,
-    /// Mean reversion
-    #[value(alias = "mean_reversion")]
-    Mr,
+enum CostsArg {
+    /// India delivery for INR stocks, US for the rest
+    Auto,
+    /// No costs or slippage
+    None,
+    /// NSE delivery: brokerage, STT 0.1% both sides, stamp duty, DP charge
+    #[value(alias = "delivery")]
+    InDelivery,
+    /// NSE intraday: brokerage, STT 0.025% on sells, stamp duty
+    #[value(alias = "intraday")]
+    InIntraday,
+    /// US: commission-free, slippage only
+    Us,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum FillArg {
+    /// Next bar's open (no look-ahead)
+    NextOpen,
+    /// Signal bar's close (how StockWise 0.3 and earlier filled)
+    Close,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum RebalanceArg {
+    None,
+    Monthly,
+    Quarterly,
+}
+
+impl From<RebalanceArg> for backtest::engine::Rebalance {
+    fn from(r: RebalanceArg) -> Self {
+        match r {
+            RebalanceArg::None => Self::None,
+            RebalanceArg::Monthly => Self::Monthly,
+            RebalanceArg::Quarterly => Self::Quarterly,
+        }
+    }
+}
+
+fn positive(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
+        _ => Err(format!("`{s}` must be a number above 0")),
+    }
+}
+
+fn non_negative(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(v) if v.is_finite() && v >= 0.0 => Ok(v),
+        _ => Err(format!("`{s}` must be a number, 0 or more")),
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -829,11 +991,44 @@ async fn main() {
         Commands::Screen { category } => commands::cmd_screen(&value_name(category), m).await,
         Commands::Dividends { symbol } => commands::cmd_dividends(&symbol, m).await,
 
-        Commands::Backtest {
-            symbol,
-            strategy,
-            period,
-        } => commands::cmd_backtest(&symbol, &value_name(strategy), &period, m).await,
+        Commands::Backtest(args) => match args.action {
+            Some(BacktestCmd::Portfolio {
+                symbols,
+                weights,
+                rebalance,
+                period,
+                flags,
+            }) => {
+                commands::cmd_backtest_portfolio(
+                    &symbols,
+                    weights,
+                    rebalance.into(),
+                    &period,
+                    flags.into(),
+                    m,
+                )
+                .await
+            }
+            Some(BacktestCmd::Walkforward {
+                symbol,
+                train,
+                test,
+                period,
+                flags,
+            }) => {
+                commands::cmd_backtest_walkforward(&symbol, train, test, &period, flags.into(), m)
+                    .await
+            }
+            Some(BacktestCmd::Strategies { files, json }) => {
+                commands::cmd_backtest_strategies(&files, json)
+            }
+            None => {
+                let symbol = args
+                    .symbol
+                    .expect("clap requires a symbol without a subcommand");
+                commands::cmd_backtest(&symbol, &args.period, args.flags.into(), m).await
+            }
+        },
         Commands::Sip {
             symbol,
             amount,
@@ -844,7 +1039,11 @@ async fn main() {
             amount,
             date,
         } => commands::cmd_whatif(&symbol, amount, &date, m).await,
-        Commands::Intraday { amount, target } => commands::cmd_intraday(amount, target, m).await,
+        Commands::Intraday {
+            amount,
+            target,
+            strategy,
+        } => commands::cmd_intraday(amount, target, strategy.as_deref(), m).await,
         Commands::Longterm { amount } => commands::cmd_longterm(amount, m).await,
         Commands::Daemon { mode, amount } => {
             commands::cmd_daemon(&value_name(mode), amount, m).await
@@ -1011,6 +1210,7 @@ mod tests {
             vec!["stockwise", "daemon", "intraday", "25000"],
             vec!["stockwise", "backtest", "TCS", "-s", "bb"],
             vec!["stockwise", "backtest", "TCS", "-s", "bollinger"],
+            vec!["stockwise", "intraday", "50000", "1.5", "-s", "rsi"],
             vec!["stockwise", "sim", "start"],
             vec!["stockwise", "tax", "US"],
             vec!["stockwise", "tax", "India"],
@@ -1018,6 +1218,137 @@ mod tests {
             vec!["stockwise", "history", "TCS", "-p", "ytd"],
         ] {
             assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
+        }
+    }
+
+    #[test]
+    fn backtest_forms_parse() {
+        let parse = |args: &[&str]| Cli::try_parse_from(args).map(|c| c.command);
+
+        // The original single-symbol form still works.
+        match parse(&["stockwise", "backtest", "TCS", "-s", "rsi"]) {
+            Ok(Commands::Backtest(a)) => {
+                assert!(a.action.is_none());
+                assert_eq!(a.symbol.as_deref(), Some("TCS"));
+                assert_eq!(a.flags.strategy, "rsi");
+                assert_eq!(a.period, "2y");
+            }
+            _ => panic!("backtest TCS -s rsi should parse as a single-symbol backtest"),
+        }
+        assert!(parse(&["stockwise", "backtest"]).is_err());
+
+        match parse(&[
+            "stockwise",
+            "backtest",
+            "portfolio",
+            "TCS",
+            "INFY",
+            "-s",
+            "sma",
+            "--weights",
+            "0.6,0.4",
+            "--rebalance",
+            "monthly",
+            "--json",
+        ]) {
+            Ok(Commands::Backtest(a)) => match a.action {
+                Some(BacktestCmd::Portfolio {
+                    symbols,
+                    weights,
+                    flags,
+                    ..
+                }) => {
+                    assert_eq!(symbols, ["TCS", "INFY"]);
+                    assert_eq!(weights, backtest::engine::Weights::Fixed(vec![0.6, 0.4]));
+                    assert!(flags.json);
+                }
+                _ => panic!("expected backtest portfolio"),
+            },
+            _ => panic!("backtest portfolio should parse"),
+        }
+        assert!(parse(&["stockwise", "backtest", "portfolio"]).is_err());
+
+        match parse(&[
+            "stockwise",
+            "backtest",
+            "walkforward",
+            "INFY",
+            "--train",
+            "1y",
+            "--test",
+            "3mo",
+        ]) {
+            Ok(Commands::Backtest(a)) => match a.action {
+                Some(BacktestCmd::Walkforward { train, test, .. }) => {
+                    assert_eq!((train, test), (252, 63));
+                }
+                _ => panic!("expected backtest walkforward"),
+            },
+            _ => panic!("backtest walkforward should parse"),
+        }
+
+        for args in [
+            vec!["stockwise", "backtest", "strategies"],
+            vec!["stockwise", "backtest", "strategies", "my.toml", "--json"],
+            vec!["stockwise", "backtest", "wf", "TCS"],
+            vec![
+                "stockwise",
+                "backtest",
+                "TCS",
+                "-s",
+                "file:my.toml",
+                "-P",
+                "oversold=25",
+            ],
+            vec![
+                "stockwise",
+                "backtest",
+                "TCS",
+                "--costs",
+                "in-intraday",
+                "--fill",
+                "close",
+            ],
+            vec![
+                "stockwise",
+                "backtest",
+                "TCS",
+                "--costs",
+                "none",
+                "--capital",
+                "50000",
+            ],
+            vec!["stockwise", "backtest", "TCS", "--brokerage", "20,0.03%"],
+            vec!["stockwise", "backtest", "AAPL", "-m", "us", "--costs", "us"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
+        }
+        for args in [
+            vec!["stockwise", "backtest", "TCS", "--costs", "zerodha"],
+            vec!["stockwise", "backtest", "TCS", "--fill", "open"],
+            vec!["stockwise", "backtest", "TCS", "--capital", "0"],
+            vec!["stockwise", "backtest", "TCS", "--brokerage", "lots"],
+            vec!["stockwise", "backtest", "TCS", "-P", "oversold"],
+            vec![
+                "stockwise",
+                "backtest",
+                "walkforward",
+                "TCS",
+                "--train",
+                "1q",
+            ],
+            vec![
+                "stockwise",
+                "backtest",
+                "portfolio",
+                "A",
+                "B",
+                "--weights",
+                "x",
+            ],
+            vec!["stockwise", "backtest", "TCS", "portfolio"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_err(), "{args:?} should fail");
         }
     }
 
@@ -1030,7 +1361,8 @@ mod tests {
 
     #[test]
     fn value_names_match_handler_strings() {
-        assert_eq!(value_name(Strategy::Bb), "bb");
+        assert_eq!(value_name(CostsArg::InDelivery), "in-delivery");
+        assert_eq!(value_name(FillArg::NextOpen), "next-open");
         assert_eq!(value_name(ImportSource::Kite), "kite");
         assert_eq!(value_name(TaxCountry::In), "in");
         assert_eq!(value_name(AlertWhen::Above), "above");

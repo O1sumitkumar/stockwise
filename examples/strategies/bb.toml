@@ -1,0 +1,14 @@
+# Bollinger Band reversion — the built-in `bb` strategy (alias bollinger).
+# Buy a close below the lower band, sell a close above the upper band.
+name = "bb"
+description = "Bollinger Bands(20, 2): buy below the lower band, sell above the upper"
+entry = "close < bb_lower($period, $k)"
+exit = "close > bb_upper($period, $k)"
+
+[params]
+period = 20
+k = 2
+
+[grid]
+period = [10, 20, 30]
+k = [1.5, 2, 2.5]

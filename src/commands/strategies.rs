@@ -1,187 +1,7 @@
-//! Strategy tools: backtests, SIP and what-if calculators, intraday ideas, long-term picks, and AI reports.
+//! Strategy tools: SIP and what-if calculators, intraday ideas, long-term picks, and AI reports.
+//! Backtests live in `backtests.rs`.
 
 use super::*;
-
-pub async fn cmd_backtest(
-    symbol: &str,
-    strategy: &str,
-    period: &str,
-    market: Market,
-) -> Result<()> {
-    let resolved = market::resolve_symbol(symbol, market);
-    let client = YahooClient::new().await?;
-    let chart = client.get_chart(&resolved, period, "1d").await?;
-    let cur = chart.meta.as_ref().and_then(|m| m.currency.as_deref());
-
-    let closes: Vec<f64> = chart
-        .indicators
-        .quote
-        .first()
-        .and_then(|q| q.close.as_ref())
-        .map(|c| c.iter().filter_map(|v| *v).collect())
-        .unwrap_or_default();
-    let highs: Vec<f64> = chart
-        .indicators
-        .quote
-        .first()
-        .and_then(|q| q.high.as_ref())
-        .map(|c| c.iter().filter_map(|v| *v).collect())
-        .unwrap_or_default();
-    let lows: Vec<f64> = chart
-        .indicators
-        .quote
-        .first()
-        .and_then(|q| q.low.as_ref())
-        .map(|c| c.iter().filter_map(|v| *v).collect())
-        .unwrap_or_default();
-    let volumes: Vec<u64> = chart
-        .indicators
-        .quote
-        .first()
-        .and_then(|q| q.volume.as_ref())
-        .map(|c| c.iter().filter_map(|v| *v).collect())
-        .unwrap_or_default();
-
-    if closes.len() < 50 {
-        println!(
-            "{}",
-            "Not enough data for backtesting. Use a longer period.".red()
-        );
-        return Ok(());
-    }
-
-    let result = backtest::run_backtest(strategy, &closes, &highs, &lows, &volumes);
-    let result = match result {
-        Some(r) => r,
-        None => bail!(
-            "Unknown strategy '{}'. Use rsi, macd, sma, bb, vwap, or mr",
-            strategy
-        ),
-    };
-
-    print_header(&format!(
-        "Backtest: {} — {} strategy ({})",
-        resolved,
-        strategy.to_uppercase(),
-        period
-    ));
-    println!();
-
-    // Equity curve chart
-    for line in charts::line_chart(
-        &result.equity_curve,
-        55,
-        8,
-        if result.total_return >= 0.0 {
-            "green"
-        } else {
-            "red"
-        },
-        "Equity Curve (starting at 100)",
-    ) {
-        println!("{}", line);
-    }
-
-    print_section("Performance");
-    let ret_str = if result.total_return >= 0.0 {
-        format!("+{:.2}%", result.total_return).green().to_string()
-    } else {
-        format!("{:.2}%", result.total_return).red().to_string()
-    };
-    let bh_str = if result.buy_hold_return >= 0.0 {
-        format!("+{:.2}%", result.buy_hold_return)
-            .green()
-            .to_string()
-    } else {
-        format!("{:.2}%", result.buy_hold_return).red().to_string()
-    };
-    print_kv("Strategy Return", &ret_str);
-    print_kv("Buy & Hold Return", &bh_str);
-    let alpha = result.total_return - result.buy_hold_return;
-    let alpha_str = if alpha >= 0.0 {
-        format!("+{:.2}%", alpha).green().bold().to_string()
-    } else {
-        format!("{:.2}%", alpha).red().to_string()
-    };
-    print_kv("Alpha (vs B&H)", &alpha_str);
-
-    print_section("Trade Statistics");
-    print_kv("Total Trades", &result.trades.len().to_string());
-    print_kv("Win Rate", &format!("{:.1}%", result.win_rate));
-    print_kv(
-        "Avg Win",
-        &format!("+{:.2}%", result.avg_win).green().to_string(),
-    );
-    print_kv(
-        "Avg Loss",
-        &format!("{:.2}%", result.avg_loss).red().to_string(),
-    );
-    print_kv(
-        "Max Drawdown",
-        &format!("-{:.2}%", result.max_drawdown).red().to_string(),
-    );
-    if let Some(s) = result.sharpe {
-        print_kv("Sharpe Ratio", &format!("{:.3}", s));
-    }
-
-    // Last 10 trades
-    if !result.trades.is_empty() {
-        print_section("Recent Trades");
-        let csym = market::currency_symbol(cur);
-        println!(
-            "  {:<6} {:>10} {:>10} {:>10}",
-            "Trade".bold(),
-            "Entry".bold(),
-            "Exit".bold(),
-            "P&L".bold()
-        );
-        println!("  {}", "─".repeat(40).dimmed());
-        for (i, t) in result.trades.iter().rev().take(10).enumerate() {
-            let pnl = if t.pnl_pct >= 0.0 {
-                format!("+{:.2}%", t.pnl_pct).green().to_string()
-            } else {
-                format!("{:.2}%", t.pnl_pct).red().to_string()
-            };
-            println!(
-                "  {:<6} {:>10} {:>10} {:>10}",
-                format!("#{}", result.trades.len() - i),
-                format!("{}{:.2}", csym, t.entry_price),
-                format!("{}{:.2}", csym, t.exit_price),
-                pnl
-            );
-        }
-    }
-    // AI backtest interpretation
-    let mut ai = crate::ai::AiClient::connect().await;
-    if ai.auto_available().await {
-        let data = format!(
-            "Strategy: {}, Period: {}, Return: {:.2}%, Buy&Hold: {:.2}%, Win rate: {:.0}%, Trades: {}, Max DD: {:.1}%, Sharpe: {}",
-            strategy,
-            period,
-            result.total_return,
-            result.buy_hold_return,
-            result.win_rate,
-            result.trades.len(),
-            result.max_drawdown,
-            result.sharpe.map_or("N/A".into(), |s| format!("{:.2}", s))
-        );
-        print_section("Ollama AI Interpretation");
-        if let Ok(interp) = ai.interpret_backtest(&data).await {
-            for line in interp.lines() {
-                println!("  {}", line);
-            }
-        }
-    }
-
-    println!(
-        "\n  {}",
-        "Backtests use historical data. Past results ≠ future performance."
-            .dimmed()
-            .italic()
-    );
-    println!();
-    Ok(())
-}
 
 // ── SIP/DCA Simulator ──
 
@@ -399,7 +219,17 @@ pub async fn cmd_whatif(symbol: &str, amount: f64, date_str: &str, market: Marke
     Ok(())
 }
 
-pub async fn cmd_intraday(amount: f64, target_pct: f64, market: Market) -> Result<()> {
+pub async fn cmd_intraday(
+    amount: f64,
+    target_pct: f64,
+    strategy: Option<&str>,
+    market: Market,
+) -> Result<()> {
+    // Load the optional rule first so a bad file fails before any scanning.
+    let rule = match strategy {
+        Some(s) => Some(backtest::rules::load(s)?.compile()?),
+        None => None,
+    };
     let target_profit = amount * (target_pct / 100.0);
     let csym = match market {
         Market::In => "₹",
@@ -449,11 +279,15 @@ pub async fn cmd_intraday(amount: f64, target_pct: f64, market: Market) -> Resul
     }
 
     // Scan stocks
+    let extra = rule
+        .as_ref()
+        .map_or(String::new(), |r| format!(" + rule `{}`", r.name));
     println!(
-        "\n  {} Scanning stocks with 9 strategies...\n",
-        "⟳".yellow()
+        "\n  {} Scanning stocks with 9 strategies{}...\n",
+        "⟳".yellow(),
+        extra
     );
-    let signals = intraday::scan_intraday(&client, market).await?;
+    let signals = intraday::scan_intraday_with(&client, market, rule.as_ref()).await?;
     let plans = intraday::generate_trade_plans(&signals, amount, target_pct, 1.0);
 
     // Market regime summary
@@ -1056,5 +890,3 @@ pub async fn cmd_report(what: &str, market: Market) -> Result<()> {
     println!();
     Ok(())
 }
-
-// ── Backtest ──

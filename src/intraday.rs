@@ -190,8 +190,9 @@ fn compute_signal(
     lows: &[f64],
     volumes: &[u64],
     opens: &[f64],
+    custom: Option<StrategySignal>,
 ) -> IntradaySignal {
-    let mut strategies: Vec<StrategySignal> = Vec::new();
+    let mut strategies: Vec<StrategySignal> = custom.into_iter().collect();
     let regime = detect_regime(closes);
 
     // ── Strategy 1: RSI Reversal ──
@@ -707,6 +708,61 @@ pub async fn scan_intraday(
     client: &YahooClient,
     market: market::Market,
 ) -> Result<Vec<IntradaySignal>> {
+    scan_intraday_with(client, market, None).await
+}
+
+/// A strategy file's rules (see `backtest -s`) as one more vote: a Long
+/// "Custom rule" signal when its entry rule holds on the latest daily bar, a
+/// Short one when its exit rule holds. Uses its own daily history, long
+/// enough for the rule's indicators, so the built-in signals are unchanged.
+async fn custom_rule_signal(
+    client: &YahooClient,
+    symbol: &str,
+    rule: &crate::backtest::rules::Strategy,
+) -> Option<StrategySignal> {
+    let range = match rule.lookback() {
+        0..200 => "1y",
+        200..450 => "2y",
+        _ => "5y",
+    };
+    let chart = client.get_chart(symbol, range, "1d").await.ok()?;
+    rule_vote(rule, &crate::backtest::Bars::from_chart(&chart))
+}
+
+fn rule_vote(
+    rule: &crate::backtest::rules::Strategy,
+    bars: &crate::backtest::Bars,
+) -> Option<StrategySignal> {
+    if bars.len() <= rule.lookback() {
+        return None;
+    }
+    let signals = rule.signals(bars);
+    let last = bars.len() - 1;
+    if signals.entry[last] && !signals.exit[last] {
+        Some(StrategySignal {
+            name: "Custom rule",
+            direction: Direction::Long,
+            strength: 70.0,
+            reason: format!("{}: entry rule holds", rule.name),
+        })
+    } else if signals.exit[last] {
+        Some(StrategySignal {
+            name: "Custom rule",
+            direction: Direction::Short,
+            strength: 60.0,
+            reason: format!("{}: exit rule holds", rule.name),
+        })
+    } else {
+        None
+    }
+}
+
+/// [`scan_intraday`] with an optional strategy rule as an extra signal.
+pub async fn scan_intraday_with(
+    client: &YahooClient,
+    market: market::Market,
+    rule: Option<&crate::backtest::rules::Strategy>,
+) -> Result<Vec<IntradaySignal>> {
     let symbols = match market {
         market::Market::In => market::INDIA_POPULAR,
         market::Market::Us => market::US_POPULAR,
@@ -757,8 +813,12 @@ pub async fn scan_intraday(
             continue;
         }
 
+        let custom = match rule {
+            Some(rule) => custom_rule_signal(client, &symbol, rule).await,
+            None => None,
+        };
         let signal = compute_signal(
-            &symbol, quote, price, &closes, &highs, &lows, &volumes, &opens,
+            &symbol, quote, price, &closes, &highs, &lows, &volumes, &opens, custom,
         );
         signals.push(signal);
     }
@@ -998,5 +1058,27 @@ mod tests {
         assert_eq!(c.symbol, s.symbol);
         assert_eq!(c.price, s.price);
         assert_eq!(c.score, s.score);
+    }
+
+    #[test]
+    fn custom_rule_votes_on_the_latest_bar() {
+        use crate::backtest::{Bars, rules::StrategyDef};
+        let rule = StrategyDef::parse(
+            r#"entry = "close > sma(3)"
+               exit = "close < sma(3)""#,
+            "up",
+            "test",
+        )
+        .unwrap()
+        .compile()
+        .unwrap();
+        let up = rule_vote(&rule, &Bars::from_closes(&[10.0, 10.0, 10.0, 12.0])).unwrap();
+        assert_eq!(up.direction, Direction::Long);
+        assert!(up.reason.starts_with("up: entry"));
+        let down = rule_vote(&rule, &Bars::from_closes(&[10.0, 10.0, 10.0, 8.0])).unwrap();
+        assert_eq!(down.direction, Direction::Short);
+        assert!(rule_vote(&rule, &Bars::from_closes(&[10.0; 4])).is_none());
+        // Not enough history for the rule's indicators: no vote.
+        assert!(rule_vote(&rule, &Bars::from_closes(&[10.0, 12.0])).is_none());
     }
 }

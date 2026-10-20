@@ -1,0 +1,14 @@
+# Moving-average crossover — the built-in `sma` strategy (alias sma_crossover).
+# Buy when the fast average crosses above the slow one, sell on the cross back.
+name = "sma"
+description = "SMA(20) crosses SMA(50)"
+entry = "sma($fast) crosses_above sma($slow)"
+exit = "sma($fast) crosses_below sma($slow)"
+
+[params]
+fast = 20
+slow = 50
+
+[grid]
+fast = [10, 20, 30]
+slow = [50, 100]

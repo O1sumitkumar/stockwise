@@ -40,6 +40,7 @@ fn resolve_symbols(symbols: &[String], market: Market) -> Vec<String> {
         .collect()
 }
 
+mod backtests;
 mod fundamentals;
 mod holdings;
 mod markets;
@@ -51,6 +52,7 @@ mod technicals;
 mod trade;
 mod worker;
 
+pub use backtests::*;
 pub use fundamentals::*;
 pub use holdings::*;
 pub use markets::*;
