@@ -30,9 +30,26 @@ jobs:
             exit 1
           fi
 
+  manpages:
+    name: man pages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Generated from the clap definition, so they always match the binary.
+      # One host build serves every target (the pages don't depend on it).
+      - name: Generate stockwise.1 and stockwise-<command>.1
+        run: cargo run --locked --quiet -- man --dir man
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manpages
+          path: man/
+          if-no-files-found: error
+
   build:
     name: build ${{ matrix.target }}
-    needs: check-version
+    needs: [check-version, manpages]
     # Run on manual dispatch too (check-version is skipped there).
     if: ${{ !failure() && !cancelled() }}
     runs-on: ${{ matrix.os }}
@@ -62,6 +79,11 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: manpages
+          path: man
+
       - name: Package (Unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -72,6 +94,7 @@ jobs:
           mkdir "$staging"
           cp "target/${TARGET}/release/${BIN_NAME}" "$staging/"
           cp README.md LICENSE CHANGELOG.md DISCLAIMER.md "$staging/"
+          cp -R man "$staging/"
           tar czf "${staging}.tar.gz" "$staging"
           if command -v sha256sum >/dev/null; then
             sha256sum "${staging}.tar.gz" > "${staging}.tar.gz.sha256"
@@ -90,6 +113,7 @@ jobs:
           mkdir "$staging"
           cp "target/${TARGET}/release/${BIN_NAME}.exe" "$staging/"
           cp README.md LICENSE CHANGELOG.md DISCLAIMER.md "$staging/"
+          cp -R man "$staging/"
           7z a "${staging}.zip" "$staging"
           sha256sum "${staging}.zip" > "${staging}.zip.sha256"
           echo "ASSET=${staging}.zip" >> "$GITHUB_ENV"
@@ -124,3 +148,211 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --locked
+
+  # Fills the Homebrew, Scoop, winget and AUR templates in packaging/ with this
+  # release's checksums. Tags: from the release assets; the Scoop manifest is
+  # attached to the release. Manual runs: from the dry-run build artifacts.
+  packaging:
+    name: package manifests
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ !failure() && !cancelled() && needs.build.result == 'success' }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release checksums
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --pattern '*.sha256' --dir sums
+          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Download dry-run checksums
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ${{ env.BIN_NAME }}-*
+          merge-multiple: true
+          path: sums
+
+      - name: Version from Cargo.toml (dry run)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        run: echo "VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" >> "$GITHUB_ENV"
+
+      - name: Render manifests
+        run: packaging/render.sh "$VERSION" sums dist
+
+      - name: Attach the Scoop manifest to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" dist/scoop/stockwise.json --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packaging-manifests
+          path: dist/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  # Pushes Formula/stockwise.rb to iamsaquib8/homebrew-tap. Needs a
+  # HOMEBREW_TAP_TOKEN secret (fine-grained PAT, contents: write on that repo);
+  # without it the job succeeds and only logs a notice.
+  homebrew:
+    name: update Homebrew tap
+    needs: packaging
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    env:
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - name: Check for HOMEBREW_TAP_TOKEN
+        id: token
+        run: |
+          if [ -n "$TAP_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::HOMEBREW_TAP_TOKEN is not set; skipping the Homebrew tap update."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/download-artifact@v4
+        if: steps.token.outputs.enabled == 'true'
+        with:
+          name: packaging-manifests
+          path: dist
+
+      - uses: actions/checkout@v4
+        if: steps.token.outputs.enabled == 'true'
+        with:
+          repository: iamsaquib8/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Commit and push the formula
+        if: steps.token.outputs.enabled == 'true'
+        working-directory: tap
+        run: |
+          mkdir -p Formula
+          cp ../dist/homebrew/stockwise.rb Formula/stockwise.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/stockwise.rb
+          if git diff --cached --quiet; then
+            echo "Formula is already up to date."
+            exit 0
+          fi
+          git commit -m "stockwise ${GITHUB_REF_NAME#v}"
+          git push
+
+  # Container image, built natively per platform. Tags push each platform by
+  # digest, then docker-manifest joins them; manual runs only build.
+  docker:
+    name: docker ${{ matrix.platform }}
+    needs: check-version
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      IMAGE: ghcr.io/iamsaquib8/stockwise
+      PUSH: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        if: env.PUSH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+
+      - name: Build
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=docker-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.arch }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ env.PUSH }}
+
+      - name: Export digest
+        if: env.PUSH == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p digests
+          touch "digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        if: env.PUSH == 'true'
+        with:
+          name: digests-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-manifest:
+    name: docker manifest
+    # Wait for the release binaries too, so a failed release gets no image tag.
+    needs: [build, docker]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/iamsaquib8/stockwise
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+          merge-multiple: true
+          path: digests
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags: 0.3.0, 0.3 and latest (not for pre-releases).
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Create the multi-arch manifest
+        working-directory: digests
+        run: |
+          args=()
+          while read -r tag; do args+=(-t "$tag"); done < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          for digest in *; do args+=("$IMAGE@sha256:$digest"); done
+          docker buildx imagetools create "${args[@]}"
+
+      - name: Inspect
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect "$IMAGE:$VERSION"

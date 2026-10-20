@@ -141,6 +141,7 @@ mod tests {
     fn from_chart_drops_incomplete_bars_and_same_day_duplicates() {
         let chart = ChartData {
             meta: None,
+            events: None,
             timestamp: Some(vec![0, 86_400, 2 * 86_400, 2 * 86_400 + 3_600]),
             indicators: Indicators {
                 quote: vec![QuoteIndicator {

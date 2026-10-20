@@ -12,25 +12,59 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-/// Parse a window length into trading days: `90d`, `13w`, `6mo`, `1y`.
-pub fn parse_window(s: &str) -> Result<usize, String> {
-    let t = s.trim().to_ascii_lowercase();
-    let split = t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len());
-    let (num, unit) = t.split_at(split);
-    let n: usize = num
-        .parse()
-        .map_err(|_| format!("`{s}`: use a length like 90d, 13w, 6mo or 1y"))?;
-    let per = match unit {
-        "d" => 1,
-        "w" => 5,
-        "mo" | "m" => 21,
-        "y" => 252,
-        _ => return Err(format!("`{s}`: use a length like 90d, 13w, 6mo or 1y")),
-    };
-    match n.checked_mul(per) {
-        Some(0) => Err(format!("`{s}` is empty")),
-        Some(days) if days <= 252 * 100 => Ok(days),
-        _ => Err(format!("`{s}` is longer than 100 years")),
+/// A window length as typed: `90d`, `13w`, `6mo`, `1y`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Window {
+    count: usize,
+    unit: Unit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unit {
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+impl Window {
+    pub fn parse(s: &str) -> Result<Window, String> {
+        let t = s.trim().to_ascii_lowercase();
+        let split = t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len());
+        let (num, unit) = t.split_at(split);
+        let bad = || format!("`{s}`: use a length like 90d, 13w, 6mo or 1y");
+        let count: usize = num.parse().map_err(|_| bad())?;
+        let unit = match unit {
+            "d" => Unit::Day,
+            "w" => Unit::Week,
+            "mo" | "m" => Unit::Month,
+            "y" => Unit::Year,
+            _ => return Err(bad()),
+        };
+        let w = Window { count, unit };
+        match w.checked_bars(365.0) {
+            Some(0) => Err(format!("`{s}` is empty")),
+            Some(days) if days <= 365 * 100 => Ok(w),
+            _ => Err(format!("`{s}` is longer than 100 years")),
+        }
+    }
+
+    /// Bars in the window for a market with `per_year` daily bars: a stock
+    /// year is 252 trading days, a month 21, a week 5; crypto counts
+    /// calendar days (365, 30, 7).
+    pub fn bars(self, per_year: f64) -> usize {
+        self.checked_bars(per_year).unwrap_or(usize::MAX)
+    }
+
+    fn checked_bars(self, per_year: f64) -> Option<usize> {
+        let per = match self.unit {
+            Unit::Day => 1,
+            Unit::Week if per_year >= 365.0 => 7,
+            Unit::Week => 5,
+            Unit::Month => (per_year / 12.0).round() as usize,
+            Unit::Year => per_year.round() as usize,
+        };
+        self.count.checked_mul(per)
     }
 }
 
@@ -121,7 +155,7 @@ fn stats(bars: &Bars, r: &SimResult) -> WindowStats {
         end: date(bars.time[bars.len() - 1]),
         bars: bars.len(),
         return_pct: m.total_return_pct,
-        annualised_pct: engine::annualised_pct(m.total_return_pct, bars.len()),
+        annualised_pct: engine::annualised_pct(m.total_return_pct, bars.len(), r.periods_per_year),
         sharpe: m.sharpe,
         max_drawdown_pct: m.max_drawdown_pct,
         trades: m.trades,
@@ -291,6 +325,7 @@ pub fn run(
             &net.invested,
             &net.trades,
             0.0,
+            cfg.periods_per_year,
         );
         folds.push(Fold {
             params: strategy.params.clone(),
@@ -300,7 +335,11 @@ pub fn run(
                 end: date(bars.time[test_r.end - 1]),
                 bars: test_r.len(),
                 return_pct: m.total_return_pct,
-                annualised_pct: engine::annualised_pct(m.total_return_pct, test_r.len()),
+                annualised_pct: engine::annualised_pct(
+                    m.total_return_pct,
+                    test_r.len(),
+                    cfg.periods_per_year,
+                ),
                 sharpe: m.sharpe,
                 max_drawdown_pct: m.max_drawdown_pct,
                 trades: m.trades,
@@ -309,8 +348,9 @@ pub fn run(
         trades.extend(net.trades);
     }
 
-    let oos = engine::metrics(cfg.capital, &times, &equity, &invested, &trades, costs);
-    let oos_ann = engine::annualised_pct(oos.total_return_pct, equity.len());
+    let ppy = cfg.periods_per_year;
+    let oos = engine::metrics(cfg.capital, &times, &equity, &invested, &trades, costs, ppy);
+    let oos_ann = engine::annualised_pct(oos.total_return_pct, equity.len(), ppy);
     let is_ann = mean(folds.iter().filter_map(|f| f.in_sample.annualised_pct));
     let is_sharpe = mean(folds.iter().filter_map(|f| f.in_sample.sharpe));
     let efficiency = match (oos_ann, is_ann) {
@@ -438,16 +478,22 @@ mod tests {
 
     #[test]
     fn window_lengths() {
-        assert_eq!(parse_window("1y"), Ok(252));
-        assert_eq!(parse_window("6mo"), Ok(126));
-        assert_eq!(parse_window("3M"), Ok(63));
-        assert_eq!(parse_window("13w"), Ok(65));
-        assert_eq!(parse_window("90d"), Ok(90));
-        assert!(parse_window("0d").is_err());
-        assert!(parse_window("1q").is_err());
-        assert!(parse_window("y").is_err());
-        assert!(parse_window("99999999999999999999y").is_err());
-        assert!(parse_window("200y").is_err());
+        let stock = |s: &str| Window::parse(s).map(|w| w.bars(252.0));
+        assert_eq!(stock("1y"), Ok(252));
+        assert_eq!(stock("6mo"), Ok(126));
+        assert_eq!(stock("3M"), Ok(63));
+        assert_eq!(stock("13w"), Ok(65));
+        assert_eq!(stock("90d"), Ok(90));
+        let crypto = |s: &str| Window::parse(s).map(|w| w.bars(365.0));
+        assert_eq!(crypto("1y"), Ok(365));
+        assert_eq!(crypto("3mo"), Ok(90));
+        assert_eq!(crypto("2w"), Ok(14));
+        assert_eq!(Window::parse("1y").unwrap().bars(260.0), 260);
+        assert!(Window::parse("0d").is_err());
+        assert!(Window::parse("1q").is_err());
+        assert!(Window::parse("y").is_err());
+        assert!(Window::parse("99999999999999999999y").is_err());
+        assert!(Window::parse("200y").is_err());
     }
 
     #[test]

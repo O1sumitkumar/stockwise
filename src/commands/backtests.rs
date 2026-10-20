@@ -27,21 +27,25 @@ impl BacktestOpts {
         rules::load(&self.strategy)?.with_params(&self.params)
     }
 
-    fn cost_model(&self, currency: Option<&str>) -> CostModel {
-        let mut m = self.costs.model(currency);
+    fn cost_model(&self, symbol: &str, currency: Option<&str>) -> Result<CostModel> {
+        let mut m = self
+            .costs
+            .model_for(symbol, currency)
+            .map_err(|e| anyhow::anyhow!(e))?;
         if let Some(b) = self.brokerage {
             m.brokerage = b;
         }
         if let Some(s) = self.slippage_bps {
             m.slippage_bps = s;
         }
-        m
+        Ok(m)
     }
 
-    fn sim_config(&self, def: &StrategyDef, costs: CostModel) -> SimConfig {
+    fn sim_config(&self, def: &StrategyDef, costs: CostModel, symbols: &[String]) -> SimConfig {
         SimConfig {
             stop_loss_pct: def.stop_loss_pct,
             take_profit_pct: def.take_profit_pct,
+            periods_per_year: engine::bars_per_year(symbols.iter().map(String::as_str)),
             ..SimConfig::single(self.capital, self.fill, costs)
         }
     }
@@ -339,8 +343,8 @@ pub async fn cmd_backtest(
     let cur = currency.as_deref();
     check_history(&bars, &resolved, period, def.compile()?.lookback() + 10)?;
 
-    let costs = opts.cost_model(cur);
-    let cfg = opts.sim_config(&def, costs.clone());
+    let costs = opts.cost_model(&resolved, cur)?;
+    let cfg = opts.sim_config(&def, costs.clone(), std::slice::from_ref(&resolved));
     let net = single(&resolved, &bars, &def, &cfg)?;
     let gross = single(
         &resolved,
@@ -432,7 +436,7 @@ pub async fn cmd_backtest(
             m.max_drawdown_pct,
             m.sharpe.map_or("N/A".into(), |s| format!("{s:.2}"))
         );
-        print_section("Ollama AI Interpretation");
+        print_section(&format!("AI Interpretation ({})", ai.provider().name()));
         if let Ok(interp) = ai.interpret_backtest(&data).await {
             for line in interp.lines() {
                 println!("  {}", line);
@@ -503,11 +507,21 @@ pub async fn cmd_backtest_portfolio(
         })
         .collect();
 
-    let costs = opts.cost_model(cur);
+    // One cost model for the whole portfolio: every symbol must agree on it.
+    let costs = opts.cost_model(&resolved[0], cur)?;
+    for s in &resolved[1..] {
+        if opts.cost_model(s, cur)? != costs {
+            bail!(
+                "{} and {s} need different cost models (stocks, crypto and FX are charged \
+                 differently). Pass one with --costs, or backtest them separately",
+                resolved[0]
+            );
+        }
+    }
     let cfg = SimConfig {
         weights: weights.clone(),
         rebalance,
-        ..opts.sim_config(&def, costs.clone())
+        ..opts.sim_config(&def, costs.clone(), &resolved)
     };
     let net = engine::simulate(&assets, &cfg);
     let gross = engine::simulate(
@@ -637,8 +651,8 @@ fn value_label(r: Rebalance) -> &'static str {
 
 pub async fn cmd_backtest_walkforward(
     symbol: &str,
-    train: usize,
-    test: usize,
+    train: walkforward::Window,
+    test: walkforward::Window,
     period: &str,
     opts: BacktestOpts,
     market: Market,
@@ -648,8 +662,13 @@ pub async fn cmd_backtest_walkforward(
     let client = YahooClient::new().await?;
     let (bars, currency) = fetch_bars(&client, &resolved, period, market).await?;
     let cur = currency.as_deref();
-    let costs = opts.cost_model(cur);
-    let cfg = opts.sim_config(&def, costs.clone());
+    let costs = opts.cost_model(&resolved, cur)?;
+    let cfg = opts.sim_config(&def, costs.clone(), std::slice::from_ref(&resolved));
+    // Window lengths count bars: trading days for stocks, every day for crypto.
+    let (train, test) = (
+        train.bars(cfg.periods_per_year),
+        test.bars(cfg.periods_per_year),
+    );
     let wf = walkforward::run(&def, &resolved, &bars, train, test, &cfg)?;
 
     if opts.json {

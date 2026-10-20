@@ -14,6 +14,7 @@
 //! | Stamp duty              | 0.015% buy          | 0.003% buy          |
 //! | DP charge (per sell)    | ₹15.93              | —                   |
 
+use crate::market::AssetClass;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -143,18 +144,42 @@ pub enum CostPreset {
     InDelivery,
     InIntraday,
     Us,
+    Crypto,
+    Fx,
 }
 
 impl CostPreset {
-    pub fn model(self, currency: Option<&str>) -> CostModel {
-        match self {
-            CostPreset::Auto if currency == Some("INR") => CostModel::in_delivery(),
-            CostPreset::Auto => CostModel::us(),
+    /// The cost model for `symbol`. `auto` follows the instrument: crypto
+    /// and FX get their own models, INR stocks India delivery, the rest US.
+    /// NSE equity charges are refused for coins and currency pairs.
+    pub fn model_for(self, symbol: &str, currency: Option<&str>) -> Result<CostModel, String> {
+        let class = AssetClass::of(symbol);
+        let what = match class {
+            AssetClass::Crypto => Some(("crypto", "crypto")),
+            AssetClass::Fx => Some(("a currency pair", "fx")),
+            _ => None,
+        };
+        Ok(match self {
+            CostPreset::Auto => match class {
+                AssetClass::Crypto => CostModel::crypto(),
+                AssetClass::Fx => CostModel::fx(),
+                _ if currency == Some("INR") => CostModel::in_delivery(),
+                _ => CostModel::us(),
+            },
+            CostPreset::InDelivery | CostPreset::InIntraday if what.is_some() => {
+                let (kind, preset) = what.expect("checked above");
+                return Err(format!(
+                    "--costs in-delivery/in-intraday are NSE equity charges (STT, stamp duty, \
+                     DP); {symbol} is {kind}. Use --costs {preset}, none or auto"
+                ));
+            }
             CostPreset::None => CostModel::none(),
             CostPreset::InDelivery => CostModel::in_delivery(),
             CostPreset::InIntraday => CostModel::in_intraday(),
             CostPreset::Us => CostModel::us(),
-        }
+            CostPreset::Crypto => CostModel::crypto(),
+            CostPreset::Fx => CostModel::fx(),
+        })
     }
 }
 
@@ -221,6 +246,28 @@ impl CostModel {
         }
     }
 
+    /// Crypto exchanges: a 0.1% taker fee per order and 10 bps of slippage.
+    pub fn crypto() -> Self {
+        CostModel {
+            name: "crypto".into(),
+            brokerage: Brokerage {
+                flat: None,
+                pct: Some(0.1),
+            },
+            slippage_bps: 10.0,
+            ..CostModel::none()
+        }
+    }
+
+    /// Spot FX: no commission, 2 bps of slippage for the spread.
+    pub fn fx() -> Self {
+        CostModel {
+            name: "fx".into(),
+            slippage_bps: 2.0,
+            ..CostModel::none()
+        }
+    }
+
     /// Charges for one order of `turnover` (price × quantity).
     pub fn charges(&self, side: Side, turnover: f64) -> Charges {
         let pct = |rate: f64| turnover * rate / 100.0;
@@ -258,11 +305,18 @@ impl CostModel {
             "in-delivery" => "India delivery",
             "in-intraday" => "India intraday",
             "us" => "US",
+            "crypto" => "Crypto",
+            "fx" => "FX",
             other => other,
         };
         let mut parts = Vec::new();
         if self.brokerage != Brokerage::default() {
-            parts.push(format!("brokerage {}", self.brokerage.describe(csym)));
+            let label = if self.name == "crypto" {
+                "fee"
+            } else {
+                "brokerage"
+            };
+            parts.push(format!("{label} {}", self.brokerage.describe(csym)));
         }
         for (rate, label) in [
             (self.stt_buy_pct + self.stt_sell_pct, "STT"),
@@ -360,9 +414,22 @@ mod tests {
 
     #[test]
     fn auto_preset_follows_currency() {
-        assert_eq!(CostPreset::Auto.model(Some("INR")).name, "in-delivery");
-        assert_eq!(CostPreset::Auto.model(Some("USD")).name, "us");
-        assert_eq!(CostPreset::Auto.model(None).name, "us");
+        let auto = |s: &str, c: Option<&str>| CostPreset::Auto.model_for(s, c).unwrap().name;
+        assert_eq!(auto("TCS.NS", Some("INR")), "in-delivery");
+        assert_eq!(auto("AAPL", Some("USD")), "us");
+        assert_eq!(auto("AAPL", None), "us");
+        assert_eq!(auto("BTC-INR", Some("INR")), "crypto");
+        assert_eq!(auto("USDINR=X", Some("INR")), "fx");
+        let e = CostPreset::InDelivery.model_for("BTC-USD", Some("USD"));
+        assert!(e.unwrap_err().contains("--costs crypto"));
+        assert!(CostPreset::InIntraday.model_for("EURUSD=X", None).is_err());
+        assert_eq!(
+            CostPreset::Us.model_for("BTC-USD", None).unwrap().name,
+            "us"
+        );
+        let c = CostModel::crypto().charges(Side::Buy, 10_000.0);
+        assert!(close(c.total(), 10.0));
+        assert_eq!(CostModel::fx().describe("$"), "FX — slippage 2 bps");
     }
 
     #[test]

@@ -391,10 +391,18 @@ pub async fn cmd_options(symbol: &str, period: &str, market: Market) -> Result<(
     let resolved = market::resolve_symbol(symbol, market);
     let client = YahooClient::new().await?;
     let quotes = client.get_quote(&[&resolved]).await?;
-    let q = quotes.first().context("Symbol not found")?;
+    let q = quotes.first().with_context(|| {
+        format!(
+            "No quote for {}{}",
+            resolved,
+            market::not_found_hint(market)
+        )
+    })?;
     let cur = q.currency.as_deref();
     let csym = market::currency_symbol(cur);
-    let price = q.regular_market_price.unwrap_or(0.0);
+    let price = q
+        .regular_market_price
+        .with_context(|| format!("No live price for {}", resolved))?;
 
     print_header(&format!("Options Overview: {}", resolved));
     print_kv("Spot Price", &format_price(price, cur));
@@ -453,9 +461,13 @@ pub async fn cmd_options(symbol: &str, period: &str, market: Market) -> Result<(
     }
     println!(
         "\n  {}",
-        "For full options chain, check your broker platform."
-            .dimmed()
-            .italic()
+        format!(
+            "Full chain with greeks: stockwise options chain {}{}",
+            symbol,
+            if market == Market::Us { " -m us" } else { "" }
+        )
+        .dimmed()
+        .italic()
     );
     println!();
     Ok(())

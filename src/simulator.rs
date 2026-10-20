@@ -1,4 +1,8 @@
+use crate::clock;
+use crate::daemon::{LivePosition, Phase, PositionStatus, update_position};
+use crate::market::Market;
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// A single simulated trade
@@ -15,6 +19,10 @@ pub struct SimTrade {
     pub score: f64,
     pub confidence: String,
     pub strategies: Vec<String>,
+    /// When the trade was opened (RFC 3339). `sim settle` ignores bars that
+    /// closed before it. Missing in sessions from before 0.4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entered_at: Option<String>,
     // Filled at end-of-day
     pub exit_price: Option<f64>,
     pub pnl: Option<f64>,
@@ -149,6 +157,165 @@ impl SimHistory {
     }
 }
 
+/// One OHLC bar from an intraday (or daily) chart.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bar {
+    /// Bar start.
+    pub time: DateTime<Utc>,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+}
+
+/// How a trade ended when replayed over a session's bars.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Replay {
+    pub exit_price: f64,
+    pub exit_time: DateTime<Utc>,
+    pub pnl: f64,
+    /// P&L as a percentage of the capital the trade used.
+    pub pnl_pct: f64,
+    pub status: PositionStatus,
+    pub t1_booked: bool,
+}
+
+/// Replay `trade` over one session's `bars` with the daemon's position
+/// manager: book half at T1 and move the stop to breakeven, close the rest at
+/// T2, trail the stop after T1, tighten it in the wind-down, and square off
+/// at the bar that starts 15 minutes before the close.
+///
+/// Inside a bar the order of the high and the low is unknown, so the replay
+/// is conservative: open, then the adverse extreme (a stop fills first), then
+/// the favourable extreme, then the close. Stops and targets fill at their
+/// level unless the bar opened beyond them (a gap fills at the open).
+///
+/// Daily bars (`bar_len` of a day or more) are the fallback for sessions too
+/// old for intraday data: the same walk over one bar, exiting at the close.
+///
+/// Bars that ended before `entered_at` are skipped. Returns None when no bar
+/// is left to replay.
+pub fn replay_trade(
+    trade: &SimTrade,
+    bars: &[Bar],
+    bar_len: chrono::Duration,
+    market: Market,
+    entered_at: Option<DateTime<Utc>>,
+) -> Option<Replay> {
+    let daily = bar_len >= chrono::Duration::days(1);
+    let mut pos = LivePosition {
+        symbol: trade.symbol.clone(),
+        direction: trade.direction.clone(),
+        entry_price: trade.entry_price,
+        current_price: trade.entry_price,
+        target1: trade.target1,
+        target2: trade.target2,
+        stop_loss: trade.stop_loss,
+        trailing_stop: trade.stop_loss,
+        qty: trade.qty,
+        t1_booked: false,
+        remaining_qty: trade.qty,
+        booked_pnl: 0.0,
+        pnl: 0.0,
+        pnl_pct: 0.0,
+        status: PositionStatus::Open,
+        strategies: trade.strategies.clone(),
+        score: trade.score,
+        entered_at,
+        initial_stop: Some(trade.stop_loss),
+    };
+    let long = trade.direction == "BUY";
+    let mut last_time = None;
+
+    for bar in bars
+        .iter()
+        .filter(|b| entered_at.is_none_or(|t| b.time + bar_len > t))
+        .filter(|b| daily || clock::is_open(market, b.time))
+    {
+        let phase = if daily {
+            Phase::Active
+        } else {
+            clock::market_phase(market, bar.time)
+        };
+        if matches!(phase, Phase::SquareOff | Phase::PostMarket) {
+            update_position(&mut pos, bar.open, Phase::SquareOff);
+            return Some(finish(&pos, bar.time));
+        }
+        last_time = Some(bar.time);
+
+        // Open (gaps fill at the open).
+        update_position(&mut pos, bar.open, phase);
+        if pos.status.is_closed() {
+            return Some(finish(&pos, bar.time));
+        }
+        // Adverse extreme first.
+        let adverse = if long { bar.low } else { bar.high };
+        feed_with_stop(&mut pos, adverse, phase);
+        if pos.status.is_closed() {
+            return Some(finish(&pos, bar.time));
+        }
+        // Favourable extreme: T1 then T2 at their levels.
+        let favourable = if long { bar.high } else { bar.low };
+        let reached = |level: f64| {
+            if long {
+                favourable >= level
+            } else {
+                favourable <= level
+            }
+        };
+        let (t1, t2) = (pos.target1, pos.target2);
+        if !pos.t1_booked && reached(t1) {
+            update_position(&mut pos, t1, phase);
+        }
+        if reached(t2) {
+            update_position(&mut pos, t2, phase);
+        } else {
+            update_position(&mut pos, favourable, phase);
+        }
+        if pos.status.is_closed() {
+            return Some(finish(&pos, bar.time));
+        }
+        feed_with_stop(&mut pos, bar.close, phase);
+        if pos.status.is_closed() {
+            return Some(finish(&pos, bar.time));
+        }
+    }
+
+    // Ran out of bars before the square-off bar (a daily bar, `--now`, or a
+    // truncated chart): exit at the last price seen.
+    let time = last_time?;
+    pos.status = PositionStatus::SquaredOff;
+    Some(finish(&pos, time))
+}
+
+/// Feed a price that moved through the stop as a fill at the stop level.
+fn feed_with_stop(pos: &mut LivePosition, price: f64, phase: Phase) {
+    let long = pos.direction == "BUY";
+    let stop = match (long, pos.t1_booked) {
+        (true, true) => pos.stop_loss.max(pos.trailing_stop),
+        (false, true) => pos.stop_loss.min(pos.trailing_stop),
+        _ => pos.stop_loss,
+    };
+    let crossed = if long { price <= stop } else { price >= stop };
+    update_position(pos, if crossed { stop } else { price }, phase);
+}
+
+fn finish(pos: &LivePosition, time: DateTime<Utc>) -> Replay {
+    let invested = pos.entry_price * pos.qty as f64;
+    Replay {
+        exit_price: pos.current_price,
+        exit_time: time,
+        pnl: pos.pnl,
+        pnl_pct: if invested > 0.0 {
+            pos.pnl / invested * 100.0
+        } else {
+            0.0
+        },
+        status: pos.status,
+        t1_booked: pos.t1_booked,
+    }
+}
+
 #[derive(Debug)]
 pub struct SimStats {
     pub total_days: usize,
@@ -184,6 +351,7 @@ mod tests {
             score: 70.0,
             confidence: "HIGH".into(),
             strategies: vec!["RSI".into()],
+            entered_at: None,
             exit_price: Some(100.0 + pnl / 10.0),
             pnl: Some(pnl),
             pnl_pct: Some(pnl / 10.0),
@@ -292,5 +460,162 @@ mod tests {
         }
         let s = h.stats();
         assert!(s.sharpe.is_some());
+    }
+
+    // ── replay_trade ──
+
+    fn ist(hh: u32, mm: u32) -> DateTime<Utc> {
+        let d = chrono::NaiveDate::from_ymd_opt(2026, 10, 21).unwrap();
+        clock::at(
+            Market::In,
+            d,
+            chrono::NaiveTime::from_hms_opt(hh, mm, 0).unwrap(),
+        )
+    }
+
+    fn bar(hh: u32, mm: u32, o: f64, h: f64, l: f64, c: f64) -> Bar {
+        Bar {
+            time: ist(hh, mm),
+            open: o,
+            high: h,
+            low: l,
+            close: c,
+        }
+    }
+
+    /// Long 10 @ 100, T1 102, T2 104, stop 98.
+    fn open_trade() -> SimTrade {
+        let mut t = make_trade("TEST.NS", 0.0);
+        t.exit_price = None;
+        t.pnl = None;
+        t
+    }
+
+    /// Flat bars every 5 minutes from `from` to 15:25 IST at `price`.
+    fn flat_day(from: (u32, u32), price: f64) -> Vec<Bar> {
+        let mut bars = Vec::new();
+        let (mut h, mut m) = from;
+        while (h, m) < (15, 30) {
+            bars.push(bar(h, m, price, price, price, price));
+            m += 5;
+            if m == 60 {
+                h += 1;
+                m = 0;
+            }
+        }
+        bars
+    }
+
+    fn five_min() -> chrono::Duration {
+        chrono::Duration::minutes(5)
+    }
+
+    #[test]
+    fn replay_stop_before_target_in_the_same_bar_is_a_stop() {
+        // One wide bar touches both 97 and 105: the conservative order says
+        // the stop filled first, at the stop level.
+        let mut bars = vec![bar(9, 30, 100.0, 105.0, 97.0, 101.0)];
+        bars.extend(flat_day((9, 35), 101.0));
+        let r = replay_trade(&open_trade(), &bars, five_min(), Market::In, None).unwrap();
+        assert_eq!(r.status, PositionStatus::StopHit);
+        assert!((r.exit_price - 98.0).abs() < 1e-9);
+        assert!((r.pnl + 20.0).abs() < 1e-9); // 10 × −2
+    }
+
+    #[test]
+    fn replay_target_first_books_t1_then_t2() {
+        let mut bars = vec![
+            bar(9, 30, 100.0, 101.0, 99.5, 100.5),
+            bar(9, 35, 100.5, 104.5, 100.2, 104.0),
+        ];
+        bars.extend(flat_day((9, 40), 104.0));
+        let r = replay_trade(&open_trade(), &bars, five_min(), Market::In, None).unwrap();
+        assert_eq!(r.status, PositionStatus::T2Hit);
+        assert!(r.t1_booked);
+        assert!((r.exit_price - 104.0).abs() < 1e-9);
+        // 5 × (102 − 100) + 5 × (104 − 100) = 30
+        assert!((r.pnl - 30.0).abs() < 1e-9);
+        assert_eq!(r.exit_time, ist(9, 35));
+    }
+
+    #[test]
+    fn replay_neither_exits_at_the_square_off_bar() {
+        let mut bars = flat_day((9, 15), 100.5);
+        // Make the 15:15 bar open at 101 so the exit price is visible.
+        let i = bars.iter().position(|b| b.time == ist(15, 15)).unwrap();
+        bars[i] = bar(15, 15, 101.0, 101.0, 101.0, 101.0);
+        let r = replay_trade(&open_trade(), &bars, five_min(), Market::In, None).unwrap();
+        assert_eq!(r.status, PositionStatus::SquaredOff);
+        assert_eq!(r.exit_time, ist(15, 15));
+        assert!((r.exit_price - 101.0).abs() < 1e-9);
+        assert!((r.pnl - 10.0).abs() < 1e-9);
+        assert!((r.pnl_pct - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn replay_ignores_bars_before_entry() {
+        // The stop was hit at 09:30, but the trade was only opened at 11:02.
+        let mut bars = vec![bar(9, 30, 100.0, 100.0, 96.0, 99.0)];
+        bars.extend(flat_day((11, 0), 100.0));
+        let entered = Some(ist(11, 2));
+        let r = replay_trade(&open_trade(), &bars, five_min(), Market::In, entered).unwrap();
+        assert_eq!(r.status, PositionStatus::SquaredOff);
+        assert!((r.pnl).abs() < 1e-9);
+    }
+
+    #[test]
+    fn replay_gap_through_the_stop_fills_at_the_open() {
+        let mut bars = vec![bar(9, 15, 96.0, 97.0, 95.5, 96.5)];
+        bars.extend(flat_day((9, 20), 96.5));
+        let r = replay_trade(&open_trade(), &bars, five_min(), Market::In, None).unwrap();
+        assert_eq!(r.status, PositionStatus::StopHit);
+        assert!((r.exit_price - 96.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn replay_short_mirrors_long() {
+        let mut t = open_trade();
+        t.direction = "SELL".into();
+        t.target1 = 98.0;
+        t.target2 = 96.0;
+        t.stop_loss = 102.0;
+        let mut bars = vec![bar(9, 30, 100.0, 101.0, 95.0, 96.5)];
+        bars.extend(flat_day((9, 35), 96.5));
+        let r = replay_trade(&t, &bars, five_min(), Market::In, None).unwrap();
+        assert_eq!(r.status, PositionStatus::T2Hit);
+        // 5 × (100 − 98) + 5 × (100 − 96) = 30
+        assert!((r.pnl - 30.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn replay_without_bars_is_none_and_partial_day_exits_at_last_close() {
+        assert!(replay_trade(&open_trade(), &[], five_min(), Market::In, None).is_none());
+        let bars = vec![
+            bar(9, 30, 100.0, 100.8, 99.5, 100.5),
+            bar(9, 35, 100.5, 101.0, 100.4, 100.9),
+        ];
+        let r = replay_trade(&open_trade(), &bars, five_min(), Market::In, None).unwrap();
+        assert_eq!(r.status, PositionStatus::SquaredOff);
+        assert!((r.exit_price - 100.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn replay_daily_bar_is_conservative() {
+        let day = Bar {
+            time: ist(9, 15),
+            open: 100.0,
+            high: 105.0,
+            low: 97.0,
+            close: 103.0,
+        };
+        let r = replay_trade(
+            &open_trade(),
+            &[day],
+            chrono::Duration::days(1),
+            Market::In,
+            None,
+        )
+        .unwrap();
+        assert_eq!(r.status, PositionStatus::StopHit);
     }
 }

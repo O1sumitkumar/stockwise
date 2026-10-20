@@ -9,6 +9,7 @@ use crate::api::YahooClient;
 use crate::backtest;
 use crate::charts;
 use crate::display::*;
+use crate::i18n::{Msg, t, tf};
 use crate::insights;
 use crate::intraday;
 use crate::longterm;
@@ -40,11 +41,15 @@ fn resolve_symbols(symbols: &[String], market: Market) -> Vec<String> {
         .collect()
 }
 
+mod alerting;
 mod backtests;
+mod fno;
 mod fundamentals;
+mod funds;
 mod holdings;
 mod markets;
 mod overview;
+mod portfolio;
 mod risk;
 mod sim;
 mod strategies;
@@ -52,11 +57,15 @@ mod technicals;
 mod trade;
 mod worker;
 
+pub use alerting::*;
 pub use backtests::*;
+pub use fno::*;
 pub use fundamentals::*;
+pub use funds::*;
 pub use holdings::*;
 pub use markets::*;
 pub use overview::*;
+pub use portfolio::*;
 pub use risk::*;
 pub use sim::*;
 pub use strategies::*;

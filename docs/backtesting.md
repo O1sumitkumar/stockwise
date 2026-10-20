@@ -47,18 +47,22 @@ Every form takes `--json`.
 
 ## Costs
 
-Costs are on by default. `--costs auto` (the default) uses India delivery for
-INR stocks and the US model for everything else.
+Costs are on by default. `--costs auto` (the default) uses the crypto model
+for coins (`-m crypto`, `BTC-USD`), the FX model for currency pairs (`-m fx`,
+`USDINR=X`), India delivery for INR stocks, and the US model for everything
+else. The Indian presets are refused for coins and currency pairs.
 
 | `--costs` | What it charges |
 |-----------|-----------------|
 | `in-delivery` | Brokerage ₹20 or 0.1% per order, whichever is lower · STT 0.1% on buys and sells · exchange 0.00297% · SEBI ₹10/crore · GST 18% on brokerage + exchange + SEBI · stamp duty 0.015% on buys · DP charge ₹15.93 per sell |
 | `in-intraday` | Brokerage ₹20 or 0.03%, lower · STT 0.025% on sells · exchange, SEBI and GST as above · stamp duty 0.003% on buys · no DP charge |
 | `us` | Commission-free; slippage only |
+| `crypto` | 0.1% exchange fee per order; 10 bps slippage |
+| `fx` | No commission; 2 bps slippage for the spread |
 | `none` | Nothing — the gross result |
 
-Every preset except `none` adds **5 bps of slippage** per fill: buys fill
-0.05% above the price, sells 0.05% below. Override with `--slippage-bps`, and
+The stock presets add **5 bps of slippage** per fill: buys fill 0.05% above
+the price, sells 0.05% below. Override with `--slippage-bps`, and
 brokerage with `--brokerage`: `20` (flat per order), `0.03%` (percent of the
 order), or `20,0.03%` (whichever is lower). A Zerodha delivery account is
 `--brokerage 0`. Rates are NSE equity rates as of 2025; check your broker's
@@ -92,7 +96,7 @@ Every report shows the **net** return (after costs), the **gross** return
 | Alpha | Net return minus buy & hold |
 | CAGR | Compound annual growth rate; shown for three months of data or more |
 | Max drawdown | Largest fall from a peak, on the daily equity curve |
-| Sharpe / Sortino | From daily returns of the equity curve, annualised with √252, risk-free rate 0 |
+| Sharpe / Sortino | From daily returns of the equity curve, annualised with √252 (√365 for crypto, √260 for FX), risk-free rate 0 |
 | Exposure | Average share of the portfolio invested rather than in cash |
 | Win rate, avg win / loss | Per round trip, after costs |
 | Profit factor | Money made on winners ÷ money lost on losers, after costs |
@@ -121,7 +125,9 @@ often the symbol was held.
   sleeve is back at its weight. Drifts under 1% are left alone. Trades pay
   costs as usual.
 - Symbols are aligned by date; a symbol with no bar on a day keeps its last
-  price. Every symbol must trade in the same currency.
+  price. Every symbol must trade in the same currency and use the same cost
+  model (stocks and coins can't share a portfolio backtest unless you pass
+  one `--costs`).
 
 ## Walk-forward
 
@@ -150,8 +156,10 @@ cost nothing.
 stockwise backtest walkforward RELIANCE -s rsi --train 1y --test 3mo -p 10y
 ```
 
-- `--train` / `--test` take `90d`, `13w`, `6mo`, `1y` — in trading days
-  (a week is 5, a month 21, a year 252). Train needs 20 days or more, test 5.
+- `--train` / `--test` take `90d`, `13w`, `6mo`, `1y`, counted in daily bars:
+  for stocks a week is 5, a month 21 and a year 252 trading days; crypto
+  trades every day (7, 30, 365); FX years are 260 weekdays. Train needs 20
+  bars or more, test 5.
   Windows step forward by the test length; a short final test window is kept
   if it has at least half the test length.
 - The report lists each test window with the chosen parameters, in-sample

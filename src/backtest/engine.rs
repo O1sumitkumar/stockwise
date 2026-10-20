@@ -127,6 +127,24 @@ pub struct SimConfig {
     pub take_profit_pct: Option<f64>,
     pub weights: Weights,
     pub rebalance: Rebalance,
+    /// Bars in a year, for annualising Sharpe and Sortino (see
+    /// [`bars_per_year`]).
+    pub periods_per_year: f64,
+}
+
+/// Daily bars in a year: 252 trading days for stocks, 365 for crypto (it
+/// trades every day), 260 for FX (weekdays). A portfolio uses the most
+/// frequent of its symbols, since its calendar is the union of theirs.
+pub fn bars_per_year<'a>(symbols: impl IntoIterator<Item = &'a str>) -> f64 {
+    use crate::market::AssetClass;
+    symbols
+        .into_iter()
+        .map(|s| match AssetClass::of(s) {
+            AssetClass::Crypto => 365.0,
+            AssetClass::Fx => 260.0,
+            AssetClass::Stock | AssetClass::Index => 252.0,
+        })
+        .fold(252.0, f64::max)
 }
 
 impl SimConfig {
@@ -140,6 +158,7 @@ impl SimConfig {
             take_profit_pct: None,
             weights: Weights::Equal,
             rebalance: Rebalance::None,
+            periods_per_year: 252.0,
         }
     }
 }
@@ -198,6 +217,7 @@ pub struct AssetResult {
 #[derive(Debug, Clone)]
 pub struct SimResult {
     pub capital: f64,
+    pub periods_per_year: f64,
     /// Calendar days (UTC midnight) on which any symbol traded.
     pub times: Vec<i64>,
     /// Portfolio value at each day's close (after liquidation on the last day).
@@ -253,6 +273,7 @@ impl SimResult {
             &self.invested,
             &self.trades,
             self.costs.total,
+            self.periods_per_year,
         )
     }
 }
@@ -265,6 +286,7 @@ pub fn metrics(
     invested: &[f64],
     trades: &[Trade],
     costs: f64,
+    periods_per_year: f64,
 ) -> Metrics {
     let end = equity.last().copied().unwrap_or(start);
     let mut curve = Vec::with_capacity(equity.len() + 1);
@@ -305,8 +327,8 @@ pub fn metrics(
         max_drawdown_pct: technical::max_drawdown(&curve)
             .map(|(dd, _, _)| dd * 100.0)
             .unwrap_or(0.0),
-        sharpe: technical::sharpe_ratio(&curve, 0.0),
-        sortino: technical::sortino_ratio(&curve, 0.0),
+        sharpe: sharpe(&curve, periods_per_year),
+        sortino: sortino(&curve, periods_per_year),
         exposure_pct,
         trades: trades.len(),
         win_rate_pct: (!trades.is_empty()).then(|| wins.len() as f64 / trades.len() as f64 * 100.0),
@@ -317,10 +339,38 @@ pub fn metrics(
     }
 }
 
-/// Annualise a return earned over `bars` trading days.
-pub fn annualised_pct(return_pct: f64, bars: usize) -> Option<f64> {
+/// Annualise a return earned over `bars` bars.
+pub fn annualised_pct(return_pct: f64, bars: usize, periods_per_year: f64) -> Option<f64> {
     let growth = 1.0 + return_pct / 100.0;
-    (bars > 0 && growth > 0.0).then(|| (growth.powf(252.0 / bars as f64) - 1.0) * 100.0)
+    (bars > 0 && growth > 0.0).then(|| (growth.powf(periods_per_year / bars as f64) - 1.0) * 100.0)
+}
+
+/// `technical::sharpe_ratio` (risk-free 0) with a chosen bars-per-year.
+fn sharpe(curve: &[f64], periods_per_year: f64) -> Option<f64> {
+    let r = technical::daily_returns(curve);
+    if r.len() < 2 {
+        return None;
+    }
+    let mean = r.iter().sum::<f64>() / r.len() as f64;
+    let var = r.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (r.len() - 1) as f64;
+    let sd = var.sqrt();
+    (sd != 0.0).then(|| mean * periods_per_year / (sd * periods_per_year.sqrt()))
+}
+
+/// `technical::sortino_ratio` (risk-free 0) with a chosen bars-per-year.
+fn sortino(curve: &[f64], periods_per_year: f64) -> Option<f64> {
+    let r = technical::daily_returns(curve);
+    if r.len() < 2 {
+        return None;
+    }
+    let mean = r.iter().sum::<f64>() / r.len() as f64;
+    let down: Vec<f64> = r.iter().filter(|x| **x < 0.0).copied().collect();
+    if down.is_empty() {
+        return None;
+    }
+    let dsd = (down.iter().map(|x| x * x).sum::<f64>() / down.len() as f64).sqrt()
+        * periods_per_year.sqrt();
+    (dsd != 0.0).then(|| mean * periods_per_year / dsd)
 }
 
 // ── Simulation ──
@@ -755,6 +805,7 @@ pub fn simulate(assets: &[Asset], cfg: &SimConfig) -> SimResult {
 
     SimResult {
         capital: cfg.capital,
+        periods_per_year: cfg.periods_per_year,
         times,
         equity,
         invested,
@@ -1056,7 +1107,26 @@ mod tests {
 
     #[test]
     fn annualising() {
-        assert!((annualised_pct(10.0, 252).unwrap() - 10.0).abs() < 1e-9);
-        assert!(annualised_pct(-100.0, 10).is_none());
+        assert!((annualised_pct(10.0, 252, 252.0).unwrap() - 10.0).abs() < 1e-9);
+        assert!((annualised_pct(10.0, 365, 365.0).unwrap() - 10.0).abs() < 1e-9);
+        assert!(annualised_pct(-100.0, 10, 252.0).is_none());
+        assert_eq!(bars_per_year(["TCS.NS", "AAPL"]), 252.0);
+        assert_eq!(bars_per_year(["AAPL", "BTC-USD"]), 365.0);
+        assert_eq!(bars_per_year(["EURUSD=X"]), 260.0);
+    }
+
+    #[test]
+    fn sharpe_and_sortino_match_technical_rs_at_252() {
+        let curve = [100.0, 101.0, 99.5, 102.0, 101.0, 104.0, 103.5];
+        let (a, b) = (sharpe(&curve, 252.0), technical::sharpe_ratio(&curve, 0.0));
+        assert!((a.unwrap() - b.unwrap()).abs() < 1e-12);
+        let (a, b) = (
+            sortino(&curve, 252.0),
+            technical::sortino_ratio(&curve, 0.0),
+        );
+        assert!((a.unwrap() - b.unwrap()).abs() < 1e-12);
+        // Daily crypto bars annualise over 365 days.
+        let ratio = sharpe(&curve, 365.0).unwrap() / sharpe(&curve, 252.0).unwrap();
+        assert!((ratio - (365.0f64 / 252.0).sqrt()).abs() < 1e-12);
     }
 }
