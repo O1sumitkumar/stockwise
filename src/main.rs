@@ -411,6 +411,15 @@ enum Commands {
         #[arg(value_enum, ignore_case = true)]
         shell: clap_complete::Shell,
     },
+    /// Print the man page, or write one page per command with --dir
+    #[command(after_help = "Examples:\n  \
+stockwise man > stockwise.1 && man ./stockwise.1\n  \
+stockwise man --dir ~/.local/share/man/man1    then: man stockwise-backtest")]
+    Man {
+        /// Write stockwise.1 and a stockwise-<command>.1 page per command into DIR
+        #[arg(long, value_name = "DIR")]
+        dir: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -711,7 +720,7 @@ const GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     ("Live trading", &["trade"]),
-    ("Setup", &["completions", "help"]),
+    ("Setup", &["completions", "man", "help"]),
 ];
 
 /// Top-level help with commands grouped by purpose (clap would otherwise list
@@ -742,6 +751,26 @@ fn build_cli() -> clap::Command {
     let cmd = Cli::command();
     let template = grouped_help_template(&cmd);
     cmd.help_template(template)
+}
+
+/// `stockwise man`: roff rendered from the clap definition, so the pages always
+/// match the binary. Release archives ship the `--dir` output under `man/`.
+fn cmd_man(dir: Option<&std::path::Path>) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let Some(dir) = dir else {
+        let mut page = Vec::new();
+        clap_mangen::Man::new(Cli::command()).render(&mut page)?;
+        print!("{}", String::from_utf8_lossy(&page));
+        return Ok(());
+    };
+    std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
+    clap_mangen::generate_to(Cli::command(), dir)
+        .with_context(|| format!("could not write man pages to {}", dir.display()))?;
+    println!(
+        "Wrote stockwise.1 and one page per command to {}",
+        dir.display()
+    );
+    Ok(())
 }
 
 /// Exit quietly when stdout is closed early (`stockwise ... | head`) instead
@@ -941,6 +970,7 @@ async fn main() {
             );
             Ok(())
         }
+        Commands::Man { dir } => cmd_man(dir.as_deref()),
     };
 
     if let Err(e) = result {
@@ -975,6 +1005,34 @@ mod tests {
         }
         let grouped: usize = GROUPS.iter().map(|(_, cmds)| cmds.len()).sum();
         assert_eq!(grouped, names.len(), "help groups list an unknown command");
+    }
+
+    #[test]
+    fn man_page_lists_every_command() {
+        let mut page = Vec::new();
+        clap_mangen::Man::new(Cli::command())
+            .render(&mut page)
+            .unwrap();
+        let page = String::from_utf8(page).unwrap();
+        for sub in Cli::command().get_subcommands() {
+            let reference = format!("stockwise\\-{}(1)", sub.get_name());
+            assert!(page.contains(&reference), "man page is missing {reference}");
+        }
+    }
+
+    #[test]
+    fn man_dir_writes_a_page_per_command() {
+        let dir = std::env::temp_dir().join(format!("stockwise-man-{}", std::process::id()));
+        cmd_man(Some(&dir)).unwrap();
+        for page in [
+            "stockwise.1",
+            "stockwise-quote.1",
+            "stockwise-portfolio-add.1",
+            "stockwise-trade-buy.1",
+        ] {
+            assert!(dir.join(page).is_file(), "{page} was not written");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

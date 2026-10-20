@@ -12,7 +12,7 @@ readme = "README.md"
 license = "MIT"
 keywords = ["stocks", "trading", "finance", "cli", "stock-market"]
 categories = ["command-line-utilities", "finance"]
-exclude = ["assets/", "docs/", ".github/", "*.tape", "install.sh"]
+exclude = ["assets/", "docs/", ".github/", "*.tape", "install.sh", "packaging/", "Dockerfile", ".dockerignore", "flake.nix", "flake.lock"]
 
 # `cargo binstall stockwise` downloads the prebuilt release binary instead of
 # compiling. Asset names must match .github/workflows/release.yml.
@@ -36,6 +36,7 @@ dirs = "6"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 redis = { version = "0.27", features = ["tokio-comp"] }
+clap_mangen = { version = "0.3", features = ["env"] }
 
 [profile.release]
 opt-level = 3

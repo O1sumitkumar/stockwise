@@ -128,6 +128,7 @@ See [angel-one.md](angel-one.md). Orders are previewed and need a typed `yes`.
 | Command | Description |
 |---------|-------------|
 | `completions <bash\|zsh\|fish\|powershell\|elvish>` | Print a completion script, e.g. `stockwise completions zsh > ~/.zfunc/_stockwise` |
+| `man [--dir <DIR>]` | Print the `stockwise.1` man page, or write it plus one `stockwise-<command>.1` page per command into `DIR`, e.g. `stockwise man --dir ~/.local/share/man/man1` |
 
 ## Scripting with `--json`
 
