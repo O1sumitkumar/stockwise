@@ -10,7 +10,9 @@ src/
     overview.rs      quote, markets, dashboard, search, doctor
     fundamentals.rs  analyze, compare, peers, dividends, insider, deep
     technicals.rs    technical, history, chart, timeframes, patterns, support, fibs, volume, gaps, stoploss
-    risk.rs          risk, correlate, returns, forecast, options
+    risk.rs          risk, correlate, returns, forecast, options moves
+    funds.rs         mf search, nav, history, sip, screen, overlap
+    fno.rs           options chain, pcr, maxpain
     markets.rs       movers, sectors, news, sentiment, screen, picks, earnings, rotation, matrix, surprise, heatmap, sectorcmp, ipo
     strategies.rs    backtest, sip, whatif, intraday, longterm, report
     holdings.rs      portfolio, watch, alert, import, export, wealth, rebalance, harvest, tax, divcal, pcorr
@@ -20,6 +22,9 @@ src/
   store.rs           Atomic JSON persistence, data directory (STOCKWISE_HOME)
   api.rs             Yahoo Finance client (session, quotes, charts, search, cache, retries)
   angel.rs           Angel One SmartAPI (login, TOTP, exact instrument lookup, orders)
+  funds.rs           AMFI NAV file + api.mfapi.in history (cached), returns, SIP, ETF holdings overlap
+  derivatives.rs     Option chains from NSE / Yahoo, PCR, max pain, per-contract IV and greeks
+  greeks.rs          Black-Scholes pricing, greeks, implied-volatility solver
   ai.rs              Ollama integration (prompts, opt-in flag, model checks)
   daemon.rs          Worker state: market phases, positions, risk manager
   technical.rs       Indicators and statistics (SMA, EMA, RSI, MACD, BB, ATR, VWAP, OBV, VaR, Sharpe, XIRR, ...)
@@ -42,6 +47,8 @@ help table — a test enforces this), write `cmd_<name>` in the matching
 
 ```
 User Input → clap CLI → commands/* → api.rs → Yahoo Finance
+                                   → funds.rs → AMFI NAVAll.txt, api.mfapi.in
+                                   → derivatives.rs → NSE option chain (India), Yahoo (US)
                                    → angel.rs → Angel One
                                    → ai.rs → Local Ollama
                                    → technical.rs (indicators)
@@ -96,6 +103,7 @@ Location: `~/Library/Application Support/stockwise/` (macOS), `~/.local/share/st
 | `wealth_history.json` | Daily portfolio value snapshots |
 | `sim_history.json` | Paper trading sessions and results |
 | `angel_config.json` | Angel One API credentials |
+| `cache/` | AMFI NAV file and per-scheme NAV history, re-downloaded after 12 hours (safe to delete) |
 
 ## Dependencies
 

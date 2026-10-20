@@ -93,8 +93,9 @@ stockwise completions zsh > ~/.zfunc/_stockwise           # optional: tab comple
 | | Commands |
 |---|---|
 | **Start here** | `quote`, `deep`, `markets`, `dashboard`, `search`, `doctor` |
-| **Analysis** | `analyze`, `technical`, `history`, `chart`, `compare`, `risk`, `correlate`, `timeframes`, `returns`, `patterns`, `support`, `fibs`, `volume`, `gaps`, `stoploss`, `forecast`, `options` |
+| **Analysis** | `analyze`, `technical`, `history`, `chart`, `compare`, `risk`, `correlate`, `timeframes`, `returns`, `patterns`, `support`, `fibs`, `volume`, `gaps`, `stoploss`, `forecast` |
 | **Market** | `movers`, `sectors`, `heatmap`, `sentiment`, `news`, `rotation`, `sectorcmp`, `peers`, `insider`, `ipo`, `earnings`, `surprise`, `matrix`, `picks`, `screen`, `dividends` |
+| **Funds & F&O** | `mf` (search, nav, history, sip, screen, overlap), `options` (chain, pcr, maxpain, moves) |
 | **Strategies & bots** | `backtest`, `sip`, `whatif`, `intraday`, `longterm`, `daemon`, `sim`, `report` |
 | **Portfolio** | `portfolio`, `watch`, `alert`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
 | **Live trading** | `trade` (Angel One) |
@@ -111,6 +112,19 @@ stockwise alert add RELIANCE below 1200
 stockwise tax in                                 # LTCG/STCG estimate for this FY
 stockwise dashboard                              # indices + portfolio + watchlist + alerts
 ```
+
+### Mutual funds and options
+
+```bash
+stockwise mf search parag flexi direct     # AMFI scheme codes
+stockwise mf sip 122639 5000 -p 5y         # monthly SIP with XIRR
+stockwise mf screen flexi cap              # rank a category by 3Y CAGR
+stockwise options chain NIFTY              # NSE chain with IV and greeks
+stockwise options maxpain BANKNIFTY        # or: options pcr, options chain AAPL -m us
+```
+
+NAVs come from AMFI, option chains from NSE (India) or Yahoo (US). See
+[docs/commands.md](docs/commands.md#funds--fo) for what has data and what doesn't.
 
 ### Script it
 

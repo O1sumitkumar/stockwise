@@ -52,7 +52,6 @@ network), `2` invalid arguments.
 | `gaps <SYMBOL> [-p]` | Filled and unfilled price gaps |
 | `stoploss <SYMBOL> [-e PRICE] [-p]` | ATR (1.5x/2x/3x), percentage and Chandelier stops, R:R targets |
 | `forecast <SYMBOL> [-d DAYS] [-p]` | Linear trend projection with 95% bands — a projection, not a prediction |
-| `options <SYMBOL> [-p]` | Expected 1/5/10/30-day moves and OTM strike ideas from realized volatility |
 
 ## Market
 
@@ -74,6 +73,58 @@ network), `2` invalid arguments.
 | `picks` | Large caps ranked on 8 fundamental + technical factors |
 | `screen <CATEGORY>` | `undervalued` (P/E<15), `growth` (forward EPS > trailing), `dividend` (yield>2%), `momentum` (top gainers), `bluechip` (>$100B / >₹5L Cr) |
 | `dividends <SYMBOL>` | Yield, income projection, 10-year DRIP growth |
+
+## Funds & F&O
+
+| Command | Description |
+|---------|-------------|
+| `mf search <QUERY...> [-n N] [--json]` | Find Indian mutual-fund schemes by words in the name, fund house, category or ISIN; add `direct growth` to narrow. Shows the AMFI scheme code the other `mf` commands take |
+| `mf nav <CODES...> [--json]` | Latest NAV and date, fund house, category, ISINs |
+| `mf history <CODE> [-p PERIOD] [--json]` | NAV chart for the period (default `1y`), trailing 1M–10Y returns (annualized from 1Y), since-inception CAGR, max drawdown. `--json` includes every NAV in the period |
+| `mf sip <CODE> <AMOUNT> [-p PERIOD] [--json]` | Monthly SIP from NAV history (default `5y`): value-vs-invested chart, gain, units, and XIRR on the actual purchase dates |
+| `mf screen [CATEGORY...] [--plan direct\|regular\|all] [-s 1y\|3y\|5y] [-n N] [--max N] [--json]` | Bare: list categories with their active scheme counts. With words (`flexi cap`, `elss`, `liquid`, `equity etf`): rank the category's growth-option schemes by return (default 3Y CAGR, direct plans) |
+| `mf overlap <A> <B> [--json]` | Shared top holdings, holdings and sector overlap, and expense ratios of two funds or ETFs, e.g. `mf overlap SPY QQQ -m us` |
+| `options chain <SYMBOL> [-e DATE] [-n STRIKES] [--rate %] [--div-yield %] [--json]` | Calls and puts around the money: last price, open interest (and change on NSE), volume, IV, delta, gamma, theta, vega, rho. Default: nearest expiry, 10 strikes each side (`-n 0` for all) |
+| `options pcr <SYMBOL> [-e DATE] [--json]` | Put/call ratio by open interest and by volume, and the three strikes with the most call and put open interest |
+| `options maxpain <SYMBOL> [-e DATE] [--json]` (`max-pain`) | The settlement strike at which open options pay their holders least, with the payout curve around it |
+| `options <SYMBOL> [-p]` / `options moves <SYMBOL> [-p]` | Expected 1/5/10/30-day moves and OTM strike ideas from realized volatility |
+
+MF periods (`-p`) are `<n>mo`, `<n>y` or `max`, e.g. `6mo`, `3y`, `10y`. Expiries
+(`-e`) are `YYYY-MM-DD`.
+
+**Where the data comes from, and what has none**
+
+- **NAVs**: AMFI's public [NAVAll.txt](https://portal.amfiindia.com/spages/NAVAll.txt),
+  every Indian scheme, cached in the data directory (`cache/`) and re-downloaded
+  after 12 hours. NAV history: [api.mfapi.in](https://www.mfapi.in), a free
+  community mirror of AMFI data, cached the same way. If a download fails, a
+  stale cached copy is used with a warning on stderr.
+- **Returns** are point-to-point NAV returns of the growth option, before tax
+  and exit load. `mf sip` buys at the first NAV on or after each monthly due date.
+- **Expense ratios (TER)** of Indian schemes are not in AMFI's NAV file, so
+  `mf screen` cannot rank by them; compare TERs on the AMC's site. `mf overlap`
+  shows Yahoo's expense ratio for the funds it covers.
+- **Holdings** (`mf overlap`) come from Yahoo Finance, which publishes the top 10
+  holdings and sector weights for US ETFs and mutual funds (SPY, QQQ, VTI,
+  VFIAX, ... with `-m us`) and for some funds under Yahoo's `0P…` IDs. NSE-listed
+  ETFs such as NIFTYBEES and AMFI scheme codes have no holdings data — StockWise
+  says so instead of guessing. With only the top 10 known, the holdings overlap
+  is a lower bound; sector weights cover the whole fund.
+- **Option chains**: in the Indian market (the default), NSE's public
+  option-chain API — index options on NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY and
+  NIFTYNXT50 (`^NSEI` and `^NSEBANK` work too) and NSE F&O stocks such as
+  RELIANCE. NSE serves browser sessions only: StockWise loads its option-chain
+  page once for cookies, makes two API calls, and stops with a clear error if NSE
+  refuses — wait a minute and retry. BSE options (SENSEX, BANKEX) are not
+  supported. With `-m us`, Yahoo Finance (delayed quotes) for US stocks and ETFs.
+- **IV and greeks**: Black-Scholes-Merton. IV is solved from the bid/ask mid
+  (else the last trade) at the data timestamp; when that fails, the source's IV
+  is shown (`iv_from` in JSON). Risk-free rate defaults to 6.5% (India) / 4.0%
+  (US) — pass `--rate` with the current T-bill yield. Theta is per calendar day,
+  vega and rho per percentage point. NSE options are European; US equity options
+  are American, so their greeks are the usual European approximation.
+- **PCR and max pain** describe positioning for one expiry; they are not
+  forecasts.
 
 ## Strategies & bots
 
@@ -135,7 +186,11 @@ See [angel-one.md](angel-one.md). Orders are previewed and need a typed `yes`.
 stockwise quote TCS INFY --json | jq '.[] | {symbol, regularMarketPrice}'
 stockwise history AAPL -m us -p 6mo --json | jq '.bars | map(.close) | max'
 stockwise markets --json | jq '.[] | select(.change_percent < -1)'
+stockwise mf sip 122639 5000 -p 3y --json | jq '{invested, value, xirr}'
+stockwise options chain NIFTY -n 2 --json | jq '.rows[] | {strike, delta: .call.greeks.delta}'
 ```
 
 `quote --json` returns Yahoo's quote fields (camelCase). `history --json`
 returns `{symbol, currency, period, interval, bars: [{time, open, high, low, close, volume}]}`.
+Fractions in `mf` and `options` JSON are decimals (`0.1234` = 12.34%); missing
+values are `null`, never 0.

@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `mf` — Indian mutual funds from AMFI's public NAV file: `mf search`, `mf nav`,
+  `mf history` (NAV chart, 1M–10Y trailing returns, since-inception CAGR, max
+  drawdown) and `mf sip` (monthly SIP with XIRR on the actual purchase dates).
+  NAV history comes from api.mfapi.in; both are cached in the data directory
+  for 12 hours. `--json` on every subcommand.
+- `mf screen` ranks a category's growth-option schemes by 1Y/3Y/5Y return
+  (bare `mf screen` lists categories). Expense ratios are not in AMFI's feed,
+  so they are not shown for Indian schemes.
+- `mf overlap A B` — shared top holdings, holdings and sector overlap, and
+  expense ratios for funds Yahoo Finance has holdings for (mainly US ETFs and
+  mutual funds). Indian schemes and NSE ETFs report "no holdings data".
+- `options chain` (OI, change in OI, volume, IV, delta, gamma, theta, vega,
+  rho), `options pcr` (put/call ratio and open-interest walls) and
+  `options maxpain`. Indian symbols use NSE's option chain (index options and
+  F&O stocks), US symbols (`-m us`) use Yahoo Finance. Black-Scholes greeks
+  with an implied-volatility solver, valued at the data timestamp.
+
+### Changed
+- `options` is now a command group. `stockwise options SYMBOL` still shows
+  expected moves, also available as `options moves SYMBOL`. `mf` and
+  `options` are listed under a new "Funds & F&O" help group.
+
+### Fixed
+- `options` (expected moves) treated a missing price as 0; it now reports an
+  error.
+
 ## [0.3.0] - 2026-10-21
 
 Usability and safety release. Command-line forms from 0.2 keep working.
