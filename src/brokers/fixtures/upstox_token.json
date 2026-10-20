@@ -1,0 +1,14 @@
+{
+  "email": "******",
+  "exchanges": ["NSE", "NFO", "BSE", "CDS", "BFO", "BCD"],
+  "products": ["D", "CO", "I"],
+  "broker": "UPSTOX",
+  "user_id": "AB1234",
+  "user_name": "******",
+  "order_types": ["MARKET", "LIMIT", "SL", "SL-M"],
+  "user_type": "individual",
+  "poa": false,
+  "is_active": true,
+  "access_token": "eyJ0eXAiOiJKV1Qi.test",
+  "extended_token": "eyJ0eXAiOiJKV1Qi.extended"
+}

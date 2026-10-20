@@ -36,6 +36,14 @@ dirs = "6"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 redis = { version = "0.27", features = ["tokio-comp"] }
+# Broker integrations: dyn-compatible async trait, OS keyring for secrets,
+# SHA-256 for Kite/Fyers login checksums, gzip for Upstox instrument files,
+# hidden prompt for pasted access tokens.
+async-trait = "0.1"
+keyring = "4"
+sha2 = "0.10"
+flate2 = "1"
+rpassword = "7"
 
 [profile.release]
 opt-level = 3

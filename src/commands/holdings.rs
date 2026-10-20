@@ -525,6 +525,35 @@ pub async fn cmd_import(source: &str, file: &str, market: Market) -> Result<()> 
                 println!("    3. Save the CSV/Excel file");
                 println!("    4. Run: stockwise import indmoney <path-to-file.csv>");
             }
+            "groww" => {
+                println!("    1. Open {} → Stocks → Holdings", "groww.in".cyan());
+                println!(
+                    "    2. Click {} to get the holdings statement",
+                    "Download".bold()
+                );
+                println!("    3. Open the .xlsx file and save it as CSV");
+                println!("    4. Run: stockwise import groww <path-to-file.csv>");
+            }
+            "upstox" => {
+                println!(
+                    "    1. Open {} → Portfolio → Holdings",
+                    "pro.upstox.com".cyan()
+                );
+                println!("    2. Click {} and save the CSV file", "Download".bold());
+                println!("    3. Run: stockwise import upstox <path-to-file.csv>");
+            }
+            "cas" => {
+                println!(
+                    "    1. Request a detailed CAS from {} or {} (emailed as a password-protected PDF)",
+                    "camsonline.com".cyan(),
+                    "kfintech.com".cyan()
+                );
+                println!(
+                    "    2. Convert it with casparser: {}",
+                    "pip install casparser && casparser CAS.pdf -p <password> -o cas.json".bold()
+                );
+                println!("    3. Run: stockwise import cas cas.json");
+            }
             _ => {
                 println!("    Provide a CSV with columns: Symbol, Quantity, Average Price");
                 println!("    Run: stockwise import csv <path-to-file.csv>");
@@ -535,6 +564,26 @@ pub async fn cmd_import(source: &str, file: &str, market: Market) -> Result<()> 
 
     let content =
         std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", file))?;
+    match source {
+        "groww" => {
+            return super::imports::import_rows(
+                "Groww",
+                super::imports::parse_groww(&content, market)?,
+            )
+            .await;
+        }
+        "upstox" => {
+            return super::imports::import_rows(
+                "Upstox",
+                super::imports::parse_upstox(&content, market)?,
+            )
+            .await;
+        }
+        "cas" => {
+            return super::imports::import_rows("CAS", super::imports::parse_cas(&content)?).await;
+        }
+        _ => {}
+    }
     let lines: Vec<&str> = content.lines().collect();
     if lines.len() < 2 {
         bail!("{} is empty or has no data rows", file);

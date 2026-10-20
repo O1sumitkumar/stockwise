@@ -1,0 +1,15 @@
+{
+  "s": "ok",
+  "code": 200,
+  "message": "",
+  "orderBook": [
+    {
+      "clientId": "X******", "exchange": 10, "fy_token": "10100000003045", "id_fyers": "c6697c04-d9ab-4a7c-a6f4-b0cc4ca698f6",
+      "id": "25012400002074", "instrument": 0, "lot_size": 1, "multiplier": 0, "ord_status": 1, "precision": 2,
+      "price_limit": 1020, "price2_limit": 620, "price_trigger": 1020, "price2_trigger": 620, "product_type": "CNC",
+      "qty": 5, "qty2": 5, "report_type": "CANCELLED", "segment": 10, "symbol": "NSE:SBIN-EQ", "symbol_desc": "STATE BANK OF INDIA",
+      "symbol_exch": "SBIN", "tick_size": 0.05, "tran_side": 1, "gtt_oco_ind": 2, "create_time": "24-Jan-2025 16:13:31",
+      "create_time_epoch": 1737715411, "oms_msg": "GTT/OCO order cancelled successfully.", "ltp_ch": 0, "ltp_chp": 0, "ltp": 0
+    }
+  ]
+}

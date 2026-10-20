@@ -1,0 +1,23 @@
+[
+  {
+    "dhanClientId": "1000000132",
+    "orderId": "1132208051115",
+    "orderStatus": "CONFIRM",
+    "transactionType": "BUY",
+    "exchangeSegment": "NSE_EQ",
+    "productType": "CNC",
+    "orderType": "SINGLE",
+    "tradingSymbol": "HDFCBANK",
+    "securityId": "1333",
+    "quantity": 10,
+    "price": 1428,
+    "triggerPrice": 1427,
+    "legName": "ENTRY_LEG",
+    "createTime": "2022-08-05 12:41:19",
+    "updateTime": null,
+    "exchangeTime": null,
+    "drvExpiryDate": null,
+    "drvOptionType": null,
+    "drvStrikePrice": 0
+  }
+]

@@ -1,6 +1,12 @@
-//! Live trading through Angel One, with order previews and confirmation.
+//! Live trading through a broker — Angel One, or the experimental Zerodha
+//! Kite, Upstox, Dhan and Fyers integrations — with order previews and
+//! confirmation. Every order goes through [`place_live_order`].
 
 use super::*;
+use crate::brokers::{
+    self, Broker, BrokerKind, EXPERIMENTAL_NOTE, Gtt, GttRequest, OrderKind, OrderLimits,
+    OrderRequest, Side,
+};
 
 /// Safety switches for commands that place live orders.
 #[derive(Debug, Clone, Copy, Default)]
@@ -11,42 +17,218 @@ pub struct OrderOpts {
     pub dry_run: bool,
 }
 
-/// Resolve, preview, confirm, and place one live order. Each guard exists
-/// because a typo in a shell command could otherwise spend real money.
-pub(super) async fn place_live_order(
-    side: &str,
-    symbol: &str,
-    qty: u32,
-    limit: Option<f64>,
-    opts: OrderOpts,
-) -> Result<()> {
+/// A `trade` subcommand, as parsed in `main.rs`.
+#[derive(Debug, Clone)]
+pub enum TradeAction {
+    Setup,
+    Config {
+        /// Move secrets into the OS keyring now.
+        keyring: bool,
+    },
+    Login,
+    Holdings,
+    Positions,
+    Orders,
+    /// MARKET, LIMIT, SL or SL-M, depending on which prices are given.
+    Order {
+        side: Side,
+        symbol: String,
+        qty: u32,
+        limit: Option<f64>,
+        trigger: Option<f64>,
+        opts: OrderOpts,
+    },
+    GttCreate {
+        side: Side,
+        symbol: String,
+        qty: u32,
+        trigger: f64,
+        limit: f64,
+        opts: OrderOpts,
+    },
+    GttList,
+    GttCancel {
+        id: String,
+        opts: OrderOpts,
+    },
+}
+
+/// What to send once the preview is confirmed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum Intent {
+    Order(OrderKind),
+    /// Single-leg GTT: a LIMIT order at `limit` once `trigger` trades.
+    Gtt {
+        trigger: f64,
+        limit: f64,
+    },
+}
+
+/// Inputs to the safety flow besides the broker session, so tests can
+/// supply them without a terminal or network.
+pub(super) struct Guard<'a> {
+    pub limits: OrderLimits,
+    /// Last traded price (Yahoo), used for the value estimate and trigger checks.
+    pub last_price: Option<f64>,
+    /// Ask the user to type `yes`; the argument completes "Type yes to ...".
+    pub confirm: &'a dyn Fn(&str) -> Result<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum Outcome {
+    DryRun,
+    Cancelled,
+    /// Sent; the broker's order or GTT id when it returned one.
+    Sent(Option<String>),
+}
+
+/// Checks that need no network: run before logging in.
+fn check_args(qty: u32, intent: &Intent) -> Result<()> {
     if qty == 0 {
         bail!("Quantity must be at least 1");
     }
-    if let Some(p) = limit
-        && !(p.is_finite() && p > 0.0)
-    {
-        bail!("Limit price must be a positive number");
-    }
-    let sym = symbol.trim().to_uppercase();
-    let sym = sym.trim_end_matches(".NS").trim_end_matches("-EQ");
-
-    let client = crate::angel::AngelClient::new().await?;
-    let instrument = client.resolve_equity(sym, "NSE").await?;
-
-    // Reference price for the value estimate: the limit price, else last trade.
-    let yahoo_sym = format!("{}.NS", sym);
-    let last = match YahooClient::new().await {
-        Ok(y) => y
-            .get_quote(&[yahoo_sym.as_str()])
-            .await
-            .ok()
-            .and_then(|q| q.first().and_then(|q| q.regular_market_price)),
-        Err(_) => None,
+    let finite = |name: &str, v: f64| {
+        if v.is_finite() && v > 0.0 {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("{name} must be a positive number"))
+        }
     };
-    let est_value = limit.or(last).map(|p| p * qty as f64);
+    match intent {
+        Intent::Order(kind) => {
+            if let Some(p) = kind.price() {
+                finite("Limit price", p)?;
+            }
+            if let Some(t) = kind.trigger() {
+                finite("Trigger price", t)?;
+            }
+        }
+        Intent::Gtt { trigger, limit } => {
+            finite("Trigger price", *trigger)?;
+            finite("Limit price", *limit)?;
+        }
+    }
+    Ok(())
+}
 
-    print_header(&format!("{} order — REAL MONEY", side));
+fn type_line(intent: &Intent) -> String {
+    match *intent {
+        Intent::Order(OrderKind::Market) => "MARKET".into(),
+        Intent::Order(OrderKind::Limit { price }) => format!("LIMIT @ ₹{:.2}", price),
+        Intent::Order(OrderKind::StopLimit { trigger, price }) => format!(
+            "SL (stop-loss limit): trigger ₹{:.2}, then LIMIT @ ₹{:.2}",
+            trigger, price
+        ),
+        Intent::Order(OrderKind::StopMarket { trigger }) => format!(
+            "SL-M (stop-loss market): trigger ₹{:.2}, then MARKET",
+            trigger
+        ),
+        Intent::Gtt { trigger, limit } => format!(
+            "GTT: when the price reaches ₹{:.2}, LIMIT @ ₹{:.2} (valid up to a year)",
+            trigger, limit
+        ),
+    }
+}
+
+/// What a live action is, for the opt-in check. `None` = cancelling a GTT.
+fn feature(intent: Option<&Intent>) -> &'static str {
+    match intent {
+        Some(Intent::Order(OrderKind::Market | OrderKind::Limit { .. })) => "Live orders",
+        Some(Intent::Order(_)) => "Stop-loss (SL / SL-M) orders",
+        Some(Intent::Gtt { .. }) | None => "GTT orders",
+    }
+}
+
+/// Paths never run against a live account: every order on an experimental
+/// broker, and stop-loss / GTT orders on Angel One. Market and limit orders
+/// on Angel One keep their 0.3 behaviour.
+fn untested(kind: BrokerKind, intent: Option<&Intent>) -> bool {
+    kind.experimental() || feature(intent) != "Live orders"
+}
+
+fn print_broker_line(kind: BrokerKind, intent: Option<&Intent>) {
+    if untested(kind, intent) {
+        let note = if kind.experimental() {
+            format!("{} — {}", kind.label(), EXPERIMENTAL_NOTE)
+        } else {
+            format!(
+                "{} — {} here are {}",
+                kind.label(),
+                feature(intent).to_lowercase(),
+                EXPERIMENTAL_NOTE
+            )
+        };
+        print_kv("Broker", &note.yellow().to_string());
+    } else {
+        print_kv("Broker", kind.label());
+    }
+}
+
+/// Refuse a live (non-dry-run) action on an untested path until the user
+/// opts in through the broker's config file.
+fn check_orders_enabled(
+    kind: BrokerKind,
+    intent: Option<&Intent>,
+    limits: &OrderLimits,
+) -> Result<()> {
+    if !untested(kind, intent) || limits.enable_orders {
+        return Ok(());
+    }
+    let file = crate::store::path(kind.config_file())
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| kind.config_file().into());
+    bail!(
+        "{} through {} are {}. Check this preview against the {} app, then add \
+         \"enable_orders\": true to {} to allow them. --dry-run always works.",
+        feature(intent),
+        kind.label(),
+        EXPERIMENTAL_NOTE,
+        kind.label(),
+        file
+    )
+}
+
+/// Resolve, validate, preview, cap-check, confirm, and send one live order
+/// or GTT. Each guard exists because a typo in a shell command could
+/// otherwise spend real money. This is the only caller of
+/// [`Broker::place_order`] and [`Broker::gtt_create`].
+pub(super) async fn place_live_order(
+    broker: &dyn Broker,
+    side: Side,
+    symbol: &str,
+    qty: u32,
+    intent: Intent,
+    opts: OrderOpts,
+    guard: &Guard<'_>,
+) -> Result<Outcome> {
+    check_args(qty, &intent)?;
+    let kind = broker.kind();
+    if matches!(intent, Intent::Gtt { .. }) && !broker.supports_gtt() {
+        bail!("{} GTT orders are not supported yet", kind.label());
+    }
+    let sym = brokers::plain_symbol(symbol);
+    let instrument = broker.resolve_instrument(&sym, "NSE").await?;
+    let last = guard.last_price;
+
+    // Trigger checks need the market price; run them before the preview so a
+    // refused order never looks ready to send.
+    let est_value = match intent {
+        Intent::Order(k) => {
+            brokers::validate_order(side, &k, last)?;
+            brokers::estimate_value(&k, qty, last)
+        }
+        Intent::Gtt { trigger, limit } => {
+            brokers::validate_gtt(trigger, limit, last)?;
+            Some(limit * qty as f64)
+        }
+    };
+
+    let title = match intent {
+        Intent::Order(_) => format!("{} order — REAL MONEY", side.as_str()),
+        Intent::Gtt { .. } => format!("{} GTT — REAL MONEY", side.as_str()),
+    };
+    print_header(&title);
+    print_broker_line(kind, Some(&intent));
     print_kv(
         "Instrument",
         &format!(
@@ -54,12 +236,10 @@ pub(super) async fn place_live_order(
             instrument.tradingsymbol, instrument.exchange, instrument.token
         ),
     );
-    print_kv("Side", side);
+    print_kv("Side", side.as_str());
     print_kv("Quantity", &qty.to_string());
-    match limit {
-        Some(p) => print_kv("Type", &format!("LIMIT @ ₹{:.2}", p)),
-        None => print_kv("Type", "MARKET"),
-    }
+    print_kv("Type", &type_line(&intent));
+    print_kv("Product", "Delivery (CNC)");
     if let Some(l) = last {
         print_kv("Last price", &format!("₹{:.2}", l));
     }
@@ -69,13 +249,14 @@ pub(super) async fn place_live_order(
     );
     println!();
 
-    if let Some(cap) = crate::angel::AngelConfig::load()?.max_order_value {
+    if let Some(cap) = guard.limits.max_order_value {
         match est_value {
             Some(v) if v <= cap => {}
             Some(v) => bail!(
-                "Estimated value ₹{:.2} exceeds max_order_value ₹{:.2} in your Angel One config",
+                "Estimated value ₹{:.2} exceeds max_order_value ₹{:.2} in your {} config",
                 v,
-                cap
+                cap,
+                kind.label()
             ),
             None => bail!(
                 "Cannot estimate the order value, so max_order_value (₹{:.2}) cannot be checked. Use a limit order.",
@@ -86,40 +267,122 @@ pub(super) async fn place_live_order(
 
     if opts.dry_run {
         println!("  {} Dry run — no order sent.\n", "✓".green());
-        return Ok(());
+        return Ok(Outcome::DryRun);
     }
-    if !opts.yes && !confirm_live_order()? {
+    check_orders_enabled(kind, Some(&intent), &guard.limits)?;
+    let what = match intent {
+        Intent::Order(_) => "place this order",
+        Intent::Gtt { .. } => "create this GTT",
+    };
+    if !opts.yes && !(guard.confirm)(what)? {
         println!("  Cancelled — no order sent.\n");
-        return Ok(());
+        return Ok(Outcome::Cancelled);
     }
 
-    let order_type = if limit.is_some() { "LIMIT" } else { "MARKET" };
-    let result = client
-        .place_order(
-            &instrument,
-            side,
-            qty,
-            order_type,
-            limit.unwrap_or(0.0),
-            0.0,
-        )
-        .await?;
+    let id = match intent {
+        Intent::Order(k) => {
+            broker
+                .place_order(&OrderRequest {
+                    instrument,
+                    side,
+                    qty,
+                    kind: k,
+                })
+                .await?
+                .order_id
+        }
+        Intent::Gtt { trigger, limit } => Some(
+            broker
+                .gtt_create(&GttRequest {
+                    instrument,
+                    side,
+                    qty,
+                    trigger,
+                    limit,
+                    // validate_gtt refused a missing last price.
+                    last_price: last.unwrap_or(trigger),
+                })
+                .await?,
+        ),
+    };
 
-    match &result.orderid {
-        Some(id) => println!("  {} Order placed! ID: {}", "✓".green().bold(), id.cyan()),
+    let noun = match intent {
+        Intent::Order(_) => "Order",
+        Intent::Gtt { .. } => "GTT",
+    };
+    match &id {
+        Some(id) => println!(
+            "  {} {} placed! ID: {}",
+            "✓".green().bold(),
+            noun,
+            id.cyan()
+        ),
         None => println!(
-            "  {} Order accepted but no order id was returned — {}",
+            "  {} {} accepted but no id was returned — {}",
             "⚠".yellow().bold(),
+            noun,
             "do NOT resubmit; verify with `stockwise trade orders`.".yellow()
         ),
     }
     println!();
-    Ok(())
+    Ok(Outcome::Sent(id))
+}
+
+/// Preview and confirm cancelling one GTT, through the same guards as an
+/// order (cancelling a stop-loss GTT can leave a position unprotected).
+pub(super) async fn cancel_gtt(
+    broker: &dyn Broker,
+    id: &str,
+    opts: OrderOpts,
+    guard: &Guard<'_>,
+) -> Result<Outcome> {
+    let kind = broker.kind();
+    if !broker.supports_gtt() {
+        bail!("{} GTT orders are not supported yet", kind.label());
+    }
+    let gtts = broker.gtt_list().await?;
+    let Some(g) = gtts.iter().find(|g| g.id == id) else {
+        bail!(
+            "No {} GTT with id {} — see `stockwise trade gtt list`",
+            kind.label(),
+            id
+        );
+    };
+    print_header("Cancel GTT");
+    print_broker_line(kind, None);
+    print_gtt_kv(g);
+    println!();
+    if opts.dry_run {
+        println!("  {} Dry run — nothing cancelled.\n", "✓".green());
+        return Ok(Outcome::DryRun);
+    }
+    check_orders_enabled(kind, None, &guard.limits)?;
+    if !opts.yes && !(guard.confirm)("cancel this GTT")? {
+        println!("  Kept — nothing cancelled.\n");
+        return Ok(Outcome::Cancelled);
+    }
+    broker.gtt_cancel(id).await?;
+    println!("  {} GTT {} cancelled.\n", "✓".green().bold(), id.cyan());
+    Ok(Outcome::Sent(Some(id.to_string())))
+}
+
+fn print_gtt_kv(g: &Gtt) {
+    print_kv("GTT id", &g.id);
+    print_kv("Instrument", &g.symbol);
+    print_kv("Side", g.side.as_deref().unwrap_or("?"));
+    print_kv("Quantity", &g.qty.map_or("?".into(), |q| q.to_string()));
+    print_kv("Trigger", &money(g.trigger));
+    print_kv("Limit", &money(g.limit));
+    print_kv("Status", g.status.as_deref().unwrap_or("?"));
+}
+
+fn money(v: Option<f64>) -> String {
+    v.map_or("—".to_string(), |p| format!("₹{:.2}", p))
 }
 
 /// Ask the user to type `yes`. Refuses (errors) when stdin is not a terminal,
 /// so scripts must opt in with `--yes`.
-pub(super) fn confirm_live_order() -> Result<bool> {
+pub(super) fn confirm_live_order(what: &str) -> Result<bool> {
     use std::io::{BufRead, IsTerminal, Write};
     if !std::io::stdin().is_terminal() {
         bail!(
@@ -127,8 +390,9 @@ pub(super) fn confirm_live_order() -> Result<bool> {
         );
     }
     print!(
-        "  Type {} to place this order (anything else cancels): ",
-        "yes".bold()
+        "  Type {} to {} (anything else cancels): ",
+        "yes".bold(),
+        what
     );
     std::io::stdout().flush()?;
     let mut line = String::new();
@@ -136,341 +400,921 @@ pub(super) fn confirm_live_order() -> Result<bool> {
     Ok(line.trim() == "yes")
 }
 
-pub async fn cmd_trade(
-    action: &str,
-    symbol: Option<&str>,
-    qty: Option<u32>,
-    price: Option<f64>,
+/// Last NSE price from Yahoo, or None.
+async fn last_price(symbol: &str) -> Option<f64> {
+    let yahoo_sym = format!("{}.NS", brokers::plain_symbol(symbol));
+    let y = YahooClient::new().await.ok()?;
+    y.get_quote(&[yahoo_sym.as_str()])
+        .await
+        .ok()
+        .and_then(|q| q.first().and_then(|q| q.regular_market_price))
+}
+
+/// Log in, look up the price, and run the safety flow for one order or GTT.
+async fn run_order(
+    kind: BrokerKind,
+    side: Side,
+    symbol: &str,
+    qty: u32,
+    intent: Intent,
     opts: OrderOpts,
-    _market: Market,
 ) -> Result<()> {
+    check_args(qty, &intent)?;
+    let limits = brokers::order_limits(kind)?;
+    let broker = brokers::connect(kind).await?;
+    let guard = Guard {
+        limits,
+        last_price: last_price(symbol).await,
+        confirm: &confirm_live_order,
+    };
+    place_live_order(broker.as_ref(), side, symbol, qty, intent, opts, &guard).await?;
+    Ok(())
+}
+
+pub async fn cmd_trade(kind: BrokerKind, action: TradeAction, _market: Market) -> Result<()> {
     match action {
-        "setup" => {
-            let path = crate::store::path(crate::angel::CONFIG_FILE)?;
-            println!();
-            print_header("Angel One SmartAPI Setup");
-            println!("  To connect your Angel One account, you need:");
-            println!();
-            println!(
-                "  1. Go to {} and create an app",
-                "smartapi.angelone.in".cyan()
-            );
-            println!(
-                "  2. Note your {} (from the app dashboard)",
-                "API Key".bold()
-            );
-            println!("  3. Your {} (Angel One login ID)", "Client ID".bold());
-            println!("  4. Your {} (Angel One login PIN)", "Password".bold());
-            println!(
-                "  5. Your {} (from Authenticator app / Angel One TOTP setup)",
-                "TOTP Secret".bold()
-            );
-            println!();
-            println!("  Then run:");
-            println!("    {} stockwise trade config", "$".dimmed());
-            println!("  and fill in the file it creates:");
-            println!("    {}", path.display().to_string().cyan());
-            println!();
-            println!(
-                "  {}",
-                "Never pass credentials as command-line arguments — they end up in shell history."
-                    .dimmed()
-            );
-            println!(
-                "  {}",
-                "The file is readable only by you and is sent nowhere except Angel One's API."
-                    .dimmed()
-            );
-            println!(
-                "  {}",
-                "Optional: add \"max_order_value\": 50000 to cap the value of any single order."
-                    .dimmed()
-            );
-            println!();
+        TradeAction::Setup => {
+            print_setup(kind);
             Ok(())
         }
-        "config" => {
-            let path = crate::store::path(crate::angel::CONFIG_FILE)?;
-            let config = crate::angel::AngelConfig::load()?;
-            println!();
-            if config.is_configured() {
-                println!(
-                    "  {} Configured for client {} — {}",
-                    "✓".green(),
-                    config.client_id.cyan(),
-                    path.display()
-                );
-            } else {
-                if !path.exists() {
-                    crate::angel::AngelConfig::template().save()?;
-                    println!(
-                        "  {} Created a credentials template (owner-only access).",
-                        "✓".green()
-                    );
-                } else {
-                    println!(
-                        "  {} Credentials file still has placeholder or empty values.",
-                        "⚠".yellow()
-                    );
-                }
-                println!("  Edit it with your API key, client ID, PIN and TOTP secret:");
-                println!("    {}", path.display().to_string().cyan());
-            }
-            println!();
+        TradeAction::Config { keyring } => cmd_trade_config(kind, keyring),
+        TradeAction::Login => brokers::login(kind).await,
+        TradeAction::Holdings => {
+            let broker = brokers::connect(kind).await?;
+            print_holdings(kind, &broker.holdings().await?)
+        }
+        TradeAction::Positions => {
+            let broker = brokers::connect(kind).await?;
+            print_positions(kind, &broker.positions().await?);
             Ok(())
         }
-        "holdings" => {
-            let client = crate::angel::AngelClient::new().await?;
-            let holdings = client.get_holdings().await?;
-
-            if holdings.is_empty() {
-                println!("\n  {}", "No holdings found.".dimmed());
-                return Ok(());
-            }
-
-            print_header("Angel One — Holdings (Live)");
-            println!(
-                "  {:<14} {:>8} {:>10} {:>10} {:>12} {:>10}",
-                "Symbol".bold(),
-                "Qty".bold(),
-                "Avg Cost".bold(),
-                "LTP".bold(),
-                "P&L".bold(),
-                "P&L %".bold()
-            );
-            println!("  {}", "─".repeat(68).dimmed());
-
-            let mut total_pnl = 0.0_f64;
-            let mut total_value = 0.0_f64;
-            let mut total_cost = 0.0_f64;
-
-            for h in &holdings {
-                let sym = h.tradingsymbol.as_deref().unwrap_or("???");
-                let qty = h.quantity.unwrap_or(0);
-                let avg = h.averageprice.unwrap_or(0.0);
-                let ltp = h.ltp.unwrap_or(0.0);
-                let pnl = h.pnl.unwrap_or(0.0);
-                let pnl_pct = h.pnlpercentage.unwrap_or(0.0);
-                total_pnl += pnl;
-                total_value += ltp * qty as f64;
-                total_cost += avg * qty as f64;
-
-                let pnl_str = if pnl >= 0.0 {
-                    format!("+₹{:.2}", pnl).green().to_string()
-                } else {
-                    format!("-₹{:.2}", pnl.abs()).red().to_string()
-                };
-                let pct_str = if pnl_pct >= 0.0 {
-                    format!("+{:.2}%", pnl_pct).green().to_string()
-                } else {
-                    format!("{:.2}%", pnl_pct).red().to_string()
-                };
-
-                println!(
-                    "  {:<14} {:>8} {:>10} {:>10} {:>12} {:>10}",
-                    sym.cyan(),
-                    qty,
-                    format!("₹{:.2}", avg),
-                    format!("₹{:.2}", ltp),
-                    pnl_str,
-                    pct_str
-                );
-            }
-
-            println!("  {}", "─".repeat(68).dimmed());
-            let total_str = if total_pnl >= 0.0 {
-                format!("+₹{:.2}", total_pnl).green().bold().to_string()
-            } else {
-                format!("-₹{:.2}", total_pnl.abs()).red().bold().to_string()
+        TradeAction::Orders => {
+            let broker = brokers::connect(kind).await?;
+            print_orders(kind, &broker.orders().await?);
+            Ok(())
+        }
+        TradeAction::Order {
+            side,
+            symbol,
+            qty,
+            limit,
+            trigger,
+            opts,
+        } => {
+            let intent = Intent::Order(OrderKind::from_prices(limit, trigger));
+            run_order(kind, side, &symbol, qty, intent, opts).await
+        }
+        TradeAction::GttCreate {
+            side,
+            symbol,
+            qty,
+            trigger,
+            limit,
+            opts,
+        } => {
+            run_order(
+                kind,
+                side,
+                &symbol,
+                qty,
+                Intent::Gtt { trigger, limit },
+                opts,
+            )
+            .await
+        }
+        TradeAction::GttList => {
+            let broker = brokers::connect(kind).await?;
+            print_gtts(kind, &broker.gtt_list().await?);
+            Ok(())
+        }
+        TradeAction::GttCancel { id, opts } => {
+            let limits = brokers::order_limits(kind)?;
+            let broker = brokers::connect(kind).await?;
+            let guard = Guard {
+                limits,
+                last_price: None,
+                confirm: &confirm_live_order,
             };
-            println!(
-                "  {:<14} {:>8} {:>10} {:>10} {:>12}",
-                "TOTAL".bold(),
-                "",
-                format!("₹{:.0}", total_cost),
-                format!("₹{:.0}", total_value),
-                total_str
-            );
-
-            // Also sync to stockwise portfolio
-            let mut portfolio = Portfolio::load()?;
-            for h in &holdings {
-                let sym = h.tradingsymbol.as_deref().unwrap_or("");
-                let qty = h.quantity.unwrap_or(0) as f64;
-                let avg = h.averageprice.unwrap_or(0.0);
-                if !sym.is_empty() && qty > 0.0 && avg > 0.0 {
-                    // Broker symbols carry a series suffix (RELIANCE-EQ); Yahoo
-                    // wants RELIANCE.NS.
-                    let base = sym.rsplit_once('-').map_or(sym, |(b, _)| b);
-                    let resolved = if base.contains('.') {
-                        base.to_string()
-                    } else {
-                        format!("{}.NS", base)
-                    };
-                    // Overwrite quantity/cost but keep the original added date.
-                    portfolio.set(&resolved, qty, avg);
-                }
-            }
-            portfolio.save()?;
-            println!(
-                "\n  {} Holdings synced to StockWise portfolio.",
-                "✓".green()
-            );
-            println!();
-            Ok(())
-        }
-        "positions" => {
-            let client = crate::angel::AngelClient::new().await?;
-            let positions = client.get_positions().await?;
-
-            if positions.is_empty() {
-                println!("\n  {}", "No open positions.".dimmed());
-                return Ok(());
-            }
-
-            print_header("Angel One — Open Positions");
-            println!(
-                "  {:<14} {:>8} {:>10} {:>10} {:>12}",
-                "Symbol".bold(),
-                "Qty".bold(),
-                "Buy Avg".bold(),
-                "LTP".bold(),
-                "P&L".bold()
-            );
-            println!("  {}", "─".repeat(58).dimmed());
-
-            for p in &positions {
-                let sym = p.tradingsymbol.as_deref().unwrap_or("???");
-                let qty = p.quantity.as_deref().unwrap_or("0");
-                let avg = p.buyavgprice.as_deref().unwrap_or("0");
-                let ltp = p.ltp.as_deref().unwrap_or("0");
-                let pnl = p.pnl.as_deref().unwrap_or("0");
-                let pnl_f: f64 = pnl.parse().unwrap_or(0.0);
-                let pnl_str = if pnl_f >= 0.0 {
-                    format!("+₹{:.2}", pnl_f).green().to_string()
-                } else {
-                    format!("-₹{:.2}", pnl_f.abs()).red().to_string()
-                };
-                println!(
-                    "  {:<14} {:>8} {:>10} {:>10} {:>12}",
-                    sym.cyan(),
-                    qty,
-                    format!("₹{}", avg),
-                    format!("₹{}", ltp),
-                    pnl_str
-                );
-            }
-            println!();
-            Ok(())
-        }
-        "buy" | "sell" | "limit" => {
-            let sym = symbol.context("Symbol required, e.g. stockwise trade buy RELIANCE 10")?;
-            let quantity =
-                qty.context("Quantity required, e.g. stockwise trade buy RELIANCE 10")?;
-            let (side, limit) = match action {
-                "buy" => ("BUY", None),
-                "sell" => ("SELL", None),
-                _ => (
-                    "BUY",
-                    Some(price.context(
-                        "Limit price required, e.g. stockwise trade limit RELIANCE 10 1300",
-                    )?),
-                ),
-            };
-            place_live_order(side, sym, quantity, limit, opts).await
-        }
-        "orders" => {
-            let client = crate::angel::AngelClient::new().await?;
-            let orders = client.get_order_book().await?;
-
-            if orders.is_empty() {
-                println!("\n  {}", "No orders today.".dimmed());
-                return Ok(());
-            }
-
-            print_header("Angel One — Order Book");
-            println!(
-                "  {:<12} {:<14} {:>6} {:>8} {:>10} {:>12}",
-                "Order ID".bold(),
-                "Symbol".bold(),
-                "Type".bold(),
-                "Qty".bold(),
-                "Price".bold(),
-                "Status".bold()
-            );
-            println!("  {}", "─".repeat(66).dimmed());
-
-            for o in &orders {
-                let id = o.orderid.as_deref().unwrap_or("???");
-                let sym = o.tradingsymbol.as_deref().unwrap_or("???");
-                let txn = o.transactiontype.as_deref().unwrap_or("?");
-                let qty = o.quantity.as_deref().unwrap_or("0");
-                let price = o.price.as_deref().unwrap_or("0");
-                let status = o.status.as_deref().unwrap_or("???");
-                let txn_str = if txn == "BUY" {
-                    txn.green().to_string()
-                } else {
-                    txn.red().to_string()
-                };
-                let status_str = match status {
-                    "complete" => status.green().bold().to_string(),
-                    "rejected" => status.red().to_string(),
-                    "open" | "pending" => status.yellow().to_string(),
-                    _ => status.to_string(),
-                };
-                println!(
-                    "  {:<12} {:<14} {:>6} {:>8} {:>10} {:>12}",
-                    id.dimmed(),
-                    sym.cyan(),
-                    txn_str,
-                    qty,
-                    format!("₹{}", price),
-                    status_str
-                );
-            }
-            println!();
-            Ok(())
-        }
-        _ => {
-            println!();
-            println!("  {} Angel One Trading Commands:", "→".cyan());
-            println!();
-            println!(
-                "    {} — Set up Angel One API credentials",
-                "stockwise trade setup".bold()
-            );
-            println!(
-                "    {} — Create config file to edit",
-                "stockwise trade config".bold()
-            );
-            println!(
-                "    {} — View your live holdings",
-                "stockwise trade holdings".bold()
-            );
-            println!(
-                "    {} — View open intraday positions",
-                "stockwise trade positions".bold()
-            );
-            println!(
-                "    {} — Place a market buy order",
-                "stockwise trade buy RELIANCE 10".bold()
-            );
-            println!(
-                "    {} — Place a market sell order",
-                "stockwise trade sell RELIANCE 10".bold()
-            );
-            println!(
-                "    {} — Place a limit buy order",
-                "stockwise trade limit RELIANCE 10 1300".bold()
-            );
-            println!(
-                "    {} — View today's order book",
-                "stockwise trade orders".bold()
-            );
-            println!();
+            cancel_gtt(broker.as_ref(), &id, opts, &guard).await?;
             Ok(())
         }
     }
 }
 
-// ── Support & Resistance ──
+fn print_setup(kind: BrokerKind) {
+    let path = crate::store::path(kind.config_file())
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| kind.config_file().into());
+    let flag = if kind == BrokerKind::Angel {
+        String::new()
+    } else {
+        format!(" --broker {}", kind.id())
+    };
+    println!();
+    print_header(&format!("{} setup", kind.display()));
+    if kind.experimental() {
+        println!(
+            "  {} {} Built from {}'s public API docs.",
+            "⚠".yellow(),
+            "Experimental: untested against a live account.".yellow(),
+            kind.label()
+        );
+        println!(
+            "    Live orders stay off until you add {} to the config file.",
+            "\"enable_orders\": true".bold()
+        );
+        println!();
+    }
+    println!("  To connect your {} account:", kind.label());
+    println!();
+    for (i, step) in brokers::setup_steps(kind).iter().enumerate() {
+        println!("  {}. {}", i + 1, step);
+    }
+    println!();
+    println!("  Then run:");
+    println!("    {} stockwise trade config{}", "$".dimmed(), flag);
+    println!("  and fill in the file it creates:");
+    println!("    {}", path.cyan());
+    if kind != BrokerKind::Angel {
+        println!("  and log in (sessions expire daily):");
+        println!("    {} stockwise trade login{}", "$".dimmed(), flag);
+    }
+    println!();
+    println!(
+        "  {}",
+        "Never pass credentials as command-line arguments — they end up in shell history.".dimmed()
+    );
+    println!(
+        "  {}",
+        format!(
+            "Secrets move into the OS keyring on first use when one is available; otherwise the \
+             file stays readable only by you. It is sent nowhere except {}'s API.",
+            kind.label()
+        )
+        .dimmed()
+    );
+    println!(
+        "  {}",
+        "Optional: add \"max_order_value\": 50000 to cap the value of any single order.".dimmed()
+    );
+    println!();
+}
+
+fn cmd_trade_config(kind: BrokerKind, keyring: bool) -> Result<()> {
+    let flag = if kind == BrokerKind::Angel {
+        String::new()
+    } else {
+        format!(" --broker {}", kind.id())
+    };
+    let backend = brokers::secrets::backend();
+    let status = brokers::config_status(kind, true)?;
+    let path = status.path.display().to_string();
+    println!();
+    if !status.exists {
+        brokers::write_template(kind)?;
+        println!(
+            "  {} Created a {} credentials template (owner-only access).",
+            "✓".green(),
+            kind.label()
+        );
+        println!("  Edit it, then run this command again:");
+        println!("    {}", path.cyan());
+        println!();
+        return Ok(());
+    }
+    if keyring {
+        if status.storage == brokers::secrets::Storage::File {
+            let storage =
+                brokers::secrets::migrate_file(&status.path, kind.secret_keys(), backend)?;
+            if let brokers::secrets::Storage::Keyring { .. } = storage {
+                println!(
+                    "  {} {} secrets are now in the {}.",
+                    "✓".green(),
+                    kind.label(),
+                    backend.name()
+                );
+            } else {
+                println!(
+                    "  {} No secrets to move yet — fill in {} first.",
+                    "!".yellow(),
+                    path
+                );
+            }
+        } else {
+            println!(
+                "  {} {} secrets are already in the {}.",
+                "✓".green(),
+                kind.label(),
+                backend.name()
+            );
+        }
+    }
+    let status = brokers::config_status(kind, false)?;
+    if status.configured {
+        println!(
+            "  {} {} configured for {} — {}",
+            "✓".green(),
+            kind.display(),
+            status.summary.cyan(),
+            path
+        );
+    } else {
+        println!(
+            "  {} Credentials file still has placeholder or empty values.",
+            "⚠".yellow()
+        );
+        println!("  Edit it:");
+        println!("    {}", path.cyan());
+    }
+    println!(
+        "  {} {}",
+        "Storage:".dimmed(),
+        brokers::secrets::describe(&status.storage, backend)
+    );
+    if let Some(s) = &status.session {
+        println!("  {} {}", "Session:".dimmed(), s);
+    } else if kind != BrokerKind::Angel && status.configured {
+        println!(
+            "  {} not logged in — run `stockwise trade login{}`",
+            "Session:".dimmed(),
+            flag
+        );
+    }
+    println!();
+    Ok(())
+}
+
+fn signed_money(v: f64) -> String {
+    if v >= 0.0 {
+        format!("+₹{:.2}", v).green().to_string()
+    } else {
+        format!("-₹{:.2}", v.abs()).red().to_string()
+    }
+}
+
+fn print_holdings(kind: BrokerKind, holdings: &[brokers::Holding]) -> Result<()> {
+    if holdings.is_empty() {
+        println!("\n  {}", "No holdings found.".dimmed());
+        return Ok(());
+    }
+
+    print_header(&format!("{} — Holdings (Live)", kind.display()));
+    println!(
+        "  {:<14} {:>8} {:>10} {:>10} {:>12} {:>10}",
+        "Symbol".bold(),
+        "Qty".bold(),
+        "Avg Cost".bold(),
+        "LTP".bold(),
+        "P&L".bold(),
+        "P&L %".bold()
+    );
+    println!("  {}", "─".repeat(68).dimmed());
+
+    let mut total_pnl = 0.0_f64;
+    let mut total_value = 0.0_f64;
+    let mut total_cost = 0.0_f64;
+    let mut unpriced = 0;
+
+    for h in holdings {
+        let cost = h.avg_price.map(|a| a * h.qty);
+        // P&L from the broker, else from LTP; never from a missing price.
+        let pnl = h
+            .pnl
+            .or_else(|| Some(h.ltp? * h.qty - cost?))
+            .filter(|_| h.ltp.is_some());
+        let pnl_pct = match (pnl, cost) {
+            (Some(p), Some(c)) if c > 0.0 => Some(p / c * 100.0),
+            _ => None,
+        };
+        match (h.ltp, cost) {
+            (Some(ltp), Some(c)) => {
+                total_value += ltp * h.qty;
+                total_cost += c;
+                total_pnl += pnl.unwrap_or(ltp * h.qty - c);
+            }
+            _ => unpriced += 1,
+        }
+        let pct_str = match pnl_pct {
+            Some(p) if p >= 0.0 => format!("+{:.2}%", p).green().to_string(),
+            Some(p) => format!("{:.2}%", p).red().to_string(),
+            None => "N/A".dimmed().to_string(),
+        };
+        println!(
+            "  {:<14} {:>8} {:>10} {:>10} {:>12} {:>10}",
+            h.symbol.cyan(),
+            h.qty,
+            money(h.avg_price),
+            money(h.ltp),
+            pnl.map_or("N/A".dimmed().to_string(), signed_money),
+            pct_str
+        );
+    }
+
+    println!("  {}", "─".repeat(68).dimmed());
+    println!(
+        "  {:<14} {:>8} {:>10} {:>10} {:>12}",
+        "TOTAL".bold(),
+        "",
+        format!("₹{:.0}", total_cost),
+        format!("₹{:.0}", total_value),
+        signed_money(total_pnl).bold()
+    );
+    if unpriced > 0 {
+        println!(
+            "  {}",
+            format!("{unpriced} holding(s) without a price are left out of the totals.").dimmed()
+        );
+    }
+
+    // Also sync to stockwise portfolio
+    let mut portfolio = Portfolio::load()?;
+    for h in holdings {
+        let (sym, qty) = (h.symbol.as_str(), h.qty);
+        if let Some(avg) = h.avg_price
+            && !sym.is_empty()
+            && qty > 0.0
+        {
+            // Broker symbols are plain (RELIANCE); Yahoo wants RELIANCE.NS.
+            let resolved = if sym.contains('.') {
+                sym.to_string()
+            } else {
+                format!("{}.NS", sym)
+            };
+            // Overwrite quantity/cost but keep the original added date.
+            portfolio.set(&resolved, qty, avg);
+        }
+    }
+    portfolio.save()?;
+    println!(
+        "\n  {} Holdings synced to StockWise portfolio.",
+        "✓".green()
+    );
+    println!();
+    Ok(())
+}
+
+fn print_positions(kind: BrokerKind, positions: &[brokers::Position]) {
+    if positions.is_empty() {
+        println!("\n  {}", "No open positions.".dimmed());
+        return;
+    }
+
+    print_header(&format!("{} — Open Positions", kind.display()));
+    println!(
+        "  {:<14} {:>8} {:>10} {:>10} {:>12}",
+        "Symbol".bold(),
+        "Qty".bold(),
+        "Avg".bold(),
+        "LTP".bold(),
+        "P&L".bold()
+    );
+    println!("  {}", "─".repeat(58).dimmed());
+
+    for p in positions {
+        println!(
+            "  {:<14} {:>8} {:>10} {:>10} {:>12}",
+            p.symbol.cyan(),
+            p.qty,
+            money(p.avg_price),
+            money(p.ltp),
+            p.pnl.map_or("N/A".dimmed().to_string(), signed_money)
+        );
+    }
+    println!();
+}
+
+fn print_orders(kind: BrokerKind, orders: &[brokers::Order]) {
+    if orders.is_empty() {
+        println!("\n  {}", "No orders today.".dimmed());
+        return;
+    }
+
+    print_header(&format!("{} — Order Book", kind.display()));
+    println!(
+        "  {:<18} {:<14} {:>5} {:>7} {:>8} {:>10} {:>10} {:>12}",
+        "Order ID".bold(),
+        "Symbol".bold(),
+        "Side".bold(),
+        "Type".bold(),
+        "Qty".bold(),
+        "Price".bold(),
+        "Trigger".bold(),
+        "Status".bold()
+    );
+    println!("  {}", "─".repeat(90).dimmed());
+
+    for o in orders {
+        let side = o.side.as_deref().unwrap_or("?");
+        let side_str = match side.to_ascii_uppercase().as_str() {
+            "BUY" => side.green().to_string(),
+            "SELL" => side.red().to_string(),
+            _ => side.to_string(),
+        };
+        let status = o.status.as_deref().unwrap_or("???");
+        let status_str = match status.to_ascii_lowercase().as_str() {
+            "complete" | "completed" | "traded" | "filled" => status.green().bold().to_string(),
+            "rejected" | "cancelled" | "canceled" => status.red().to_string(),
+            "open" | "pending" | "trigger pending" | "transit" => status.yellow().to_string(),
+            _ => status.to_string(),
+        };
+        println!(
+            "  {:<18} {:<14} {:>5} {:>7} {:>8} {:>10} {:>10} {:>12}",
+            o.id.dimmed(),
+            o.symbol.cyan(),
+            side_str,
+            o.order_type.as_deref().unwrap_or(""),
+            o.qty.map_or("?".into(), |q| q.to_string()),
+            money(o.price),
+            money(o.trigger),
+            status_str
+        );
+        if let Some(msg) = &o.message
+            && status.eq_ignore_ascii_case("rejected")
+        {
+            println!("  {:<18} {}", "", msg.dimmed());
+        }
+    }
+    println!();
+}
+
+fn print_gtts(kind: BrokerKind, gtts: &[Gtt]) {
+    if gtts.is_empty() {
+        println!("\n  {}", "No GTT orders.".dimmed());
+        return;
+    }
+    print_header(&format!("{} — GTT orders", kind.display()));
+    println!(
+        "  {:<14} {:<14} {:>5} {:>8} {:>10} {:>10} {:>12}",
+        "GTT id".bold(),
+        "Symbol".bold(),
+        "Side".bold(),
+        "Qty".bold(),
+        "Trigger".bold(),
+        "Limit".bold(),
+        "Status".bold()
+    );
+    println!("  {}", "─".repeat(80).dimmed());
+    for g in gtts {
+        println!(
+            "  {:<14} {:<14} {:>5} {:>8} {:>10} {:>10} {:>12}",
+            g.id.dimmed(),
+            g.symbol.cyan(),
+            g.side.as_deref().unwrap_or("?"),
+            g.qty.map_or("?".into(), |q| q.to_string()),
+            money(g.trigger),
+            money(g.limit),
+            g.status.as_deref().unwrap_or("?")
+        );
+    }
+    println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::brokers::{Holding, Instrument, Order, OrderAck, Position};
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+
+    /// In-memory broker that records what the safety flow sends.
+    #[derive(Default)]
+    struct FakeBroker {
+        experimental: bool,
+        placed: Mutex<Vec<OrderRequest>>,
+        gtts: Mutex<Vec<GttRequest>>,
+        cancelled: Mutex<Vec<String>>,
+        resolve_fails: bool,
+        no_gtt: bool,
+    }
+
+    #[async_trait]
+    impl Broker for FakeBroker {
+        fn kind(&self) -> BrokerKind {
+            if self.experimental {
+                BrokerKind::Zerodha
+            } else {
+                BrokerKind::Angel
+            }
+        }
+        async fn holdings(&self) -> Result<Vec<Holding>> {
+            Ok(vec![])
+        }
+        async fn positions(&self) -> Result<Vec<Position>> {
+            Ok(vec![])
+        }
+        async fn orders(&self) -> Result<Vec<Order>> {
+            Ok(vec![])
+        }
+        async fn resolve_instrument(&self, symbol: &str, exchange: &str) -> Result<Instrument> {
+            if self.resolve_fails {
+                bail!("No exact match for {symbol}");
+            }
+            Ok(Instrument {
+                symbol: symbol.into(),
+                tradingsymbol: format!("{symbol}-EQ"),
+                token: "1".into(),
+                exchange: exchange.into(),
+            })
+        }
+        async fn place_order(&self, order: &OrderRequest) -> Result<OrderAck> {
+            self.placed.lock().unwrap().push(order.clone());
+            Ok(OrderAck {
+                order_id: Some("OID1".into()),
+            })
+        }
+        fn supports_gtt(&self) -> bool {
+            !self.no_gtt
+        }
+        async fn gtt_create(&self, gtt: &GttRequest) -> Result<String> {
+            self.gtts.lock().unwrap().push(gtt.clone());
+            Ok("G1".into())
+        }
+        async fn gtt_list(&self) -> Result<Vec<Gtt>> {
+            Ok(vec![Gtt {
+                id: "G1".into(),
+                symbol: "SBIN".into(),
+                side: Some("SELL".into()),
+                qty: Some(10.0),
+                trigger: Some(780.0),
+                limit: Some(779.0),
+                status: Some("active".into()),
+            }])
+        }
+        async fn gtt_cancel(&self, id: &str) -> Result<()> {
+            self.cancelled.lock().unwrap().push(id.into());
+            Ok(())
+        }
+    }
+
+    impl FakeBroker {
+        fn sent(&self) -> usize {
+            self.placed.lock().unwrap().len()
+                + self.gtts.lock().unwrap().len()
+                + self.cancelled.lock().unwrap().len()
+        }
+    }
+
+    fn never_confirm(_: &str) -> Result<bool> {
+        panic!("confirmation must not be asked")
+    }
+    fn say_yes(_: &str) -> Result<bool> {
+        Ok(true)
+    }
+    fn say_no(_: &str) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn guard<'a>(
+        last: Option<f64>,
+        cap: Option<f64>,
+        confirm: &'a dyn Fn(&str) -> Result<bool>,
+    ) -> Guard<'a> {
+        Guard {
+            limits: OrderLimits {
+                max_order_value: cap,
+                enable_orders: true,
+            },
+            last_price: last,
+            confirm,
+        }
+    }
+
+    const LIVE: OrderOpts = OrderOpts {
+        yes: false,
+        dry_run: false,
+    };
+    const DRY: OrderOpts = OrderOpts {
+        yes: false,
+        dry_run: true,
+    };
+    const YES: OrderOpts = OrderOpts {
+        yes: true,
+        dry_run: false,
+    };
+
+    #[tokio::test]
+    async fn dry_run_never_sends_an_order_or_gtt() {
+        let b = FakeBroker::default();
+        let g = guard(Some(800.0), None, &never_confirm);
+        let sl = Intent::Order(OrderKind::StopMarket { trigger: 780.0 });
+        let out = place_live_order(&b, Side::Sell, "SBIN", 10, sl, DRY, &g).await;
+        assert_eq!(out.unwrap(), Outcome::DryRun);
+        let gtt = Intent::Gtt {
+            trigger: 780.0,
+            limit: 779.0,
+        };
+        let out = place_live_order(&b, Side::Sell, "SBIN", 10, gtt, DRY, &g).await;
+        assert_eq!(out.unwrap(), Outcome::DryRun);
+        let out = cancel_gtt(&b, "G1", DRY, &g).await;
+        assert_eq!(out.unwrap(), Outcome::DryRun);
+        assert_eq!(b.sent(), 0);
+    }
+
+    #[tokio::test]
+    async fn typed_yes_is_required() {
+        let b = FakeBroker::default();
+        let no = guard(Some(800.0), None, &say_no);
+        let out = place_live_order(
+            &b,
+            Side::Buy,
+            "SBIN",
+            1,
+            Intent::Order(OrderKind::Market),
+            LIVE,
+            &no,
+        )
+        .await;
+        assert_eq!(out.unwrap(), Outcome::Cancelled);
+        assert_eq!(b.sent(), 0);
+
+        let yes = guard(Some(800.0), None, &say_yes);
+        let out = place_live_order(
+            &b,
+            Side::Buy,
+            "SBIN",
+            1,
+            Intent::Order(OrderKind::Market),
+            LIVE,
+            &yes,
+        )
+        .await;
+        assert_eq!(out.unwrap(), Outcome::Sent(Some("OID1".into())));
+        assert_eq!(
+            b.placed.lock().unwrap()[0].instrument.tradingsymbol,
+            "SBIN-EQ"
+        );
+    }
+
+    #[tokio::test]
+    async fn yes_flag_skips_the_prompt_but_not_the_cap() {
+        let b = FakeBroker::default();
+        let g = guard(Some(800.0), Some(5000.0), &never_confirm);
+        // 10 x 800 = 8000 > 5000.
+        let err = place_live_order(
+            &b,
+            Side::Buy,
+            "SBIN",
+            10,
+            Intent::Order(OrderKind::Market),
+            YES,
+            &g,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("max_order_value"), "{err}");
+        // Dry run reports the cap too.
+        assert!(
+            place_live_order(
+                &b,
+                Side::Buy,
+                "SBIN",
+                10,
+                Intent::Order(OrderKind::Market),
+                DRY,
+                &g
+            )
+            .await
+            .is_err()
+        );
+        let out = place_live_order(
+            &b,
+            Side::Buy,
+            "SBIN",
+            6,
+            Intent::Order(OrderKind::Market),
+            YES,
+            &g,
+        )
+        .await;
+        assert!(matches!(out.unwrap(), Outcome::Sent(_)));
+        assert_eq!(b.sent(), 1);
+    }
+
+    #[tokio::test]
+    async fn unknown_value_with_a_cap_is_refused() {
+        let b = FakeBroker::default();
+        let g = guard(None, Some(5000.0), &never_confirm);
+        let err = place_live_order(
+            &b,
+            Side::Buy,
+            "SBIN",
+            1,
+            Intent::Order(OrderKind::Market),
+            YES,
+            &g,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("Cannot estimate"), "{err}");
+        assert_eq!(b.sent(), 0);
+    }
+
+    #[tokio::test]
+    async fn gtt_value_uses_the_limit_for_the_cap() {
+        let b = FakeBroker::default();
+        let g = guard(Some(800.0), Some(7000.0), &never_confirm);
+        let gtt = Intent::Gtt {
+            trigger: 780.0,
+            limit: 779.0,
+        };
+        // 10 x 779 = 7790 > 7000.
+        assert!(
+            place_live_order(&b, Side::Sell, "SBIN", 10, gtt, YES, &g)
+                .await
+                .is_err()
+        );
+        let out = place_live_order(&b, Side::Sell, "SBIN", 8, gtt, YES, &g)
+            .await
+            .unwrap();
+        assert_eq!(out, Outcome::Sent(Some("G1".into())));
+        let sent = b.gtts.lock().unwrap()[0].clone();
+        assert_eq!((sent.trigger, sent.limit, sent.qty), (780.0, 779.0, 8));
+        assert_eq!(sent.last_price, 800.0);
+    }
+
+    #[tokio::test]
+    async fn wrong_side_trigger_is_refused_before_anything_is_sent() {
+        let b = FakeBroker::default();
+        let g = guard(Some(800.0), None, &never_confirm);
+        // Stop-loss sell with the trigger above the market fires at once.
+        let bad = Intent::Order(OrderKind::StopLimit {
+            trigger: 810.0,
+            price: 805.0,
+        });
+        assert!(
+            place_live_order(&b, Side::Sell, "SBIN", 1, bad, YES, &g)
+                .await
+                .is_err()
+        );
+        // Missing price: stop orders are refused rather than sent unchecked.
+        let blind = guard(None, None, &never_confirm);
+        let sl = Intent::Order(OrderKind::StopMarket { trigger: 780.0 });
+        assert!(
+            place_live_order(&b, Side::Sell, "SBIN", 1, sl, YES, &blind)
+                .await
+                .is_err()
+        );
+        assert_eq!(b.sent(), 0);
+    }
+
+    #[tokio::test]
+    async fn bad_arguments_and_unresolved_symbols_send_nothing() {
+        let b = FakeBroker::default();
+        let g = guard(Some(800.0), None, &never_confirm);
+        assert!(
+            place_live_order(
+                &b,
+                Side::Buy,
+                "SBIN",
+                0,
+                Intent::Order(OrderKind::Market),
+                YES,
+                &g
+            )
+            .await
+            .is_err()
+        );
+        let neg = Intent::Order(OrderKind::Limit { price: -1.0 });
+        assert!(
+            place_live_order(&b, Side::Buy, "SBIN", 1, neg, YES, &g)
+                .await
+                .is_err()
+        );
+        let unresolved = FakeBroker {
+            resolve_fails: true,
+            ..Default::default()
+        };
+        assert!(
+            place_live_order(
+                &unresolved,
+                Side::Buy,
+                "SBI",
+                1,
+                Intent::Order(OrderKind::Market),
+                YES,
+                &g
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(b.sent() + unresolved.sent(), 0);
+    }
+
+    #[tokio::test]
+    async fn experimental_brokers_need_enable_orders_for_live_orders() {
+        let b = FakeBroker {
+            experimental: true,
+            ..Default::default()
+        };
+        let mut g = guard(Some(800.0), None, &never_confirm);
+        g.limits.enable_orders = false;
+        // Dry run works.
+        let out = place_live_order(
+            &b,
+            Side::Buy,
+            "SBIN",
+            1,
+            Intent::Order(OrderKind::Market),
+            DRY,
+            &g,
+        )
+        .await;
+        assert_eq!(out.unwrap(), Outcome::DryRun);
+        // Live (even with --yes) is refused.
+        let err = place_live_order(
+            &b,
+            Side::Buy,
+            "SBIN",
+            1,
+            Intent::Order(OrderKind::Market),
+            YES,
+            &g,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("enable_orders"), "{err}");
+        assert!(cancel_gtt(&b, "G1", YES, &g).await.is_err());
+        assert_eq!(b.sent(), 0);
+    }
+
+    #[tokio::test]
+    async fn angel_market_orders_need_no_opt_in_but_stop_loss_and_gtt_do() {
+        let b = FakeBroker::default();
+        let mut g = guard(Some(800.0), None, &say_yes);
+        g.limits.enable_orders = false;
+        // 0.3 behaviour: market and limit orders work as before.
+        let out = place_live_order(
+            &b,
+            Side::Buy,
+            "SBIN",
+            1,
+            Intent::Order(OrderKind::Market),
+            LIVE,
+            &g,
+        )
+        .await;
+        assert!(matches!(out.unwrap(), Outcome::Sent(_)));
+        // New, untested paths need enable_orders.
+        let sl = Intent::Order(OrderKind::StopMarket { trigger: 780.0 });
+        let err = place_live_order(&b, Side::Sell, "SBIN", 1, sl, YES, &g)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Stop-loss"), "{err}");
+        let gtt = Intent::Gtt {
+            trigger: 780.0,
+            limit: 779.0,
+        };
+        assert!(
+            place_live_order(&b, Side::Sell, "SBIN", 1, gtt, YES, &g)
+                .await
+                .is_err()
+        );
+        assert!(cancel_gtt(&b, "G1", YES, &g).await.is_err());
+        assert_eq!(b.sent(), 1);
+    }
+
+    #[tokio::test]
+    async fn unsupported_gtt_fails_before_the_preview() {
+        let b = FakeBroker {
+            no_gtt: true,
+            ..Default::default()
+        };
+        let g = guard(Some(800.0), None, &never_confirm);
+        let gtt = Intent::Gtt {
+            trigger: 780.0,
+            limit: 779.0,
+        };
+        let err = place_live_order(&b, Side::Sell, "SBIN", 1, gtt, DRY, &g)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not supported"), "{err}");
+        assert!(cancel_gtt(&b, "G1", DRY, &g).await.is_err());
+        assert_eq!(b.sent(), 0);
+    }
+
+    #[tokio::test]
+    async fn cancel_gtt_checks_the_id_and_confirms() {
+        let b = FakeBroker::default();
+        let g = guard(None, None, &say_no);
+        assert_eq!(
+            cancel_gtt(&b, "G1", LIVE, &g).await.unwrap(),
+            Outcome::Cancelled
+        );
+        assert!(cancel_gtt(&b, "NOPE", YES, &g).await.is_err());
+        assert_eq!(b.sent(), 0);
+        assert!(matches!(
+            cancel_gtt(&b, "G1", YES, &g).await.unwrap(),
+            Outcome::Sent(_)
+        ));
+        assert_eq!(b.cancelled.lock().unwrap().as_slice(), ["G1"]);
+    }
+
+    #[test]
+    fn type_line_keeps_the_0_3_wording_for_market_and_limit() {
+        assert_eq!(type_line(&Intent::Order(OrderKind::Market)), "MARKET");
+        assert_eq!(
+            type_line(&Intent::Order(OrderKind::Limit { price: 1300.0 })),
+            "LIMIT @ ₹1300.00"
+        );
+    }
+}

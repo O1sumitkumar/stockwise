@@ -488,21 +488,51 @@ pub async fn cmd_doctor(market: Market) -> Result<()> {
         },
     );
 
-    // Broker
-    let broker = match crate::angel::AngelConfig::load() {
-        Ok(c) if c.is_configured() => ok(&format!(
-            "configured for {}{}",
-            c.client_id,
-            c.max_order_value
-                .map(|v| format!(", max order ₹{:.0}", v))
-                .unwrap_or_default()
-        )),
-        Ok(_) => "not configured (optional; `trade setup` for live trading)"
-            .dimmed()
-            .to_string(),
-        Err(e) => warn(&format!("{:#}", e)),
-    };
-    print_kv("Angel One", &broker);
+    // Brokers: Angel One always; the others once they have a config file.
+    // Read-only: doctor never moves secrets into the keyring.
+    let backend = crate::brokers::secrets::backend();
+    print_kv(
+        "Keyring",
+        &match backend.available() {
+            Ok(()) => ok(&format!("{} available for broker secrets", backend.name())),
+            Err(reason) => format!("not used ({reason}); broker secrets stay in owner-only files")
+                .dimmed()
+                .to_string(),
+        },
+    );
+    for kind in crate::brokers::BrokerKind::ALL {
+        let line = match crate::brokers::config_status(kind, false) {
+            Ok(st) if !st.exists && kind != crate::brokers::BrokerKind::Angel => continue,
+            Ok(st) if st.configured => {
+                let limits = crate::brokers::order_limits(kind).unwrap_or_default();
+                let mut parts = vec![format!("configured for {}", st.summary)];
+                if let Some(v) = limits.max_order_value {
+                    parts.push(format!("max order ₹{:.0}", v));
+                }
+                if let Some(s) = &st.session {
+                    parts.push(s.clone());
+                }
+                match (kind.experimental(), limits.enable_orders) {
+                    (true, true) => parts.push("live orders enabled".into()),
+                    (true, false) => parts.push("live orders off (read-only)".into()),
+                    (false, true) => parts.push("SL/SL-M and GTT enabled".into()),
+                    (false, false) => {}
+                }
+                parts.push(crate::brokers::secrets::describe(&st.storage, backend));
+                ok(&parts.join(", "))
+            }
+            Ok(st) if st.exists => warn(&format!(
+                "placeholder values in {} — `trade config --broker {}`",
+                st.path.display(),
+                kind.id()
+            )),
+            Ok(_) => "not configured (optional; `trade setup` for live trading)"
+                .dimmed()
+                .to_string(),
+            Err(e) => warn(&format!("{:#}", e)),
+        };
+        print_kv(&kind.display(), &line);
+    }
     println!();
 
     if !yahoo {
