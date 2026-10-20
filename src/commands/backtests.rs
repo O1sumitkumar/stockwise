@@ -57,7 +57,12 @@ async fn fetch_bars(
     let chart = client
         .get_chart(symbol, period, "1d")
         .await
-        .with_context(|| format!("No price history for {symbol}"))?;
+        .with_context(|| {
+            format!(
+                "No price history for {symbol}{}",
+                market::not_found_hint(market)
+            )
+        })?;
     let currency = chart.meta.as_ref().and_then(|m| m.currency.clone());
     let bars = Bars::from_chart(&chart);
     if bars.is_empty() {
