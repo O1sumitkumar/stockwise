@@ -1,0 +1,19 @@
+pkgbase = stockwise-bin
+	pkgdesc = Stock market toolkit for your terminal: Indian (NSE/BSE) and US stocks
+	pkgver = @VERSION@
+	pkgrel = 1
+	url = https://github.com/iamsaquib8/stockwise
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	depends = glibc
+	depends = libgcc
+	provides = stockwise
+	conflicts = stockwise
+	options = !debug
+	source_x86_64 = stockwise-@VERSION@-x86_64.tar.gz::https://github.com/iamsaquib8/stockwise/releases/download/v@VERSION@/stockwise-x86_64-unknown-linux-gnu.tar.gz
+	sha256sums_x86_64 = @SHA256_X86_64_UNKNOWN_LINUX_GNU@
+	source_aarch64 = stockwise-@VERSION@-aarch64.tar.gz::https://github.com/iamsaquib8/stockwise/releases/download/v@VERSION@/stockwise-aarch64-unknown-linux-gnu.tar.gz
+	sha256sums_aarch64 = @SHA256_AARCH64_UNKNOWN_LINUX_GNU@
+
+pkgname = stockwise-bin

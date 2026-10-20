@@ -1,0 +1,102 @@
+name: Packaging
+
+# Checks the package manifests, the Docker image and the Nix flake when they,
+# or the crate files they build from, change. Releases use the same files.
+on:
+  pull_request:
+    paths:
+      - "packaging/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "flake.nix"
+      - "flake.lock"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/packaging.yml"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packaging-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  manifests:
+    name: render manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck packaging/render.sh
+      - name: Render with placeholder checksums
+        run: |
+          mkdir sums
+          for asset in \
+            stockwise-x86_64-unknown-linux-gnu.tar.gz stockwise-aarch64-unknown-linux-gnu.tar.gz \
+            stockwise-x86_64-apple-darwin.tar.gz stockwise-aarch64-apple-darwin.tar.gz \
+            stockwise-x86_64-pc-windows-msvc.zip; do
+            printf '%s' "$asset" | sha256sum | sed "s|-\$|$asset|" > "sums/$asset.sha256"
+          done
+          packaging/render.sh 0.0.0 sums dist
+      - name: Validate syntax
+        run: |
+          jq -e . dist/scoop/stockwise.json > /dev/null
+          ruby -c dist/homebrew/stockwise.rb
+          bash -n dist/aur/stockwise-bin/PKGBUILD
+          for manifest in dist/winget/manifests/i/iamsaquib8/StockWise/0.0.0/*.yaml; do
+            ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$manifest"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rendered-manifests
+          path: dist/
+          include-hidden-files: true
+
+  aur:
+    name: AUR .SRCINFO
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+      # makepkg refuses to run as root.
+      - name: .SRCINFO matches PKGBUILD
+        run: |
+          useradd -m builder
+          cp -R packaging/aur/stockwise-bin /home/builder/pkg
+          chown -R builder /home/builder/pkg
+          cd /home/builder/pkg
+          su builder -c 'makepkg --printsrcinfo' > /tmp/SRCINFO
+          diff -u .SRCINFO /tmp/SRCINFO
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: stockwise:ci
+          cache-from: type=gha,scope=docker-amd64
+      - name: Smoke test
+        run: |
+          docker run --rm stockwise:ci --version
+          docker run --rm stockwise:ci man | grep -q SUBCOMMANDS
+          # The non-root user can write the /data volume, and it persists.
+          docker run --rm -v stockwise-ci:/data stockwise:ci watch add TCS
+          docker run --rm -v stockwise-ci:/data stockwise:ci watch add TCS | grep -q "already in watchlist"
+          test "$(docker image inspect stockwise:ci --format '{{.Config.User}}')" = nonroot
+          docker image ls stockwise:ci
+
+  nix:
+    name: nix flake check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - run: nix flake check -L
+      - run: nix run . -- --version

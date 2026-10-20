@@ -10,20 +10,33 @@ src/
     overview.rs      quote, markets, dashboard, search, doctor
     fundamentals.rs  analyze, compare, peers, dividends, insider, deep
     technicals.rs    technical, history, chart, timeframes, patterns, support, fibs, volume, gaps, stoploss
-    risk.rs          risk, correlate, returns, forecast, options
+    risk.rs          risk, correlate, returns, forecast, options moves
+    funds.rs         mf search, nav, history, sip, screen, overlap
+    fno.rs           options chain, pcr, maxpain
     markets.rs       movers, sectors, news, sentiment, screen, picks, earnings, rotation, matrix, surprise, heatmap, sectorcmp, ipo
     strategies.rs    backtest, sip, whatif, intraday, longterm, report
-    holdings.rs      portfolio, watch, alert, import, export, wealth, rebalance, harvest, tax, divcal, pcorr
+    portfolio.rs     portfolio (show, add, sell, lots, actions, list) and valuation in a base currency
+    holdings.rs      watch, alert, import, export, wealth, rebalance, harvest, tax, divcal, pcorr
     imports.rs       Groww / Upstox CSV and CAS (casparser JSON/CSV) import parsers
-    sim.rs           paper-trading simulator
+    sim.rs           paper-trading simulator (settle replays intraday bars)
     worker.rs        daemon intraday / longterm loops
+    alerting.rs      alert watch loop, notify status/test
     trade.rs         Live orders for every broker: place_live_order (validation, preview, cap, confirmation)
   store.rs           Atomic JSON persistence, data directory (STOCKWISE_HOME)
-  api.rs             Yahoo Finance client (session, quotes, charts, search, cache, retries)
+  portfolio.rs       Lots, FIFO sales, splits/dividends, XIRR cash flows, FX, named portfolios
+  tax.rs             Capital-gains rules: holding periods, tax years, set-off (India/US/UK)
+  api.rs             Yahoo Finance client (session, quotes, charts, search, cache, retries); routes to a provider
+  providers/         MarketData trait + opt-in Alpha Vantage, Massive (Polygon), Twelve Data; Yahoo fills gaps
+  i18n.rs            Typed English/Hindi message catalog, --lang / STOCKWISE_LANG / locale detection
   brokers/           Broker trait + clients: angel (SmartAPI, TOTP), zerodha, upstox, dhan, fyers
                      (experimental), secrets.rs (OS keyring / owner-only file), mock.rs (test HTTP server)
-  ai.rs              Ollama integration (prompts, opt-in flag, model checks)
-  daemon.rs          Worker state: market phases, positions, risk manager
+  funds.rs           AMFI NAV file + api.mfapi.in history (cached), returns, SIP, ETF holdings overlap
+  derivatives.rs     Option chains from NSE / Yahoo, PCR, max pain, per-contract IV and greeks
+  greeks.rs          Black-Scholes pricing, greeks, implied-volatility solver
+  ai.rs              AI: Ollama (default) or opt-in OpenAI / Anthropic / Gemini; prompts, opt-in flag, model checks
+  clock.rs           Exchange clock: IST / US Eastern, NSE + NYSE holidays, session phases
+  daemon.rs          Worker state: positions, risk manager, daemon_state.json, shutdown, retry
+  notify.rs          Notifications: Telegram, Slack, Discord, SMTP email, desktop
   technical.rs       Indicators and statistics (SMA, EMA, RSI, MACD, BB, ATR, VWAP, OBV, VaR, Sharpe, XIRR, ...)
   backtest.rs        Backtesting engine (6 strategies, equity curves)
   intraday.rs        Intraday bot (9 strategies, regime detection, Kelly sizing)
@@ -31,9 +44,9 @@ src/
   simulator.rs       Paper-trading sessions and confidence rating
   insights.rs        Rule-based plain-English insights
   charts.rs          Braille line charts, volume bars, gauges
-  display.rs         Currency-aware formatting (₹/$/£), colours
-  market.rs          Market enum, symbol resolution, index/sector lists
-  portfolio.rs, watchlist.rs, alerts.rs, wealth.rs   Data models persisted via store.rs
+  display.rs         Currency- and asset-aware formatting (₹/$/€/£/¥, FX and crypto decimals), width-aware padding
+  market.rs          Market enum (in/us/crypto/fx), asset classes, symbol resolution, index/sector/coin/pair lists
+  watchlist.rs, alerts.rs, wealth.rs   Data models persisted via store.rs
 ```
 
 Adding a command: define it in `Commands` in `main.rs` (and in the `GROUPS`
@@ -44,8 +57,11 @@ help table — a test enforces this), write `cmd_<name>` in the matching
 
 ```
 User Input → clap CLI → commands/* → api.rs → Yahoo Finance
+                                   → funds.rs → AMFI NAVAll.txt, api.mfapi.in
+                                   → derivatives.rs → NSE option chain (India), Yahoo (US)
+                                            → providers/* → Alpha Vantage / Massive / Twelve Data (opt-in)
                                    → brokers/* → Angel One, Kite, Upstox, Dhan, Fyers
-                                   → ai.rs → Local Ollama
+                                   → ai.rs → Local Ollama (or opt-in OpenAI / Anthropic / Gemini)
                                    → technical.rs (indicators)
                                    → intraday.rs / longterm.rs (bots)
                                    → charts.rs (visualization)
@@ -93,19 +109,25 @@ the OS keyring when one is available (`STOCKWISE_KEYRING=off` keeps them in the 
 
 | File | Purpose |
 |------|---------|
-| `portfolio.json` | Holdings (symbol, shares, avg cost, date) |
+| `portfolio.json` | Default portfolio: holdings with lots (qty, price, purchase date, source), realized sales, dividends. Format version 2; older files are upgraded on load and kept once as `portfolio.json.bak` |
+| `portfolios/NAME.json` | Named portfolios (`--portfolio NAME`), same format |
+| `portfolios/NAME.wealth_history.json` | Wealth history of a named portfolio |
 | `watchlist.json` | Watched symbols |
 | `alerts.json` | Price alerts (symbol, condition, target) |
-| `wealth_history.json` | Daily portfolio value snapshots |
+| `wealth_history.json` | Daily value snapshots of the default portfolio |
 | `sim_history.json` | Paper trading sessions and results |
+| `daemon_state.json` / `daemon_state_us.json` | The intraday daemon's current day (positions, risk), saved every tick |
+| `alert_watch.json` | Which alerts `alert watch` already announced |
 | `angel_config.json` | Angel One API credentials (secrets in the OS keyring when available) |
 | `zerodha_config.json`, `upstox_config.json`, `dhan_config.json`, `fyers_config.json` | Experimental broker apps and daily sessions (secrets in the keyring when available) |
+| `cache/` | AMFI NAV file and per-scheme NAV history, re-downloaded after 12 hours (safe to delete) |
 
 ## Dependencies
 
 | Crate | Purpose |
 |-------|---------|
 | `clap` | CLI argument parsing (derive macros) |
+| `clap_complete` / `clap_mangen` | Shell completions and man pages generated from the CLI definition |
 | `reqwest` | HTTP client (Yahoo Finance, brokers, Ollama) |
 | `keyring` | OS keyring for broker secrets |
 | `async-trait` | `dyn Broker` with async methods |
@@ -118,6 +140,17 @@ the OS keyring when one is available (`STOCKWISE_KEYRING=off` keeps them in the 
 | `chrono` | Date handling |
 | `dirs` | Platform-specific data directories |
 | `anyhow` | Error handling |
+| `lettre` | SMTP email notifications (rustls) |
+| `notify-rust` | Desktop notifications (optional `desktop-notify` feature) |
+
+## Releases and packaging
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the five release
+archives (binary, docs, and `man/*.1` from `stockwise man --dir`), publishes the crate,
+renders the Homebrew, Scoop, winget and AUR manifests in `packaging/` with the release's
+checksums, updates the Homebrew tap when its token is configured, and pushes the
+multi-arch `ghcr.io/iamsaquib8/stockwise` image built from `Dockerfile`. `flake.nix`
+builds the same crate with Nix. See [packaging/README.md](../packaging/README.md).
 
 ## Testing
 

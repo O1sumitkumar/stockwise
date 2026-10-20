@@ -253,8 +253,9 @@ stockwise import csv ~/Downloads/stocks.csv          # Any CSV
 
 Columns are detected by name (Symbol/Instrument/Stock Name/ISIN,
 Quantity/Qty, Avg Cost/Average buy price), and leading account-detail rows are
-skipped. An export is treated as a snapshot: re-importing the same file
-updates holdings instead of doubling them.
+skipped. A holdings export is a snapshot: existing lots and their dates are
+kept and only the quantity follows the file, so re-importing never doubles a
+holding. `trade holdings` syncs broker holdings the same way.
 
 - **Groww** exports holdings as `.xlsx` with no ticker column: open it, save as
   CSV, and StockWise looks up each ISIN's NSE ticker (Yahoo search, one exact
@@ -278,10 +279,14 @@ stockwise import cas cas.json
 ```
 
 - **CAMS / KFintech** (mutual funds): each scheme with units left becomes
-  `MF:<AMFI code>` (or `MF:<ISIN>`). Cost comes from the statement's cost value,
-  else from the transactions (average-cost method; stamp duty included). The
-  JSON and both CSV forms (transactions, `-s` summary) are supported. A summary
-  CSV has no cost, so it only updates quantities of funds you already track.
+  `MF:<AMFI code>` (or `MF:<ISIN>`). When the statement's transactions cover a
+  scheme's whole balance (a CAS from the first purchase), every purchase becomes
+  a dated lot (stamp duty included) and every redemption a FIFO sale, so `tax`
+  and XIRR use the real dates. Otherwise the statement's cost value is used to
+  sync the quantity; a statement that starts with units of unknown cost only
+  updates funds you already track. The JSON and both CSV forms (transactions,
+  `-s` summary) are supported. A scheme with lots from elsewhere is only rebuilt
+  with `import cas FILE --replace`.
 - **NSDL / CDSL** (demat): equities carry no purchase cost, so they only update
   the quantity of holdings already in your portfolio (keeping your cost);
   new ones are listed with a `portfolio add` hint. Mutual funds in a demat CAS

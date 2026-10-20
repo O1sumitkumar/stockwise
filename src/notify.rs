@@ -1,0 +1,835 @@
+//! Notifications for `alert watch` and the intraday daemon: Telegram, Slack
+//! and Discord (incoming webhooks), email over SMTP, and desktop pop-ups
+//! (with the `desktop-notify` cargo feature).
+//!
+//! Every channel is opt-in and configured with environment variables (see
+//! [`NotifyConfig::from_lookup`] for the names). Secrets — the Telegram bot
+//! token, webhook URLs and the SMTP password — are only ever sent to their
+//! own endpoint: redirects are not followed, error messages are stripped of
+//! URLs, and nothing here prints them.
+
+use anyhow::{Context, Result, anyhow, bail};
+use std::time::Duration;
+
+/// Per-request timeout, so a dead endpoint can't stall a worker loop.
+const SEND_TIMEOUT: Duration = Duration::from_secs(10);
+/// Discord rejects messages longer than this.
+const DISCORD_MAX: usize = 2000;
+/// Telegram rejects messages longer than this.
+const TELEGRAM_MAX: usize = 4096;
+
+/// A notification: a short title and a plain-text body.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Message {
+    pub title: String,
+    pub body: String,
+}
+
+impl Message {
+    pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            body: body.into(),
+        }
+    }
+
+    /// Title and body as one chat message.
+    fn text(&self) -> String {
+        if self.body.is_empty() {
+            self.title.clone()
+        } else {
+            format!("{}\n{}", self.title, self.body)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    Telegram,
+    Slack,
+    Discord,
+    Email,
+    Desktop,
+}
+
+impl std::fmt::Display for Channel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(match self {
+            Channel::Telegram => "Telegram",
+            Channel::Slack => "Slack",
+            Channel::Discord => "Discord",
+            Channel::Email => "Email",
+            Channel::Desktop => "Desktop",
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct Telegram {
+    /// `https://api.telegram.org` (tests point it at a local server).
+    pub api_base: String,
+    pub token: String,
+    pub chat_id: String,
+}
+
+/// A Slack or Discord incoming-webhook URL. The URL itself is the secret.
+#[derive(Clone)]
+pub struct Webhook {
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmtpTls {
+    /// Plain connection upgraded with STARTTLS (port 587).
+    StartTls,
+    /// TLS from the first byte (port 465).
+    Tls,
+    /// No encryption — only allowed to a server on this machine.
+    None,
+}
+
+#[derive(Clone)]
+pub struct Email {
+    pub host: String,
+    pub port: u16,
+    pub tls: SmtpTls,
+    pub user: Option<String>,
+    pub password: Option<String>,
+    pub from: String,
+    pub to: Vec<String>,
+}
+
+/// Which channels are configured. Built from environment variables; a
+/// config file can supply the same keys through [`NotifyConfig::from_lookup`].
+#[derive(Clone, Default)]
+pub struct NotifyConfig {
+    pub telegram: Option<Telegram>,
+    pub slack: Option<Webhook>,
+    pub discord: Option<Webhook>,
+    pub email: Option<Email>,
+    pub desktop: bool,
+    /// Half-configured channels, explained (never containing secrets).
+    pub problems: Vec<String>,
+}
+
+/// Environment variables that configure notifications, for help text.
+pub const ENV_VARS: &[(&str, &str)] = &[
+    (
+        "STOCKWISE_TELEGRAM_TOKEN",
+        "Telegram bot token (from @BotFather)",
+    ),
+    (
+        "STOCKWISE_TELEGRAM_CHAT_ID",
+        "Chat to message (your user id or a group id)",
+    ),
+    ("STOCKWISE_SLACK_WEBHOOK", "Slack incoming-webhook URL"),
+    ("STOCKWISE_DISCORD_WEBHOOK", "Discord webhook URL"),
+    (
+        "STOCKWISE_SMTP_HOST",
+        "SMTP server, e.g. smtp.gmail.com (enables email)",
+    ),
+    ("STOCKWISE_SMTP_PORT", "Default 587 (starttls) or 465 (tls)"),
+    ("STOCKWISE_SMTP_TLS", "starttls (default), tls, or none"),
+    ("STOCKWISE_SMTP_USER", "SMTP login"),
+    ("STOCKWISE_SMTP_PASSWORD", "SMTP password or app password"),
+    (
+        "STOCKWISE_EMAIL_FROM",
+        "Sender address (default: the SMTP user)",
+    ),
+    ("STOCKWISE_EMAIL_TO", "Recipients, comma-separated"),
+    (
+        "STOCKWISE_DESKTOP_NOTIFY",
+        "1 for desktop pop-ups (needs the desktop-notify build feature)",
+    ),
+];
+
+fn is_loopback(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]")
+}
+
+impl NotifyConfig {
+    pub fn from_env() -> Self {
+        Self::from_lookup(|key| std::env::var(key).ok())
+    }
+
+    /// Build the config from a key lookup (blank values count as unset).
+    /// `from_env` passes `std::env::var`; a config-file layer can pass a
+    /// lookup that checks the environment first and then the file.
+    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
+        let get = |key: &str| {
+            lookup(key)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        let mut cfg = NotifyConfig::default();
+
+        match (
+            get("STOCKWISE_TELEGRAM_TOKEN"),
+            get("STOCKWISE_TELEGRAM_CHAT_ID"),
+        ) {
+            (Some(token), Some(chat_id)) => {
+                cfg.telegram = Some(Telegram {
+                    api_base: "https://api.telegram.org".into(),
+                    token,
+                    chat_id,
+                })
+            }
+            (Some(_), None) => cfg
+                .problems
+                .push("Telegram: STOCKWISE_TELEGRAM_CHAT_ID is not set".into()),
+            (None, Some(_)) => cfg
+                .problems
+                .push("Telegram: STOCKWISE_TELEGRAM_TOKEN is not set".into()),
+            (None, None) => {}
+        }
+
+        for (key, name, slot) in [
+            ("STOCKWISE_SLACK_WEBHOOK", "Slack", &mut cfg.slack),
+            ("STOCKWISE_DISCORD_WEBHOOK", "Discord", &mut cfg.discord),
+        ] {
+            if let Some(url) = get(key) {
+                if url.starts_with("https://") {
+                    *slot = Some(Webhook { url });
+                } else {
+                    cfg.problems
+                        .push(format!("{}: {} must be an https:// URL", name, key));
+                }
+            }
+        }
+
+        if let Some(host) = get("STOCKWISE_SMTP_HOST") {
+            match Self::email_from_lookup(host, &get) {
+                Ok(email) => cfg.email = Some(email),
+                Err(e) => cfg.problems.push(format!("Email: {}", e)),
+            }
+        }
+
+        cfg.desktop = get("STOCKWISE_DESKTOP_NOTIFY")
+            .is_some_and(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"));
+        if cfg.desktop && !cfg!(feature = "desktop-notify") {
+            cfg.desktop = false;
+            cfg.problems.push(
+                "Desktop: this build has no desktop notifications \
+                 (reinstall with `--features desktop-notify`)"
+                    .into(),
+            );
+        }
+        cfg
+    }
+
+    fn email_from_lookup(host: String, get: &impl Fn(&str) -> Option<String>) -> Result<Email> {
+        let tls = match get("STOCKWISE_SMTP_TLS").as_deref().map(str::to_lowercase) {
+            None => SmtpTls::StartTls,
+            Some(v) if v == "starttls" => SmtpTls::StartTls,
+            Some(v) if v == "tls" || v == "ssl" => SmtpTls::Tls,
+            Some(v) if v == "none" => SmtpTls::None,
+            Some(v) => bail!(
+                "STOCKWISE_SMTP_TLS must be starttls, tls or none (got `{}`)",
+                v
+            ),
+        };
+        let port = match get("STOCKWISE_SMTP_PORT") {
+            Some(p) => p
+                .parse()
+                .map_err(|_| anyhow!("STOCKWISE_SMTP_PORT `{}` is not a port number", p))?,
+            None if tls == SmtpTls::Tls => 465,
+            None if tls == SmtpTls::None => 25,
+            None => 587,
+        };
+        let user = get("STOCKWISE_SMTP_USER");
+        let password = get("STOCKWISE_SMTP_PASSWORD");
+        if tls == SmtpTls::None && password.is_some() && !is_loopback(&host) {
+            bail!(
+                "refusing to send the SMTP password unencrypted; use STOCKWISE_SMTP_TLS=starttls or tls"
+            );
+        }
+        let from = get("STOCKWISE_EMAIL_FROM")
+            .or_else(|| user.clone().filter(|u| u.contains('@')))
+            .context("STOCKWISE_EMAIL_FROM is not set")?;
+        let to: Vec<String> = get("STOCKWISE_EMAIL_TO")
+            .context("STOCKWISE_EMAIL_TO is not set")?
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if to.is_empty() {
+            bail!("STOCKWISE_EMAIL_TO has no addresses");
+        }
+        Ok(Email {
+            host,
+            port,
+            tls,
+            user,
+            password,
+            from,
+            to,
+        })
+    }
+
+    /// Configured channels, in a fixed order.
+    pub fn channels(&self) -> Vec<Channel> {
+        let mut out = Vec::new();
+        if self.telegram.is_some() {
+            out.push(Channel::Telegram);
+        }
+        if self.slack.is_some() {
+            out.push(Channel::Slack);
+        }
+        if self.discord.is_some() {
+            out.push(Channel::Discord);
+        }
+        if self.email.is_some() {
+            out.push(Channel::Email);
+        }
+        if self.desktop {
+            out.push(Channel::Desktop);
+        }
+        out
+    }
+
+    /// Where a channel delivers, with secrets left out: the chat id, the
+    /// webhook's host, the SMTP server and recipient count.
+    pub fn destination(&self, channel: Channel) -> Option<String> {
+        let host_of = |url: &str| {
+            reqwest::Url::parse(url)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string))
+                .unwrap_or_else(|| "webhook".into())
+        };
+        Some(match channel {
+            Channel::Telegram => format!("chat {}", self.telegram.as_ref()?.chat_id),
+            Channel::Slack => host_of(&self.slack.as_ref()?.url),
+            Channel::Discord => host_of(&self.discord.as_ref()?.url),
+            Channel::Email => {
+                let e = self.email.as_ref()?;
+                let tls = match e.tls {
+                    SmtpTls::StartTls => "STARTTLS",
+                    SmtpTls::Tls => "TLS",
+                    SmtpTls::None => "unencrypted",
+                };
+                format!(
+                    "{}:{} ({}) → {} recipient{}",
+                    e.host,
+                    e.port,
+                    tls,
+                    e.to.len(),
+                    if e.to.len() == 1 { "" } else { "s" }
+                )
+            }
+            Channel::Desktop => "this machine".into(),
+        })
+    }
+}
+
+/// Sends messages to every configured channel.
+#[derive(Clone)]
+pub struct Notifier {
+    config: NotifyConfig,
+    http: reqwest::Client,
+}
+
+impl Notifier {
+    pub fn new(config: NotifyConfig) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(SEND_TIMEOUT)
+            .connect_timeout(SEND_TIMEOUT)
+            // A redirect would carry the request (and a token in its URL)
+            // somewhere the user didn't configure.
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_default();
+        Self { config, http }
+    }
+
+    pub fn from_env() -> Self {
+        Self::new(NotifyConfig::from_env())
+    }
+
+    pub fn config(&self) -> &NotifyConfig {
+        &self.config
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        !self.config.channels().is_empty()
+    }
+
+    /// Send `msg` to every channel at once; one result per channel.
+    pub async fn send(&self, msg: &Message) -> Vec<(Channel, Result<()>)> {
+        let mut tasks = tokio::task::JoinSet::new();
+        for (i, channel) in self.config.channels().into_iter().enumerate() {
+            let this = self.clone();
+            let msg = msg.clone();
+            tasks.spawn(async move { (i, channel, this.send_one(channel, &msg).await) });
+        }
+        let mut results = Vec::new();
+        while let Some(joined) = tasks.join_next().await {
+            if let Ok(r) = joined {
+                results.push(r);
+            }
+        }
+        results.sort_by_key(|(i, ..)| *i);
+        results.into_iter().map(|(_, c, r)| (c, r)).collect()
+    }
+
+    /// Send, and print any failure as a warning. For worker loops, where a
+    /// notification that can't be delivered must never stop the work.
+    /// Returns false only when channels are configured and every one failed.
+    pub async fn send_logged(&self, msg: &Message) -> bool {
+        if !self.is_enabled() {
+            return true;
+        }
+        let mut delivered = false;
+        for (channel, result) in self.send(msg).await {
+            match result {
+                Ok(()) => delivered = true,
+                Err(e) => eprintln!("  ! {} notification failed: {:#}", channel, e),
+            }
+        }
+        delivered
+    }
+
+    async fn send_one(&self, channel: Channel, msg: &Message) -> Result<()> {
+        match channel {
+            Channel::Telegram => {
+                let t = self.config.telegram.as_ref().context("not configured")?;
+                let url = format!(
+                    "{}/bot{}/sendMessage",
+                    t.api_base.trim_end_matches('/'),
+                    t.token
+                );
+                let body = serde_json::json!({
+                    "chat_id": t.chat_id,
+                    "text": truncate(&msg.text(), TELEGRAM_MAX),
+                    "disable_web_page_preview": true,
+                });
+                self.post_json(&url, &body).await
+            }
+            Channel::Slack => {
+                let w = self.config.slack.as_ref().context("not configured")?;
+                self.post_json(&w.url, &serde_json::json!({ "text": msg.text() }))
+                    .await
+            }
+            Channel::Discord => {
+                let w = self.config.discord.as_ref().context("not configured")?;
+                let body = serde_json::json!({
+                    "content": truncate(&msg.text(), DISCORD_MAX),
+                    "allowed_mentions": { "parse": [] },
+                });
+                self.post_json(&w.url, &body).await
+            }
+            Channel::Email => {
+                let e = self.config.email.as_ref().context("not configured")?;
+                send_email(e, msg).await
+            }
+            Channel::Desktop => send_desktop(msg).await,
+        }
+    }
+
+    /// POST JSON; any non-2xx status is an error carrying the service's
+    /// explanation. Transport errors are stripped of the URL.
+    async fn post_json(&self, url: &str, body: &serde_json::Value) -> Result<()> {
+        let resp = self
+            .http
+            .post(url)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| anyhow!("{}", e.without_url()))?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let text = resp.text().await.unwrap_or_default();
+        let detail = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| {
+                v.get("description")
+                    .or_else(|| v.get("message"))
+                    .and_then(|d| d.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or(text);
+        let detail = truncate(detail.trim(), 200);
+        if detail.is_empty() {
+            bail!("HTTP {}", status)
+        } else {
+            bail!("HTTP {}: {}", status, detail)
+        }
+    }
+}
+
+/// Shorten to at most `max` characters, marking the cut.
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
+async fn send_email(e: &Email, msg: &Message) -> Result<()> {
+    use lettre::message::header::ContentType;
+    use lettre::transport::smtp::authentication::Credentials;
+    use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
+
+    let mut builder = lettre::Message::builder()
+        .from(
+            e.from
+                .parse()
+                .with_context(|| format!("bad sender address `{}`", e.from))?,
+        )
+        .subject(if msg.title.starts_with("StockWise") {
+            msg.title.clone()
+        } else {
+            format!("StockWise: {}", msg.title)
+        })
+        .header(ContentType::TEXT_PLAIN);
+    for to in &e.to {
+        builder = builder.to(to
+            .parse()
+            .with_context(|| format!("bad recipient address `{}`", to))?);
+    }
+    let mail = builder.body(msg.body.clone())?;
+
+    let transport = match e.tls {
+        SmtpTls::StartTls => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&e.host)?,
+        SmtpTls::Tls => AsyncSmtpTransport::<Tokio1Executor>::relay(&e.host)?,
+        SmtpTls::None => AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&e.host),
+    };
+    let mut transport = transport.port(e.port).timeout(Some(SEND_TIMEOUT));
+    if let (Some(user), Some(password)) = (&e.user, &e.password) {
+        transport = transport.credentials(Credentials::new(user.clone(), password.clone()));
+    }
+    transport
+        .build()
+        .send(mail)
+        .await
+        .map_err(|err| anyhow!("SMTP: {}", err))?;
+    Ok(())
+}
+
+#[cfg(feature = "desktop-notify")]
+async fn send_desktop(msg: &Message) -> Result<()> {
+    let msg = msg.clone();
+    tokio::task::spawn_blocking(move || {
+        notify_rust::Notification::new()
+            .appname("StockWise")
+            .summary(&msg.title)
+            .body(&msg.body)
+            .show()
+            .map(|_| ())
+            .map_err(|e| anyhow!("{}", e))
+    })
+    .await?
+}
+
+#[cfg(not(feature = "desktop-notify"))]
+async fn send_desktop(_msg: &Message) -> Result<()> {
+    bail!("this build has no desktop notifications (reinstall with `--features desktop-notify`)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpListener;
+
+    fn lookup(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |k| map.get(k).cloned()
+    }
+
+    /// A one-shot HTTP server: answers the first request with `status` and
+    /// `body`, and hands back the request line and body it received.
+    async fn mock_http(
+        status: u16,
+        body: &'static str,
+    ) -> (String, tokio::task::JoinHandle<(String, String)>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let handle = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(sock);
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).await.unwrap();
+            let mut len = 0usize;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                if let Some(v) = line.to_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap();
+                }
+            }
+            let mut buf = vec![0u8; len];
+            reader.read_exact(&mut buf).await.unwrap();
+            let reply = format!(
+                "HTTP/1.1 {} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                status,
+                body.len(),
+                body
+            );
+            reader.get_mut().write_all(reply.as_bytes()).await.unwrap();
+            (
+                request_line.trim().to_string(),
+                String::from_utf8(buf).unwrap(),
+            )
+        });
+        (base, handle)
+    }
+
+    fn only(config: NotifyConfig) -> Notifier {
+        Notifier::new(config)
+    }
+
+    #[test]
+    fn nothing_configured_means_no_channels() {
+        let cfg = NotifyConfig::from_lookup(lookup(&[]));
+        assert!(cfg.channels().is_empty());
+        assert!(cfg.problems.is_empty());
+    }
+
+    #[test]
+    fn half_configured_channels_are_reported_without_secrets() {
+        let cfg = NotifyConfig::from_lookup(lookup(&[
+            ("STOCKWISE_TELEGRAM_TOKEN", "123:SECRET"),
+            (
+                "STOCKWISE_SLACK_WEBHOOK",
+                "http://hooks.slack.com/services/SECRET",
+            ),
+            ("STOCKWISE_SMTP_HOST", "smtp.example.com"),
+            ("STOCKWISE_SMTP_TLS", "none"),
+            ("STOCKWISE_SMTP_PASSWORD", "SECRET"),
+            ("STOCKWISE_EMAIL_TO", "me@example.com"),
+        ]));
+        assert!(cfg.channels().is_empty());
+        assert_eq!(cfg.problems.len(), 3, "{:?}", cfg.problems);
+        assert!(cfg.problems.iter().all(|p| !p.contains("SECRET")));
+        assert!(cfg.problems[2].contains("unencrypted"));
+    }
+
+    #[test]
+    fn full_config_and_redacted_destinations() {
+        let cfg = NotifyConfig::from_lookup(lookup(&[
+            ("STOCKWISE_TELEGRAM_TOKEN", "123:SECRET"),
+            ("STOCKWISE_TELEGRAM_CHAT_ID", "42"),
+            (
+                "STOCKWISE_SLACK_WEBHOOK",
+                "https://hooks.slack.com/services/T/B/SECRET",
+            ),
+            (
+                "STOCKWISE_DISCORD_WEBHOOK",
+                "https://discord.com/api/webhooks/1/SECRET",
+            ),
+            ("STOCKWISE_SMTP_HOST", "smtp.example.com"),
+            ("STOCKWISE_SMTP_USER", "me@example.com"),
+            ("STOCKWISE_SMTP_PASSWORD", "SECRET"),
+            ("STOCKWISE_EMAIL_TO", "a@example.com, b@example.com"),
+        ]));
+        assert_eq!(
+            cfg.channels(),
+            vec![
+                Channel::Telegram,
+                Channel::Slack,
+                Channel::Discord,
+                Channel::Email
+            ]
+        );
+        let email = cfg.email.as_ref().unwrap();
+        assert_eq!(email.port, 587);
+        assert_eq!(email.from, "me@example.com");
+        assert_eq!(email.to.len(), 2);
+        for c in cfg.channels() {
+            let d = cfg.destination(c).unwrap();
+            assert!(!d.contains("SECRET"), "{c}: {d}");
+        }
+        assert_eq!(cfg.destination(Channel::Slack).unwrap(), "hooks.slack.com");
+        assert_eq!(
+            cfg.destination(Channel::Email).unwrap(),
+            "smtp.example.com:587 (STARTTLS) → 2 recipients"
+        );
+    }
+
+    #[cfg(not(feature = "desktop-notify"))]
+    #[test]
+    fn desktop_without_the_feature_is_a_problem_not_a_channel() {
+        let cfg = NotifyConfig::from_lookup(lookup(&[("STOCKWISE_DESKTOP_NOTIFY", "1")]));
+        assert!(!cfg.desktop);
+        assert!(cfg.problems[0].contains("desktop-notify"));
+    }
+
+    #[tokio::test]
+    async fn telegram_posts_chat_id_and_text_to_the_bot_url() {
+        let (base, server) = mock_http(200, r#"{"ok":true}"#).await;
+        let cfg = NotifyConfig {
+            telegram: Some(Telegram {
+                api_base: base,
+                token: "123:ABC".into(),
+                chat_id: "42".into(),
+            }),
+            ..Default::default()
+        };
+        let results = only(cfg)
+            .send(&Message::new("Alert", "TCS above 4200"))
+            .await;
+        assert_eq!(results.len(), 1);
+        assert!(results[0].1.is_ok(), "{:?}", results[0].1);
+        let (line, body) = server.await.unwrap();
+        assert_eq!(line, "POST /bot123:ABC/sendMessage HTTP/1.1");
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["chat_id"], "42");
+        assert_eq!(json["text"], "Alert\nTCS above 4200");
+    }
+
+    #[tokio::test]
+    async fn slack_and_discord_post_their_payloads() {
+        let (slack_base, slack) = mock_http(200, "ok").await;
+        let (discord_base, discord) = mock_http(204, "").await;
+        let cfg = NotifyConfig {
+            slack: Some(Webhook {
+                url: format!("{}/services/T/B/X", slack_base),
+            }),
+            discord: Some(Webhook {
+                url: format!("{}/api/webhooks/1/X", discord_base),
+            }),
+            ..Default::default()
+        };
+        let results = only(cfg).send(&Message::new("Hi", "there")).await;
+        assert!(results.iter().all(|(_, r)| r.is_ok()), "{results:?}");
+        let (_, body) = slack.await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["text"],
+            "Hi\nthere"
+        );
+        let (_, body) = discord.await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["content"],
+            "Hi\nthere"
+        );
+    }
+
+    #[tokio::test]
+    async fn errors_carry_the_service_reason_but_never_the_url() {
+        let (base, _server) = mock_http(401, r#"{"ok":false,"description":"Unauthorized"}"#).await;
+        let cfg = NotifyConfig {
+            telegram: Some(Telegram {
+                api_base: base,
+                token: "123:SECRET".into(),
+                chat_id: "42".into(),
+            }),
+            ..Default::default()
+        };
+        let results = only(cfg).send(&Message::new("x", "")).await;
+        let err = format!("{:#}", results[0].1.as_ref().unwrap_err());
+        assert!(err.contains("401") && err.contains("Unauthorized"), "{err}");
+        assert!(!err.contains("SECRET"), "{err}");
+
+        // A connection failure (nothing listening) must not leak the URL either.
+        let cfg = NotifyConfig {
+            slack: Some(Webhook {
+                url: "http://127.0.0.1:9/services/SECRET".into(),
+            }),
+            ..Default::default()
+        };
+        let results = only(cfg).send(&Message::new("x", "")).await;
+        let err = format!("{:#}", results[0].1.as_ref().unwrap_err());
+        assert!(!err.contains("SECRET"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn redirects_are_not_followed() {
+        let (base, _server) = mock_http(302, "").await;
+        let cfg = NotifyConfig {
+            slack: Some(Webhook {
+                url: format!("{}/hook", base),
+            }),
+            ..Default::default()
+        };
+        let results = only(cfg).send(&Message::new("x", "")).await;
+        assert!(results[0].1.is_err());
+    }
+
+    /// A minimal SMTP server that accepts one message and returns it.
+    async fn mock_smtp() -> (u16, tokio::task::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let (r, mut w) = sock.into_split();
+            let mut reader = BufReader::new(r);
+            w.write_all(b"220 localhost ESMTP\r\n").await.unwrap();
+            let mut transcript = String::new();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.unwrap() == 0 {
+                    break;
+                }
+                let cmd = line.to_uppercase();
+                if cmd.starts_with("EHLO") || cmd.starts_with("HELO") {
+                    w.write_all(b"250 localhost\r\n").await.unwrap();
+                } else if cmd.starts_with("DATA") {
+                    w.write_all(b"354 go ahead\r\n").await.unwrap();
+                    loop {
+                        let mut l = String::new();
+                        reader.read_line(&mut l).await.unwrap();
+                        if l == ".\r\n" {
+                            break;
+                        }
+                        transcript.push_str(&l);
+                    }
+                    w.write_all(b"250 queued\r\n").await.unwrap();
+                } else if cmd.starts_with("QUIT") {
+                    w.write_all(b"221 bye\r\n").await.unwrap();
+                    break;
+                } else {
+                    transcript.push_str(&line);
+                    w.write_all(b"250 OK\r\n").await.unwrap();
+                }
+            }
+            transcript
+        });
+        (port, handle)
+    }
+
+    #[tokio::test]
+    async fn email_is_delivered_over_smtp() {
+        let (port, server) = mock_smtp().await;
+        let cfg = NotifyConfig::from_lookup(lookup(&[
+            ("STOCKWISE_SMTP_HOST", "127.0.0.1"),
+            ("STOCKWISE_SMTP_PORT", &port.to_string()),
+            ("STOCKWISE_SMTP_TLS", "none"),
+            ("STOCKWISE_EMAIL_FROM", "bot@example.com"),
+            ("STOCKWISE_EMAIL_TO", "me@example.com"),
+        ]));
+        assert_eq!(cfg.channels(), vec![Channel::Email]);
+        let results = only(cfg).send(&Message::new("Daily P&L", "+₹120")).await;
+        assert!(results[0].1.is_ok(), "{:?}", results[0].1);
+        let transcript = server.await.unwrap();
+        assert!(
+            transcript.contains("MAIL FROM:<bot@example.com>"),
+            "{transcript}"
+        );
+        assert!(
+            transcript.contains("RCPT TO:<me@example.com>"),
+            "{transcript}"
+        );
+        assert!(
+            transcript.contains("Subject: StockWise: Daily P&L"),
+            "{transcript}"
+        );
+    }
+
+    #[test]
+    fn truncate_marks_the_cut() {
+        assert_eq!(truncate("abc", 5), "abc");
+        assert_eq!(truncate("abcdef", 4), "abc…");
+    }
+}

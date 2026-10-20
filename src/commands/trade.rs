@@ -432,7 +432,28 @@ async fn run_order(
     Ok(())
 }
 
-pub async fn cmd_trade(kind: BrokerKind, action: TradeAction, _market: Market) -> Result<()> {
+/// Broker orders go to NSE cash equity only; refuse other markets instead of
+/// guessing what `-m us` / `-m crypto` was meant to buy.
+fn check_market(market: Market) -> Result<()> {
+    let (name, flag) = match market {
+        Market::In => return Ok(()),
+        Market::Us => ("US", "us"),
+        Market::Crypto => ("crypto", "crypto"),
+        Market::Fx => ("forex", "fx"),
+    };
+    bail!(
+        "`trade` places NSE equity orders only and can't trade the {name} market. \
+         Run it without -m {flag} (or STOCKWISE_MARKET={flag})"
+    )
+}
+
+pub async fn cmd_trade(kind: BrokerKind, action: TradeAction, market: Market) -> Result<()> {
+    if matches!(
+        action,
+        TradeAction::Order { .. } | TradeAction::GttCreate { .. }
+    ) {
+        check_market(market)?;
+    }
     match action {
         TradeAction::Setup => {
             print_setup(kind);
@@ -442,7 +463,7 @@ pub async fn cmd_trade(kind: BrokerKind, action: TradeAction, _market: Market) -
         TradeAction::Login => brokers::login(kind).await,
         TradeAction::Holdings => {
             let broker = brokers::connect(kind).await?;
-            print_holdings(kind, &broker.holdings().await?)
+            print_holdings(kind, &broker.holdings().await?).await
         }
         TradeAction::Positions => {
             let broker = brokers::connect(kind).await?;
@@ -653,7 +674,7 @@ fn signed_money(v: f64) -> String {
     }
 }
 
-fn print_holdings(kind: BrokerKind, holdings: &[brokers::Holding]) -> Result<()> {
+async fn print_holdings(kind: BrokerKind, holdings: &[brokers::Holding]) -> Result<()> {
     if holdings.is_empty() {
         println!("\n  {}", "No holdings found.".dimmed());
         return Ok(());
@@ -727,22 +748,39 @@ fn print_holdings(kind: BrokerKind, holdings: &[brokers::Holding]) -> Result<()>
         );
     }
 
-    // Also sync to stockwise portfolio
+    // Also sync to stockwise portfolio.
     let mut portfolio = Portfolio::load()?;
-    for h in holdings {
-        let (sym, qty) = (h.symbol.as_str(), h.qty);
-        if let Some(avg) = h.avg_price
-            && !sym.is_empty()
-            && qty > 0.0
+    let snapshot: Vec<(String, f64, f64)> = holdings
+        .iter()
+        .filter_map(|h| {
+            let avg = h.avg_price?;
+            (!h.symbol.is_empty() && h.qty > 0.0).then(|| {
+                // Broker symbols are plain (RELIANCE); Yahoo wants RELIANCE.NS.
+                let resolved = if h.symbol.contains('.') {
+                    h.symbol.clone()
+                } else {
+                    format!("{}.NS", h.symbol)
+                };
+                (resolved, h.qty, avg)
+            })
+        })
+        .collect();
+    // More shares at the broker may just be a split or bonus not yet
+    // applied to the lots; syncing those would count them twice.
+    let wanted: Vec<(String, f64)> = snapshot.iter().map(|(s, q, _)| (s.clone(), *q)).collect();
+    let blocked = super::portfolio::blocked_by_pending_splits(&portfolio, &wanted).await;
+    let source = format!("broker:{}", kind.id());
+    let mut reduced = Vec::new();
+    for (resolved, qty, avg) in &snapshot {
+        if blocked.iter().any(|(s, _)| s == resolved) {
+            continue;
+        }
+        // Keep existing lots and their purchase dates; only the quantity
+        // follows the broker.
+        if let crate::portfolio::SyncChange::Reduced(n) =
+            portfolio.sync_quantity(resolved, *qty, *avg, &source)
         {
-            // Broker symbols are plain (RELIANCE); Yahoo wants RELIANCE.NS.
-            let resolved = if sym.contains('.') {
-                sym.to_string()
-            } else {
-                format!("{}.NS", sym)
-            };
-            // Overwrite quantity/cost but keep the original added date.
-            portfolio.set(&resolved, qty, avg);
+            reduced.push(format!("{} (-{})", resolved, n));
         }
     }
     portfolio.save()?;
@@ -750,6 +788,18 @@ fn print_holdings(kind: BrokerKind, holdings: &[brokers::Holding]) -> Result<()>
         "\n  {} Holdings synced to StockWise portfolio.",
         "✓".green()
     );
+    for (sym, reason) in &blocked {
+        println!("  {} {} not synced: {}", "!".yellow(), sym, reason);
+    }
+    if !reduced.is_empty() {
+        println!(
+            "  {} Fewer shares than StockWise had: {} — taken from the oldest lots, not \
+             recorded as sales. To keep a sale's P&L for `tax`, record it with \
+             `stockwise portfolio sell` before syncing.",
+            "!".yellow(),
+            reduced.join(", ")
+        );
+    }
     println!();
     Ok(())
 }
@@ -1320,6 +1370,15 @@ mod tests {
             Outcome::Sent(_)
         ));
         assert_eq!(b.cancelled.lock().unwrap().as_slice(), ["G1"]);
+    }
+
+    #[test]
+    fn orders_refuse_non_nse_markets() {
+        assert!(check_market(Market::In).is_ok());
+        for m in [Market::Us, Market::Crypto, Market::Fx] {
+            let err = check_market(m).unwrap_err().to_string();
+            assert!(err.contains("NSE equity orders only"), "{err}");
+        }
     }
 
     #[test]

@@ -3,15 +3,29 @@
 //! consolidated account statements (CAS) in casparser's JSON or CSV form.
 //!
 //! Parsers are pure (text in, rows out) so they can be tested with fixtures;
-//! `import_rows` applies the rows with the same snapshot semantics as the
-//! other imports.
+//! `import_rows` turns them into `portfolio::ImportRow`s and applies them
+//! through the same lot-based path as the other imports: dated transactions
+//! (a CAS that covers a scheme's whole history) rebuild its lots, snapshots
+//! only sync the quantity. Re-importing changes nothing.
 
 use super::holdings::{find_col, parse_csv_header, parse_csv_row};
 use super::*;
+use crate::portfolio::ImportRow;
+
+/// One dated transaction from a CAS, for lot-level import.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Txn {
+    /// `YYYY-MM-DD`.
+    pub date: String,
+    pub qty: f64,
+    /// Price per unit including charges (cash paid / units).
+    pub price: f64,
+    pub sell: bool,
+}
 
 /// One holding read from an import file.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct ImportRow {
+pub(super) struct ParsedRow {
     /// Portfolio symbol (`RELIANCE.NS`, `MF:118955`), or empty when only an
     /// ISIN is known and it still has to be looked up.
     pub symbol: String,
@@ -25,6 +39,9 @@ pub(super) struct ImportRow {
     pub avg_cost: Option<f64>,
     /// "shares" or "units".
     pub unit: &'static str,
+    /// Every transaction behind `qty`, when the file has them all (a CAS
+    /// from the first purchase). Empty for snapshots.
+    pub history: Vec<Txn>,
 }
 
 /// A row that could not be imported, and why.
@@ -36,7 +53,7 @@ pub(super) struct Skipped {
 
 #[derive(Debug, Default)]
 pub(super) struct Parsed {
-    pub rows: Vec<ImportRow>,
+    pub rows: Vec<ParsedRow>,
     pub skipped: Vec<Skipped>,
 }
 
@@ -200,7 +217,7 @@ fn parse_stock_export(content: &str, layout: &StockLayout, market: Market) -> Re
             });
             continue;
         }
-        out.rows.push(ImportRow {
+        out.rows.push(ParsedRow {
             symbol: symbol
                 .map(|s| market::resolve_symbol(&crate::brokers::plain_symbol(&s), market))
                 .unwrap_or_default(),
@@ -209,6 +226,7 @@ fn parse_stock_export(content: &str, layout: &StockLayout, market: Market) -> Re
             qty,
             avg_cost: Some(avg),
             unit: "shares",
+            history: Vec::new(),
         });
     }
     Ok(out)
@@ -236,11 +254,24 @@ fn mf_symbol(amfi: Option<&str>, isin: Option<&str>) -> Option<String> {
 }
 
 /// Running average-cost book for one scheme: purchases add units and cost,
-/// redemptions remove units at the current average cost.
-#[derive(Debug, Default, Clone, Copy)]
+/// redemptions remove units at the current average cost. It also keeps the
+/// dated transactions, for lot-level import.
+#[derive(Debug, Default, Clone)]
 struct CostBook {
     units: f64,
     cost: f64,
+    txns: Vec<Txn>,
+    /// A transaction had units but no usable date or price.
+    incomplete: bool,
+}
+
+/// `YYYY-MM-DD` from casparser's ISO dates (or `DD-MMM-YYYY`).
+fn iso_date(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d")
+        .or_else(|_| chrono::NaiveDate::parse_from_str(raw, "%d-%b-%Y"))
+        .ok()
+        .map(|d| d.format("%Y-%m-%d").to_string())
 }
 
 impl CostBook {
@@ -248,7 +279,15 @@ impl CostBook {
     /// and switch-outs); `amount` is the cash value. Rows without units
     /// (stamp duty, STT, TDS, dividend payouts) only adjust cost when they are
     /// stamp duty, which is part of the purchase cost.
-    fn apply(&mut self, kind: &str, units: Option<f64>, amount: Option<f64>, nav: Option<f64>) {
+    fn apply(
+        &mut self,
+        date: Option<&str>,
+        kind: &str,
+        units: Option<f64>,
+        amount: Option<f64>,
+        nav: Option<f64>,
+    ) {
+        let date = date.and_then(iso_date);
         match units {
             Some(u) if u > 0.0 => {
                 let value = amount
@@ -258,9 +297,19 @@ impl CostBook {
                     .unwrap_or(0.0);
                 self.units += u;
                 self.cost += value;
+                match date {
+                    Some(date) if value > 0.0 => self.txns.push(Txn {
+                        date,
+                        qty: u,
+                        price: value / u,
+                        sell: false,
+                    }),
+                    _ => self.incomplete = true,
+                }
             }
             Some(u) if u < 0.0 => {
-                let u = (-u).min(self.units);
+                let sold = -u;
+                let u = sold.min(self.units);
                 if self.units > 0.0 {
                     self.cost -= self.cost / self.units * u;
                 }
@@ -269,15 +318,47 @@ impl CostBook {
                     self.units = 0.0;
                     self.cost = 0.0;
                 }
+                let price = amount
+                    .map(f64::abs)
+                    .filter(|a| *a > 0.0)
+                    .map(|a| a / sold)
+                    .or(nav)
+                    .filter(|p| *p > 0.0);
+                match (date, price) {
+                    (Some(date), Some(price)) => self.txns.push(Txn {
+                        date,
+                        qty: sold,
+                        price,
+                        sell: true,
+                    }),
+                    _ => self.incomplete = true,
+                }
             }
             _ => {
                 if kind.to_ascii_uppercase().contains("STAMP")
                     && let Some(a) = amount
                 {
                     self.cost += a.abs();
+                    // Stamp duty belongs to that day's purchase.
+                    if let Some(buy) = self
+                        .txns
+                        .iter_mut()
+                        .rev()
+                        .find(|t| !t.sell && Some(&t.date) == date.as_ref())
+                    {
+                        buy.price += a.abs() / buy.qty;
+                    }
                 }
             }
         }
+    }
+
+    /// The dated transactions, when they explain the whole closing balance.
+    fn history_for(&self, closing_units: f64) -> Vec<Txn> {
+        if self.incomplete || self.txns.is_empty() || self.avg_for(closing_units).is_none() {
+            return Vec::new();
+        }
+        self.txns.clone()
     }
 
     fn avg(&self) -> Option<f64> {
@@ -353,34 +434,35 @@ pub(super) fn parse_cas_json(content: &str) -> Result<Parsed> {
             };
             let valuation = scheme.get("valuation");
             let stated_cost = json_num(valuation.and_then(|v| v.get("cost"))).filter(|c| *c > 0.0);
-            let avg = match stated_cost {
-                Some(c) => Some(c / units),
-                None => {
-                    let mut book = CostBook::default();
-                    for t in scheme
-                        .get("transactions")
-                        .and_then(|t| t.as_array())
-                        .map(Vec::as_slice)
-                        .unwrap_or_default()
-                    {
-                        book.apply(
-                            &json_str(t.get("type")).unwrap_or_default(),
-                            json_num(t.get("units")),
-                            json_num(t.get("amount")),
-                            json_num(t.get("nav")),
-                        );
-                    }
-                    book.avg_for(units)
-                }
-            };
-            // No complete cost: update the quantity of a fund already tracked.
-            out.rows.push(ImportRow {
+            let mut book = CostBook::default();
+            for t in scheme
+                .get("transactions")
+                .and_then(|t| t.as_array())
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+            {
+                book.apply(
+                    json_str(t.get("date")).as_deref(),
+                    &json_str(t.get("type")).unwrap_or_default(),
+                    json_num(t.get("units")),
+                    json_num(t.get("amount")),
+                    json_num(t.get("nav")),
+                );
+            }
+            // Dated lots when the transactions cover the whole balance; else
+            // the statement's cost value; else quantity only (a fund already
+            // tracked keeps its cost).
+            let avg = stated_cost
+                .map(|c| c / units)
+                .or_else(|| book.avg_for(units));
+            out.rows.push(ParsedRow {
                 symbol,
                 isin,
                 name: Some(name),
                 qty: units,
                 avg_cost: avg,
                 unit: "units",
+                history: book.history_for(units),
             });
         }
     }
@@ -417,13 +499,14 @@ fn parse_demat_accounts(accounts: &[serde_json::Value]) -> Parsed {
             if symbol.is_empty() && isin.is_none() {
                 continue;
             }
-            out.rows.push(ImportRow {
+            out.rows.push(ParsedRow {
                 symbol,
                 isin,
                 name,
                 qty,
                 avg_cost: None,
                 unit: "shares",
+                history: Vec::new(),
             });
         }
         for mf in items(account, "mutual_funds") {
@@ -443,13 +526,14 @@ fn parse_demat_accounts(accounts: &[serde_json::Value]) -> Parsed {
                         .filter(|c| *c > 0.0)
                         .map(|c| c / units)
                 });
-            out.rows.push(ImportRow {
+            out.rows.push(ParsedRow {
                 symbol,
                 isin,
                 name: json_str(mf.get("name")),
                 qty: units,
                 avg_cost: avg,
                 unit: "units",
+                history: Vec::new(),
             });
         }
     }
@@ -490,13 +574,14 @@ fn parse_cas_summary_csv(lines: &[&str], h: usize, cols: &[String]) -> Parsed {
             });
             continue;
         };
-        out.rows.push(ImportRow {
+        out.rows.push(ParsedRow {
             symbol,
             isin,
             name: Some(scheme),
             qty: units,
             avg_cost: None,
             unit: "units",
+            history: Vec::new(),
         });
     }
     out
@@ -525,6 +610,7 @@ pub(super) fn parse_cas_csv(content: &str) -> Result<Parsed> {
     let col = |name: &str| cols.iter().position(|c| c == name);
     let (folio_c, scheme_c, isin_c, amfi_c) =
         (col("folio"), col("scheme"), col("isin"), col("amfi"));
+    let date_c = col("date");
     let (units_c, balance_c, amount_c, nav_c, type_c) = (
         col("units"),
         col("balance"),
@@ -556,6 +642,7 @@ pub(super) fn parse_cas_csv(content: &str) -> Result<Parsed> {
         });
         let num = |c| get(c).and_then(|v| number(&v));
         entry.0.apply(
+            get(date_c).as_deref(),
             &get(type_c).unwrap_or_default(),
             num(units_c),
             num(amount_c),
@@ -582,13 +669,14 @@ pub(super) fn parse_cas_csv(content: &str) -> Result<Parsed> {
             continue;
         };
         // Opening units of unknown cost (a period statement): quantity only.
-        out.rows.push(ImportRow {
+        out.rows.push(ParsedRow {
             symbol,
             isin: isin.clone(),
             name: Some(key.1.clone()),
             qty: units,
             avg_cost: book.avg_for(units),
             unit: "units",
+            history: book.history_for(units),
         });
     }
     Ok(out)
@@ -632,26 +720,30 @@ async fn ticker_for_isin(yahoo: &YahooClient, isin: &str) -> Result<Option<Strin
     Ok(pick(".NS").or_else(|| pick(".BO")))
 }
 
-/// Apply rows with snapshot semantics: the first row for a symbol replaces
-/// the holding (so re-importing never doubles it); further rows for the
-/// same symbol in this file are extra lots and are averaged in. Rows
-/// without a cost only update holdings that already exist. Returns the rows
-/// applied, with the cost used, and the rows skipped.
-pub(super) fn apply_rows(
-    portfolio: &mut Portfolio,
-    rows: &[ImportRow],
-) -> (Vec<(ImportRow, f64)>, Vec<Skipped>) {
-    let mut seen = std::collections::HashSet::new();
-    let mut applied = Vec::new();
+/// Turn parsed rows into portfolio import rows. A row with a full history
+/// becomes its dated buys and sells (the symbol's lots are rebuilt); a
+/// snapshot row becomes one undated row (quantity sync). A snapshot without
+/// a cost uses the cost of the holding already tracked, or is skipped.
+pub(super) fn to_import_rows(
+    portfolio: &Portfolio,
+    parsed: &[ParsedRow],
+) -> (Vec<ImportRow>, Vec<Skipped>) {
+    let mut rows = Vec::new();
     let mut skipped = Vec::new();
-    for r in rows {
+    for r in parsed {
         let sym = r.symbol.to_uppercase();
-        let existing = portfolio
-            .holdings
-            .iter()
-            .find(|h| h.symbol == sym)
-            .map(|h| h.avg_cost);
-        let Some(avg) = r.avg_cost.or(existing) else {
+        if !r.history.is_empty() {
+            rows.extend(r.history.iter().map(|t| ImportRow {
+                symbol: sym.clone(),
+                qty: t.qty,
+                price: t.price,
+                date: Some(t.date.clone()),
+                sell: t.sell,
+            }));
+            continue;
+        }
+        let existing = portfolio.holding(&sym).map(|h| h.avg_cost);
+        let Some(price) = r.avg_cost.or(existing) else {
             skipped.push(Skipped {
                 what: r.name.clone().unwrap_or_else(|| sym.clone()),
                 why: format!(
@@ -662,18 +754,25 @@ pub(super) fn apply_rows(
             });
             continue;
         };
-        if seen.insert(sym.clone()) {
-            portfolio.set(&sym, r.qty, avg);
-        } else {
-            portfolio.add(&sym, r.qty, avg);
-        }
-        applied.push((r.clone(), avg));
+        rows.push(ImportRow {
+            symbol: sym,
+            qty: r.qty,
+            price,
+            date: None,
+            sell: false,
+        });
     }
-    (applied, skipped)
+    (rows, skipped)
 }
 
-/// Resolve ISIN-only rows to tickers, apply everything, and report.
-pub(super) async fn import_rows(source: &str, parsed: Parsed) -> Result<()> {
+/// Resolve ISIN-only rows to tickers, then apply everything through the
+/// shared lot-based import (`holdings::apply_import_rows`).
+pub(super) async fn import_rows(
+    source: &str,
+    file: &str,
+    replace: bool,
+    parsed: Parsed,
+) -> Result<()> {
     let Parsed {
         mut rows,
         mut skipped,
@@ -711,67 +810,26 @@ pub(super) async fn import_rows(source: &str, parsed: Parsed) -> Result<()> {
         rows.retain(|r| !r.symbol.is_empty());
     }
 
-    let mut portfolio = Portfolio::load()?;
-    let (applied, not_applied) = apply_rows(&mut portfolio, &rows);
+    let portfolio = Portfolio::load()?;
+    let (import, not_applied) = to_import_rows(&portfolio, &rows);
     skipped.extend(not_applied);
-    for (r, avg) in &applied {
-        let name = r
-            .name
-            .as_deref()
-            .filter(|n| !r.symbol.contains(&n.to_uppercase()))
-            .map(|n| format!(" {}", n.dimmed()))
-            .unwrap_or_default();
-        let kept = if r.avg_cost.is_none() {
-            " (quantity only; cost kept)".dimmed().to_string()
-        } else {
-            String::new()
-        };
-        println!(
-            "  {} {}{} — {} {} @ ₹{:.2}{}",
-            "✓".green(),
-            r.symbol.cyan(),
-            name,
-            r.qty,
-            r.unit,
-            avg,
-            kept
-        );
-    }
     for s in &skipped {
         println!("  {} {} — {}", "!".yellow(), s.what, s.why.dimmed());
     }
-
-    if applied.is_empty() {
-        println!(
-            "\n  {} No holdings imported from the {} file. Check the format.\n",
-            "✗".red(),
-            source
-        );
-        return Ok(());
-    }
-    portfolio.save()?;
-    println!(
-        "\n  {} Imported {} holdings into portfolio.",
-        "✓".green().bold(),
-        applied.len()
-    );
-    if applied.iter().any(|(r, _)| r.symbol.starts_with("MF:")) {
+    if import.iter().any(|r| r.symbol.starts_with("MF:")) {
         println!(
             "  {}",
-            "Mutual funds are stored as MF:<AMFI code or ISIN>; StockWise can't price them live yet."
-                .dimmed()
+            "Mutual funds are stored as MF:<AMFI code or ISIN> (units, not shares).".dimmed()
         );
     }
-    println!(
-        "  Run {} to see your portfolio.\n",
-        "stockwise portfolio show".cyan()
-    );
-    Ok(())
+    // CAS rows are already split-free units; nothing to replay.
+    super::holdings::apply_import_rows(source, file, import, false, replace).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::portfolio as pf;
 
     #[test]
     fn numbers_in_indian_exports() {
@@ -794,14 +852,42 @@ mod tests {
     #[test]
     fn cost_book_average_cost_method() {
         let mut b = CostBook::default();
-        b.apply("PURCHASE", Some(10.0), Some(1000.0), Some(100.0));
-        b.apply("PURCHASE_SIP", Some(10.0), Some(2000.0), Some(200.0));
-        b.apply("STAMP_DUTY_TAX", None, Some(0.15), None);
+        b.apply(
+            Some("2024-01-02"),
+            "PURCHASE",
+            Some(10.0),
+            Some(1000.0),
+            Some(100.0),
+        );
+        b.apply(
+            Some("2024-02-02"),
+            "PURCHASE_SIP",
+            Some(10.0),
+            Some(2000.0),
+            Some(200.0),
+        );
+        b.apply(Some("2024-02-02"), "STAMP_DUTY_TAX", None, Some(0.15), None);
         // avg = 3000.15 / 20; selling 5 keeps the average.
-        b.apply("REDEMPTION", Some(-5.0), Some(-1250.0), Some(250.0));
+        b.apply(
+            Some("2024-03-01"),
+            "REDEMPTION",
+            Some(-5.0),
+            Some(-1250.0),
+            Some(250.0),
+        );
         assert!((b.units - 15.0).abs() < 1e-9);
         assert!((b.avg().unwrap() - 3000.15 / 20.0).abs() < 1e-9);
-        b.apply("REDEMPTION", Some(-15.0), Some(-4000.0), Some(266.0));
+        // Stamp duty lands on that day's purchase lot.
+        assert!((b.txns[1].price - 2000.15 / 10.0).abs() < 1e-9);
+        assert_eq!(b.history_for(15.0).len(), 3);
+        assert!(b.history_for(16.0).is_empty());
+        b.apply(
+            Some("2024-04-01"),
+            "REDEMPTION",
+            Some(-15.0),
+            Some(-4000.0),
+            Some(266.0),
+        );
         assert_eq!(b.avg(), None);
     }
 
@@ -818,15 +904,35 @@ mod tests {
         assert_eq!(mf_symbol(Some(" "), None), None);
     }
 
-    fn row(symbol: &str, qty: f64, avg: Option<f64>) -> ImportRow {
-        ImportRow {
+    fn row(symbol: &str, qty: f64, avg: Option<f64>) -> ParsedRow {
+        ParsedRow {
             symbol: symbol.into(),
             isin: None,
             name: None,
             qty,
             avg_cost: avg,
             unit: "shares",
+            history: Vec::new(),
         }
+    }
+
+    fn apply(portfolio: &mut Portfolio, parsed: &[ParsedRow]) -> Vec<Skipped> {
+        let (rows, skipped) = to_import_rows(portfolio, parsed);
+        portfolio.apply_import(
+            &rows,
+            pf::ImportOptions {
+                source: "import:cas",
+                replace: false,
+                tradebook: false,
+                splits: &[],
+            },
+        );
+        skipped
+    }
+
+    fn holding(portfolio: &Portfolio, sym: &str) -> (f64, f64, usize) {
+        let h = portfolio.holding(sym).expect("holding");
+        (h.shares, h.avg_cost, h.lots.len())
     }
 
     #[test]
@@ -873,6 +979,25 @@ mod tests {
         assert!((ppfas.avg_cost.unwrap() - 6000.0 / 100.5).abs() < 1e-9);
         // The fully redeemed liquid fund is not a holding.
         assert!(p.rows.iter().all(|r| r.symbol != "MF:119091"));
+        // The transactions cover each balance, so they become dated lots.
+        assert_eq!(hdfc.history.len(), 2);
+        assert!(hdfc.history[1].sell);
+        assert_eq!(ppfas.history[0].date, "2023-05-02");
+
+        let mut portfolio = Portfolio::default();
+        apply(&mut portfolio, &p.rows);
+        let (units, _, lots) = holding(&portfolio, "MF:118834");
+        assert!((units - 23.412).abs() < 1e-9);
+        assert_eq!(lots, 1);
+        assert_eq!(
+            portfolio.holding("MF:118834").unwrap().lots[0].date,
+            "2024-04-02"
+        );
+        // The redemption is a realized sale, for `tax`.
+        assert_eq!(portfolio.realized.len(), 1);
+        apply(&mut portfolio, &p.rows);
+        assert_eq!(portfolio.realized.len(), 1);
+        assert!((holding(&portfolio, "MF:118834").0 - 23.412).abs() < 1e-9);
     }
 
     #[test]
@@ -888,11 +1013,13 @@ mod tests {
         );
 
         // Two folios of one scheme add up; re-importing never doubles them.
-        let mut pf = Portfolio::default();
-        apply_rows(&mut pf, &p.rows);
-        apply_rows(&mut pf, &p.rows);
-        assert_eq!(pf.holdings.len(), 1);
-        assert!((pf.holdings[0].shares - 29.912).abs() < 1e-9);
+        let mut portfolio = Portfolio::default();
+        apply(&mut portfolio, &p.rows);
+        apply(&mut portfolio, &p.rows);
+        assert_eq!(portfolio.holdings.len(), 1);
+        let (units, _, lots) = holding(&portfolio, "MF:118834");
+        assert!((units - 29.912).abs() < 1e-9);
+        assert_eq!(lots, 2);
     }
 
     #[test]
@@ -904,6 +1031,7 @@ mod tests {
             "transactions":[{"date":"2024-05-01","description":"Purchase","amount":"1000","units":"10","nav":"100","balance":"110","type":"PURCHASE"}]}]}]}"#;
         let p = parse_cas(json).unwrap();
         assert_eq!((p.rows[0].qty, p.rows[0].avg_cost), (110.0, None));
+        assert!(p.rows[0].history.is_empty());
 
         let csv = "amc,folio,pan,scheme,advisor,isin,amfi,date,description,amount,units,nav,balance,type,dividend\n\
 X AMC,1,P,X Fund,,INF000000001,1,2024-05-01,Purchase,1000,10,100,110,PURCHASE,\n";
@@ -927,45 +1055,40 @@ X AMC,1,P,X Fund,,INF000000001,1,2024-05-01,Purchase,1000,10,100,110,PURCHASE,\n
         assert_eq!(p.rows[2].symbol, "MF:122639");
         assert_eq!(p.rows[2].avg_cost, Some(60.0));
 
-        let mut pf = Portfolio::default();
-        pf.add("HDFCBANK.NS", 90.0, 1500.0);
-        let (applied, skipped) = apply_rows(&mut pf, &p.rows);
+        let mut portfolio = Portfolio::default();
+        portfolio.add("HDFCBANK.NS", 90.0, 1500.0);
+        let skipped = apply(&mut portfolio, &p.rows);
         // HDFCBANK: quantity synced, cost kept. RELIANCE: no cost, not held → skipped.
-        assert_eq!(applied.len(), 2);
         assert_eq!(skipped.len(), 1);
         assert!(
             skipped[0].why.contains("portfolio add RELIANCE.NS"),
             "{:?}",
             skipped
         );
-        let h = pf
-            .holdings
-            .iter()
-            .find(|h| h.symbol == "HDFCBANK.NS")
-            .unwrap();
-        assert_eq!((h.shares, h.avg_cost), (100.0, 1500.0));
+        let (shares, avg, _) = holding(&portfolio, "HDFCBANK.NS");
+        assert!((shares - 100.0).abs() < 1e-9);
+        assert!((avg - 1500.0).abs() < 1e-9);
+        assert!(portfolio.holding("RELIANCE.NS").is_none());
+        assert!(portfolio.holding("MF:122639").is_some());
     }
 
     #[test]
-    fn apply_rows_is_idempotent() {
+    fn reimport_is_idempotent() {
         let rows = vec![
             row("TCS.NS", 10.0, Some(3500.0)),
             row("INFY.NS", 5.0, Some(1500.0)),
         ];
-        let mut pf = Portfolio::default();
-        apply_rows(&mut pf, &rows);
-        let first: Vec<_> = pf
-            .holdings
-            .iter()
-            .map(|h| (h.symbol.clone(), h.shares, h.avg_cost))
-            .collect();
-        apply_rows(&mut pf, &rows);
-        let second: Vec<_> = pf
-            .holdings
-            .iter()
-            .map(|h| (h.symbol.clone(), h.shares, h.avg_cost))
-            .collect();
-        assert_eq!(first, second);
+        let mut portfolio = Portfolio::default();
+        apply(&mut portfolio, &rows);
+        let snapshot = |p: &Portfolio| -> Vec<_> {
+            p.holdings
+                .iter()
+                .map(|h| (h.symbol.clone(), h.shares, h.avg_cost, h.lots.len()))
+                .collect()
+        };
+        let first = snapshot(&portfolio);
+        apply(&mut portfolio, &rows);
+        assert_eq!(first, snapshot(&portfolio));
     }
 
     #[test]

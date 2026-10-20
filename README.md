@@ -66,8 +66,32 @@ curl -fsSL https://raw.githubusercontent.com/iamsaquib8/stockwise/master/install
 ```
 
 Installs to `~/.local/bin` (override with `STOCKWISE_INSTALL=/usr/local/bin`)
-and verifies the release checksum. Windows: download the `.zip` from the
-[latest release](https://github.com/iamsaquib8/stockwise/releases/latest).
+and verifies the release checksum. Every
+[release](https://github.com/iamsaquib8/stockwise/releases/latest) also has
+`.tar.gz` / `.zip` archives with the binary and man pages.
+
+**Package managers**
+
+```bash
+brew install iamsaquib8/tap/stockwise            # Homebrew (after the tap is published)
+yay -S stockwise-bin                             # Arch Linux, AUR (after the package is published)
+nix profile install github:iamsaquib8/stockwise  # Nix flake (try it: nix run github:iamsaquib8/stockwise)
+```
+
+**Windows**
+
+```powershell
+scoop install https://github.com/iamsaquib8/stockwise/releases/latest/download/stockwise.json
+winget install iamsaquib8.StockWise        # after the manifest is accepted into winget-pkgs
+```
+
+**Docker** (linux/amd64 and linux/arm64)
+
+```bash
+docker run --rm -it -v stockwise-data:/data ghcr.io/iamsaquib8/stockwise quote RELIANCE TCS
+```
+
+Portfolio, watchlist and alerts persist in the `stockwise-data` volume.
 
 **With Rust**
 
@@ -81,7 +105,10 @@ Then:
 ```bash
 stockwise doctor                                          # check your setup
 stockwise completions zsh > ~/.zfunc/_stockwise           # optional: tab completion
+stockwise man --dir ~/.local/share/man/man1               # optional: man stockwise
 ```
+
+Homebrew, AUR and Nix install the man pages and completions for you.
 
 ## Tour
 
@@ -93,8 +120,9 @@ stockwise completions zsh > ~/.zfunc/_stockwise           # optional: tab comple
 | | Commands |
 |---|---|
 | **Start here** | `quote`, `deep`, `markets`, `dashboard`, `search`, `doctor` |
-| **Analysis** | `analyze`, `technical`, `history`, `chart`, `compare`, `risk`, `correlate`, `timeframes`, `returns`, `patterns`, `support`, `fibs`, `volume`, `gaps`, `stoploss`, `forecast`, `options` |
+| **Analysis** | `analyze`, `technical`, `history`, `chart`, `compare`, `risk`, `correlate`, `timeframes`, `returns`, `patterns`, `support`, `fibs`, `volume`, `gaps`, `stoploss`, `forecast` |
 | **Market** | `movers`, `sectors`, `heatmap`, `sentiment`, `news`, `rotation`, `sectorcmp`, `peers`, `insider`, `ipo`, `earnings`, `surprise`, `matrix`, `picks`, `screen`, `dividends` |
+| **Funds & F&O** | `mf` (search, nav, history, sip, screen, overlap), `options` (chain, pcr, maxpain, moves) |
 | **Strategies & bots** | `backtest`, `sip`, `whatif`, `intraday`, `longterm`, `daemon`, `sim`, `report` |
 | **Portfolio** | `portfolio`, `watch`, `alert`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
 | **Live trading** | `trade` (Angel One; Zerodha, Upstox, Dhan, Fyers experimental) |
@@ -105,12 +133,31 @@ has every option.
 ### Track a portfolio
 
 ```bash
-stockwise import kite ~/Downloads/holdings.csv   # or groww, upstox, cas, csv — or: portfolio add TCS 10 3500
-stockwise portfolio                              # live P&L + allocation
-stockwise alert add RELIANCE below 1200
-stockwise tax in                                 # LTCG/STCG estimate for this FY
+stockwise import kite ~/Downloads/holdings.csv   # also groww, upstox, cas; or: portfolio add TCS 10 3500 --date 2023-04-12
+stockwise portfolio                              # live P&L, XIRR + allocation
+stockwise portfolio sell TCS 5 3900              # FIFO sale, realized P&L kept for tax
+stockwise portfolio actions --apply              # splits, bonuses and dividends since you bought
+stockwise tax in                                 # LTCG/STCG per lot, set-off, realized vs unrealized
+stockwise --portfolio us portfolio add AAPL 3 190 -m us   # a second, named portfolio
 stockwise dashboard                              # indices + portfolio + watchlist + alerts
 ```
+
+Every purchase is a lot with its own date, so holding periods, FIFO sales and
+XIRR are exact. Holdings in INR and USD are totalled in one currency
+(`portfolio --base usd`) at the live `USDINR=X` rate.
+
+### Mutual funds and options
+
+```bash
+stockwise mf search parag flexi direct     # AMFI scheme codes
+stockwise mf sip 122639 5000 -p 5y         # monthly SIP with XIRR
+stockwise mf screen flexi cap              # rank a category by 3Y CAGR
+stockwise options chain NIFTY              # NSE chain with IV and greeks
+stockwise options maxpain BANKNIFTY        # or: options pcr, options chain AAPL -m us
+```
+
+NAVs come from AMFI, option chains from NSE (India) or Yahoo (US). See
+[docs/commands.md](docs/commands.md#funds--fo) for what has data and what doesn't.
 
 ### Script it
 
@@ -125,12 +172,26 @@ stockwise quote ZZZZ || echo "lookup failed"     # non-zero exit on errors
 ```bash
 stockwise sim start 100000          # paper session with the bot's picks
 stockwise sim status                # live P&L
-stockwise daemon intraday 25000     # 9:00–15:30 IST paper loop: 1% risk/trade, 3% daily stop
+stockwise daemon intraday 25000     # NSE-hours paper loop: 1% risk/trade, 3% daily stop
+stockwise sim settle                # after the close: replay the day's 5-minute bars
 stockwise sim history               # track record + confidence rating
 ```
 
-The daemon never sends broker orders. Read [docs/bot-design.md](docs/bot-design.md)
-for how it decides.
+The daemon never sends broker orders. It runs on the exchange clock (IST,
+NSE holidays included), survives network blips, resumes after a restart, and
+squares off on Ctrl+C. Read [docs/bot-design.md](docs/bot-design.md) for how
+it decides.
+
+### Alerts and notifications
+
+```bash
+stockwise alert add TCS above 4200
+export STOCKWISE_TELEGRAM_TOKEN=... STOCKWISE_TELEGRAM_CHAT_ID=...
+stockwise notify test               # Telegram, Slack, Discord, email or desktop
+stockwise alert watch               # checks during market hours, notifies once per trigger
+```
+
+See [notifications](docs/bots.md#notifications) for every channel.
 
 ### Live orders (optional)
 
@@ -153,7 +214,19 @@ read-only until you opt in. See [docs/brokers.md](docs/brokers.md).
 With [Ollama](https://ollama.com) running, `stockwise report TCS` writes an AI
 stock report, and `--ai` adds commentary to `analyze`, `technical`, `compare`,
 `screen`, `backtest` and `deep`. It's opt-in because local models take 30–60s.
-See [docs/ai.md](docs/ai.md).
+Prefer a hosted model? Set `STOCKWISE_AI_PROVIDER` to `openai`, `anthropic` or
+`gemini` with your key — still only for `report` and `--ai`, with a notice
+whenever data is sent. See [docs/ai.md](docs/ai.md).
+
+### Crypto, forex and Hindi
+
+```bash
+stockwise quote BTC ETH -m crypto                    # BTC-USD, ETH-USD — trades 24/7
+stockwise quote BTC -m crypto --quote-currency inr   # BTC-INR
+stockwise quote USDINR EURUSD -m fx                  # USDINR=X, EURUSD=X, 4 decimals
+stockwise markets --crypto --fx                      # indices + top coins + major pairs
+stockwise dashboard --lang hi                        # हिन्दी में (also STOCKWISE_LANG=hi)
+```
 
 ## Configuration
 
@@ -161,27 +234,37 @@ Everything works with no config. Optional environment variables:
 
 | Variable | Purpose |
 |----------|---------|
-| `STOCKWISE_MARKET` | Default market: `in` (default) or `us` |
+| `STOCKWISE_MARKET` | Default market: `in` (default), `us`, `crypto` or `fx` |
+| `STOCKWISE_QUOTE_CURRENCY` | Currency for bare crypto tickers with `-m crypto` (default `usd`; `inr` gives `BTC-INR`) |
+| `STOCKWISE_LANG` | Output language: `en` or `hi` (Hindi). Default: your locale (`LANG=hi_IN…` picks Hindi) |
 | `STOCKWISE_HOME` | Where portfolio, watchlist, alerts and history are stored |
+| `STOCKWISE_DATA_PROVIDER` | Opt-in data provider: `alphavantage`, `massive` (Polygon) or `twelvedata`, with its API key — see [docs/data-providers.md](docs/data-providers.md) |
+| `STOCKWISE_PORTFOLIO` | Named portfolio to use (same as `--portfolio NAME`) |
 | `STOCKWISE_AI` | `1` to add AI sections by default |
-| `STOCKWISE_MODEL` / `OLLAMA_HOST` | Ollama model (default `qwen3:14b`) and server |
+| `STOCKWISE_AI_PROVIDER` | `ollama` (default, local), or opt-in cloud: `openai`, `anthropic`, `gemini` with `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` — see [docs/ai.md](docs/ai.md) |
+| `STOCKWISE_MODEL` / `OLLAMA_HOST` | AI model (Ollama default `qwen3:14b`) and Ollama server |
 | `STOCKWISE_REDIS_URL` | Optional shared cache (`redis://…`), or `off` |
 | `STOCKWISE_BROKER` | Default broker for `trade`: `angel` (default), `zerodha`, `upstox`, `dhan`, `fyers` |
 | `STOCKWISE_KEYRING` | `off` keeps broker secrets in the owner-only file instead of the OS keyring |
+| `STOCKWISE_TELEGRAM_TOKEN`, `STOCKWISE_SLACK_WEBHOOK`, … | Notification channels — see [docs/bots.md](docs/bots.md#notifications) |
 | `NO_COLOR` | Disable colours (also automatic when piping) |
+
+The same settings work as flags: `-m crypto`, `--quote-currency inr`,
+`--lang hi`, `--ai`. Run `stockwise doctor` to see what is active.
 
 ## Docs
 
 - [Commands reference](docs/commands.md)
 - [Trading bots](docs/bots.md) and [bot design](docs/bot-design.md)
 - [Brokers: live trading, keyring, imports](docs/brokers.md)
-- [AI & Ollama](docs/ai.md)
+- [AI: Ollama and cloud providers](docs/ai.md)
+- [Data providers](docs/data-providers.md)
 - [Architecture](docs/architecture.md)
 
 ## Roadmap & contributing
 
-Next up: Homebrew, a config file, notifications,
-and a TUI dashboard — see the [ROADMAP](ROADMAP.md). Ideas and bug reports are
+Next up: Homebrew, a config file, and a TUI dashboard — see the
+[ROADMAP](ROADMAP.md). Ideas and bug reports are
 welcome in [Discussions](https://github.com/iamsaquib8/stockwise/discussions) and
 [Issues](https://github.com/iamsaquib8/stockwise/issues); start with
 [CONTRIBUTING.md](CONTRIBUTING.md).
