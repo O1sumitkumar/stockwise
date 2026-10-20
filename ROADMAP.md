@@ -30,9 +30,9 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - 📋 Man page (`stockwise.1`) generated from the CLI definition
 
 **Scripting**
-- 📋 `--json` on more commands (`portfolio`, `technical`, `risk`, `backtest`, `screen`)
-- 📋 Config file (`~/.config/stockwise/config.toml`) for market, model, and defaults
-- 📋 `--csv` output for tables, for spreadsheets
+- ✅ `--json` on more commands (`portfolio`, `technical`, `risk`, `backtest`, `screen`)
+- ✅ Config file (`~/.config/stockwise/config.toml`) for market, model, and defaults
+- ✅ `--csv` output for tables, for spreadsheets
 
 **Correctness**
 - 📋 Daemon resilience — survive network blips, square off on Ctrl+C, IST clock + exchange holidays

@@ -56,11 +56,13 @@ an hour when Redis is available.
 
 ## Configuration
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `STOCKWISE_MODEL` | `qwen3:14b` | Model name as shown by `ollama list` |
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server (`host:port` or a full URL) |
-| `STOCKWISE_AI` | off | `1` to add AI sections to analysis commands by default |
+| Variable | Config key | Default | Purpose |
+|----------|------------|---------|---------|
+| `STOCKWISE_MODEL` | `model` | `qwen3:14b` | Model name as shown by `ollama list` |
+| `OLLAMA_HOST` | `ollama_host` | `http://localhost:11434` | Ollama server (`host:port` or a full URL) |
+| `STOCKWISE_AI` | `ai` | off | `1` to add AI sections to analysis commands by default (`--no-ai` turns it off for one run) |
+
+Environment variables win over the [config file](commands.md#configuration-file).
 
 ```bash
 STOCKWISE_MODEL=llama3.1:8b stockwise report portfolio
