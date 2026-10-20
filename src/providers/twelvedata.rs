@@ -26,6 +26,11 @@ pub fn target(symbol: &str) -> Option<(String, Option<&'static str>)> {
         AssetClass::Crypto => Some((upper.replacen('-', "/", 1), None)),
         AssetClass::Fx => {
             let pair = upper.trim_end_matches("=X");
+            // Currency codes are ASCII letters; anything else would also make
+            // the byte slicing below split a character.
+            if !pair.chars().all(|c| c.is_ascii_alphabetic()) {
+                return None;
+            }
             match pair.len() {
                 6 => Some((format!("{}/{}", &pair[..3], &pair[3..]), None)),
                 3 => Some((format!("USD/{}", pair), None)),

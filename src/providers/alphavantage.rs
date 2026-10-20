@@ -41,6 +41,11 @@ pub fn target(symbol: &str) -> Option<Target> {
         AssetClass::Index => None,
         AssetClass::Fx => {
             let pair = upper.trim_end_matches("=X");
+            // Currency codes are ASCII letters; anything else would also make
+            // the byte slicing below split a character.
+            if !pair.chars().all(|c| c.is_ascii_alphabetic()) {
+                return None;
+            }
             match pair.len() {
                 6 => Some(Target::Fx {
                     from: pair[..3].into(),
@@ -329,6 +334,14 @@ mod tests {
                 coin: "BTC".into(),
                 market: "INR".into()
             })
+        );
+        // Non-ASCII input is rejected, not sliced mid-character.
+        assert_eq!(target("AB\u{20B9}C=X"), None);
+        assert_eq!(crate::providers::twelvedata::target("AB\u{20B9}C=X"), None);
+        assert_eq!(crate::providers::massive::ticker("AB\u{20B9}C=X"), None);
+        assert_eq!(
+            crate::providers::massive::to_yahoo("X:B\u{20B9}"),
+            "B\u{20B9}"
         );
         assert_eq!(to_yahoo("RELIANCE.BSE"), "RELIANCE.BO");
         assert_eq!(to_yahoo("IBM"), "IBM");

@@ -26,6 +26,11 @@ pub fn ticker(symbol: &str) -> Option<String> {
         AssetClass::Crypto => Some(format!("X:{}", upper.replace('-', ""))),
         AssetClass::Fx => {
             let pair = upper.trim_end_matches("=X");
+            // Currency codes are ASCII letters; anything else would also make
+            // the byte slicing below split a character.
+            if !pair.chars().all(|c| c.is_ascii_alphabetic()) {
+                return None;
+            }
             match pair.len() {
                 6 => Some(format!("C:{}", pair)),
                 3 => Some(format!("C:USD{}", pair)),
@@ -44,7 +49,7 @@ pub fn to_yahoo(ticker: &str) -> String {
     }
     if let Some(pair) = ticker.strip_prefix("X:") {
         // Crypto pairs end in a 3-letter fiat code (X:BTCUSD).
-        if pair.len() > 3 {
+        if pair.len() > 3 && pair.is_ascii() {
             let (coin, fiat) = pair.split_at(pair.len() - 3);
             return format!("{}-{}", coin, fiat);
         }
