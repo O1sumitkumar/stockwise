@@ -27,8 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   market's currency). Also in `dashboard`, `wealth`, `rebalance` and the
   long-term daemon.
 - `import` reads a purchase/trade date column and a buy/sell column, so a lot
-  list or a tradebook (e.g. Zerodha Console) imports with real dates and
-  realized sales.
+  list or a tradebook (e.g. Zerodha Console) imports with real dates, realized
+  sales and splits applied as they happened. A holding that already has lots
+  from elsewhere is only rebuilt with `import --replace`.
 
 ### Changed
 - `tax in|us|uk` classifies each lot by its own purchase date, shows realized
@@ -45,7 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the quantity, instead of overwriting the average cost.
 - `portfolio list` now lists your portfolios; use `portfolio` or
   `portfolio show` for holdings.
-- `import` exits with an error when a file has no usable rows.
+- `import` exits with an error when a file has no usable rows, an unrecognized
+  date, or nothing it could apply.
+- `portfolio sell`, `import` and `trade holdings` refuse to match shares while
+  a split or bonus isn't applied to your lots yet, and point to
+  `portfolio actions --apply`.
+- `wealth` snapshots are always in the market's currency.
 
 ### Fixed
 - Tax holding periods used the day a holding was added to StockWise, and adding

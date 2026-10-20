@@ -2,7 +2,7 @@
 
 use super::portfolio::{ESTIMATED_DATE_HINT, portfolio_title, value_holdings};
 use super::*;
-use crate::portfolio::{self as pf, ImportOutcome, ImportRow, SyncChange};
+use crate::portfolio::{self as pf, ImportOptions, ImportOutcome, ImportRow, SyncChange};
 use crate::tax::{self, Country};
 
 pub async fn cmd_watchlist(action: &str, symbols: &[String], market: Market) -> Result<()> {
@@ -294,7 +294,7 @@ pub async fn cmd_export(what: &str, _market: Market) -> Result<()> {
 
 // ── Alerts ──
 
-pub async fn cmd_import(source: &str, file: &str, market: Market) -> Result<()> {
+pub async fn cmd_import(source: &str, file: &str, replace: bool, market: Market) -> Result<()> {
     let path = std::path::Path::new(file);
     if !path.exists() {
         println!();
@@ -462,7 +462,8 @@ pub async fn cmd_import(source: &str, file: &str, market: Market) -> Result<()> 
         }
         let qty = number(field(&fields, qi));
         let price = number(field(&fields, pi));
-        if qty <= 0.0 || price <= 0.0 {
+        // "NaN"/"inf" parse as f64 but can't be saved as JSON.
+        if !(qty.is_finite() && qty > 0.0 && price.is_finite() && price > 0.0) {
             continue;
         }
         let date = match date_col.map(|i| field(&fields, i)) {
@@ -492,10 +493,87 @@ pub async fn cmd_import(source: &str, file: &str, market: Market) -> Result<()> 
     if rows.is_empty() {
         bail!("No holdings found in {}. Check the format.", file);
     }
+    // A wrong date would silently change tax and XIRR: refuse the file.
+    if !bad_dates.is_empty() {
+        bail!(
+            "Unrecognized dates in {}: {}. Use YYYY-MM-DD (or DD-MM-YYYY), then import again — nothing was changed.",
+            file,
+            bad_dates.join(", ")
+        );
+    }
 
     let mut portfolio = Portfolio::load()?;
-    let outcomes = portfolio.apply_import(&rows, &format!("import:{}", source));
-    portfolio.save()?;
+    let tradebook = side_col.is_some();
+    let dated = |sym: &str| {
+        rows.iter()
+            .any(|r| r.symbol == sym && (r.date.is_some() || r.sell))
+    };
+    let mut symbols: Vec<String> = rows.iter().map(|r| r.symbol.clone()).collect();
+    symbols.dedup();
+    symbols.sort();
+    symbols.dedup();
+
+    // A tradebook's quantities are as traded: fetch each symbol's splits so
+    // sells after a split or bonus match the right number of shares.
+    let mut splits = Vec::new();
+    if tradebook {
+        let client = YahooClient::new().await?;
+        for sym in symbols.iter().filter(|s| dated(s)) {
+            let since = rows
+                .iter()
+                .filter(|r| &r.symbol == sym)
+                .filter_map(|r| r.date.clone())
+                .min()
+                .unwrap_or_else(pf::today);
+            let (s, _, _) = super::portfolio::fetch_actions(&client, sym, &since)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Could not check {} for splits, which a tradebook needs; nothing was changed. Try again when online",
+                        sym
+                    )
+                })?;
+            splits.push((sym.clone(), s));
+        }
+    }
+
+    // A holdings snapshot with more shares than StockWise has may just be a
+    // split not yet applied to your lots: leave those for `portfolio actions`.
+    let snapshot: Vec<(String, f64)> = symbols
+        .iter()
+        .filter(|s| !dated(s))
+        .map(|s| {
+            let qty = rows.iter().filter(|r| &r.symbol == s).map(|r| r.qty).sum();
+            (s.clone(), qty)
+        })
+        .collect();
+    let blocked = super::portfolio::blocked_by_pending_splits(&portfolio, &snapshot).await;
+    let rows: Vec<ImportRow> = rows
+        .into_iter()
+        .filter(|r| !blocked.iter().any(|(s, _)| *s == r.symbol))
+        .collect();
+
+    let outcomes = portfolio.apply_import(
+        &rows,
+        ImportOptions {
+            source: &format!("import:{}", source),
+            replace,
+            tradebook,
+            splits: &splits,
+        },
+    );
+    let updated = outcomes
+        .iter()
+        .filter(|(_, o)| {
+            !matches!(
+                o,
+                ImportOutcome::Unmatched { .. } | ImportOutcome::WouldReplace
+            )
+        })
+        .count();
+    if updated > 0 {
+        portfolio.save()?;
+    }
 
     let mut undated = false;
     for (sym, outcome) in &outcomes {
@@ -529,45 +607,58 @@ pub async fn cmd_import(source: &str, file: &str, market: Market) -> Result<()> 
                 n,
                 now
             ),
-            ImportOutcome::Lots { lots, sales } => println!(
-                "  {} {} — {} lot(s){}, now {}",
-                "✓".green(),
-                sym.cyan(),
+            ImportOutcome::Lots {
                 lots,
+                sales,
+                splits,
+            } => {
+                let mut extra = String::new();
                 if *sales > 0 {
-                    format!(", {} sale(s) recorded", sales)
-                } else {
-                    String::new()
-                },
-                now
-            ),
-            ImportOutcome::Skipped { unmatched } => println!(
+                    extra.push_str(&format!(", {} sale(s) recorded", sales));
+                }
+                if *splits > 0 {
+                    extra.push_str(&format!(", adjusted for {} split(s)/bonus(es)", splits));
+                }
+                println!(
+                    "  {} {} — {} lot(s){}, now {}",
+                    "✓".green(),
+                    sym.cyan(),
+                    lots,
+                    extra,
+                    now
+                );
+            }
+            ImportOutcome::Unmatched { unmatched } => println!(
                 "  {} {} — skipped: sells of {} shares have no earlier buy in this file. Import a \
                  tradebook that covers every buy, or record the sale with `stockwise portfolio sell`.",
                 "!".yellow(),
                 sym,
                 unmatched
             ),
+            ImportOutcome::WouldReplace => println!(
+                "  {} {} — skipped: it has lots or sales from elsewhere (manual entries, another \
+                 import) that this file would replace. Re-run with --replace to rebuild it from the file.",
+                "!".yellow(),
+                sym
+            ),
         }
     }
+    for (sym, reason) in &blocked {
+        println!("  {} {} — skipped: {}", "!".yellow(), sym, reason);
+    }
 
-    let updated = outcomes
-        .iter()
-        .filter(|(_, o)| !matches!(o, ImportOutcome::Skipped { .. }))
-        .count();
+    if updated == 0 {
+        bail!(
+            "Nothing imported from {} — see the skipped holdings above.",
+            file
+        );
+    }
     println!(
         "\n  {} Imported {} rows: {} holdings updated.",
         "✓".green().bold(),
         rows.len(),
         updated
     );
-    if !bad_dates.is_empty() {
-        println!(
-            "  {} Unrecognized dates ({}) — those rows were dated today. Use YYYY-MM-DD.",
-            "!".yellow(),
-            bad_dates.join(", ")
-        );
-    }
     if undated {
         println!(
             "  {}",
@@ -644,7 +735,10 @@ pub async fn cmd_wealth(market: Market) -> Result<()> {
         .map(|h| h.symbol.clone())
         .collect();
     let client = YahooClient::new().await?;
-    let val = value_holdings(&client, &symbols, market, None).await?;
+    // Always the market's currency, so the history never mixes currencies
+    // as holdings come and go.
+    let base = super::portfolio::market_currency(market);
+    let val = value_holdings(&client, &symbols, market, Some(base)).await?;
     let totals = val.totals(&portfolio);
     let (total_value, total_cost) = (totals.value, totals.cost);
     // A snapshot with a holding valued at 0 would show as a fake crash in the

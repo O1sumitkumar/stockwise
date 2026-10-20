@@ -10,7 +10,7 @@ use crate::tax;
 // ── Valuation ──
 
 /// The market's own currency, used for totals when holdings are mixed.
-fn market_currency(market: Market) -> &'static str {
+pub(super) fn market_currency(market: Market) -> &'static str {
     match market {
         Market::In => "INR",
         Market::Us => "USD",
@@ -174,13 +174,26 @@ pub(super) async fn value_holdings(
         None => market_currency(market).to_string(),
     };
     v.fx = Fx::new(&base);
-    let mut missing: Vec<String> = currencies
-        .iter()
-        .filter(|c| v.fx.rate(c).is_none())
-        .map(|c| if c == "GBp" { "GBP".into() } else { c.clone() })
-        .collect();
-    missing.dedup();
-    if !missing.is_empty() {
+    v.add_rates(client, &currencies).await;
+    Ok(v)
+}
+
+impl Valuation {
+    /// Fetch exchange rates into the base for `currencies` not yet known.
+    /// A failed lookup is not fatal: amounts in that currency are left out
+    /// of totals and named, instead of being added in the wrong currency.
+    pub async fn add_rates(&mut self, client: &YahooClient, currencies: &[String]) {
+        let base = self.fx.base.clone();
+        let mut missing: Vec<String> = currencies
+            .iter()
+            .filter(|c| self.fx.rate(c).is_none())
+            .map(|c| if c == "GBp" { "GBP".into() } else { c.clone() })
+            .collect();
+        missing.sort();
+        missing.dedup();
+        if missing.is_empty() {
+            return;
+        }
         let pairs: Vec<(String, String, bool)> = missing
             .iter()
             .map(|c| {
@@ -189,8 +202,6 @@ pub(super) async fn value_holdings(
             })
             .collect();
         let refs: Vec<&str> = pairs.iter().map(|p| p.1.as_str()).collect();
-        // A failed FX lookup is not fatal: those holdings are left out of the
-        // totals and named, instead of being added in the wrong currency.
         let fx_quotes = client.get_quote(&refs).await.unwrap_or_default();
         for (cur, sym, invert) in &pairs {
             if let Some(px) = fx_quotes
@@ -198,11 +209,125 @@ pub(super) async fn value_holdings(
                 .find(|q| q.symbol.as_deref() == Some(sym.as_str()))
                 .and_then(|q| q.regular_market_price)
             {
-                v.fx.set_rate(cur, if *invert { 1.0 / px } else { px });
+                self.fx.set_rate(cur, if *invert { 1.0 / px } else { px });
             }
         }
     }
-    Ok(v)
+}
+
+/// Splits and dividends for `symbol` from `since` (YYYY-MM-DD) to today,
+/// oldest first, and the currency the dividends are paid in.
+pub(super) async fn fetch_actions(
+    client: &YahooClient,
+    symbol: &str,
+    since: &str,
+) -> Result<(Vec<Split>, Vec<DividendEvent>, Option<String>)> {
+    let to_date =
+        |ts: i64| chrono::DateTime::from_timestamp(ts, 0).map(|d| d.date_naive().to_string());
+    let since_ts = chrono::NaiveDate::parse_from_str(since, "%Y-%m-%d")
+        .map(|d| {
+            d.and_hms_opt(0, 0, 0)
+                .expect("midnight")
+                .and_utc()
+                .timestamp()
+        })
+        .unwrap_or(0);
+    let events = client.get_corporate_actions(symbol, since_ts).await?;
+    let today = pf::today();
+    let mut splits: Vec<Split> = events
+        .splits
+        .values()
+        .filter(|s| s.numerator > 0.0 && s.denominator > 0.0)
+        .filter_map(|s| {
+            Some(Split {
+                date: to_date(s.date)?,
+                numerator: s.numerator,
+                denominator: s.denominator,
+            })
+        })
+        .collect();
+    splits.sort_by(|a, b| a.date.cmp(&b.date));
+    let mut divs: Vec<DividendEvent> = events
+        .dividends
+        .values()
+        .filter(|d| d.amount > 0.0)
+        .filter_map(|d| {
+            Some(DividendEvent {
+                ex_date: to_date(d.date)?,
+                per_share: d.amount,
+            })
+        })
+        .filter(|d| d.ex_date <= today)
+        .collect();
+    divs.sort_by(|a, b| a.ex_date.cmp(&b.ex_date));
+    Ok((splits, divs, events.currency))
+}
+
+/// Splits Yahoo reports for `symbol` that are not yet applied to its lots.
+pub(super) async fn pending_splits(
+    client: &YahooClient,
+    portfolio: &Portfolio,
+    symbol: &str,
+) -> Result<Vec<Split>> {
+    let Some(h) = portfolio.holding(symbol) else {
+        return Ok(Vec::new());
+    };
+    let Some(since) = h.lots.iter().map(|l| l.units_date()).min() else {
+        return Ok(Vec::new());
+    };
+    let (splits, _, _) = fetch_actions(client, symbol, since).await?;
+    Ok(splits
+        .into_iter()
+        .filter(|s| h.lots.iter().any(|l| s.pending_for(l)))
+        .collect())
+}
+
+fn describe_splits(splits: &[Split]) -> String {
+    splits
+        .iter()
+        .map(|s| format!("{}:{} on {}", s.numerator, s.denominator, s.date))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Of `snapshot` (symbol, quantity from a broker or holdings file), the
+/// holdings whose quantity went up while a split or bonus is not yet applied
+/// to their lots — syncing those would count the new shares twice. Returns
+/// (symbol, reason). Without a network connection nothing is blocked.
+pub(super) async fn blocked_by_pending_splits(
+    portfolio: &Portfolio,
+    snapshot: &[(String, f64)],
+) -> Vec<(String, String)> {
+    let grew: Vec<&(String, f64)> = snapshot
+        .iter()
+        .filter(|(sym, qty)| {
+            portfolio
+                .holding(sym)
+                .is_some_and(|h| *qty > h.shares + 1e-9)
+        })
+        .collect();
+    if grew.is_empty() {
+        return Vec::new();
+    }
+    let Ok(client) = YahooClient::new().await else {
+        return Vec::new();
+    };
+    let mut blocked = Vec::new();
+    for (sym, _) in grew {
+        if let Ok(splits) = pending_splits(&client, portfolio, sym).await
+            && !splits.is_empty()
+        {
+            blocked.push((
+                sym.clone(),
+                format!(
+                    "split/bonus {} not applied to your lots yet — run `stockwise portfolio actions {} --apply`, then sync again",
+                    describe_splits(&splits),
+                    sym
+                ),
+            ));
+        }
+    }
+    blocked
 }
 
 pub(super) fn portfolio_title(title: &str) -> String {
@@ -292,7 +417,7 @@ pub async fn cmd_portfolio_show(market: Market, base: Option<&str>) -> Result<()
         .map(|h| h.symbol.clone())
         .collect();
     let client = YahooClient::new().await?;
-    let val = value_holdings(&client, &symbols, market, base).await?;
+    let mut val = value_holdings(&client, &symbols, market, base).await?;
     let today = chrono::Local::now().date_naive();
 
     print_header(&portfolio_title("Your Portfolio"));
@@ -353,7 +478,8 @@ pub async fn cmd_portfolio_show(market: Market, base: Option<&str>) -> Result<()
     }
 
     let totals = val.totals(&portfolio);
-    let base = Some(val.base());
+    let base_currency = val.base().to_string();
+    let base = Some(base_currency.as_str());
     let portfolio_xirr = {
         // Money-weighted return across everything ever held (closed
         // positions too), converted at today's rates. Holdings left out of
@@ -389,7 +515,27 @@ pub async fn cmd_portfolio_show(market: Market, base: Option<&str>) -> Result<()
         println!("  {}", note.dimmed());
     }
 
-    // Realized P&L and dividends, all time, in the base currency.
+    // Realized P&L and dividends, all time, in the base currency. Closed
+    // positions may be in a currency no open holding uses.
+    let mut history_currencies: Vec<String> = portfolio
+        .realized
+        .iter()
+        .map(|s| &s.symbol)
+        .chain(portfolio.dividends.iter().map(|d| &d.symbol))
+        .filter_map(|sym| val.currency(sym))
+        .collect();
+    history_currencies.sort();
+    history_currencies.dedup();
+    val.add_rates(&client, &history_currencies).await;
+    let mut unconverted: Vec<&str> = portfolio
+        .realized
+        .iter()
+        .map(|s| s.symbol.as_str())
+        .chain(portfolio.dividends.iter().map(|d| d.symbol.as_str()))
+        .filter(|sym| val.to_base(sym, 1.0).is_none())
+        .collect();
+    unconverted.sort();
+    unconverted.dedup();
     let realized: f64 = portfolio
         .realized
         .iter()
@@ -411,6 +557,13 @@ pub async fn cmd_portfolio_show(market: Market, base: Option<&str>) -> Result<()
     }
     println!();
     totals.print_exclusions();
+    if !unconverted.is_empty() {
+        println!(
+            "  {} No exchange rate for {} — left out of realized P&L and dividends.",
+            "!".yellow(),
+            unconverted.join(", ")
+        );
+    }
     if any_estimated {
         println!("  {}", ESTIMATED_DATE_HINT.dimmed());
     }
@@ -446,6 +599,7 @@ pub async fn cmd_portfolio_add(
     if !(cost >= 0.0 && cost.is_finite()) {
         bail!("Cost per share can't be negative");
     }
+    let dated = date.is_some();
     let date = match date {
         Some(d) => pf::parse_date(d)?.to_string(),
         None => pf::today(),
@@ -472,6 +626,13 @@ pub async fn cmd_portfolio_add(
             h.shares,
             h.lots.len(),
             format_price(h.avg_cost, cur)
+        );
+    }
+    if !dated {
+        println!(
+            "  {}",
+            "Dated today. Bought earlier? Add --date YYYY-MM-DD — it decides LTCG/STCG and XIRR."
+                .dimmed()
         );
     }
     Ok(())
@@ -511,16 +672,43 @@ pub async fn cmd_portfolio_sell(
         None => today.clone(),
     };
     let mut cur = pf::symbol_currency(&resolved).map(str::to_string);
-    let price = match price {
-        Some(p) => p,
-        None if date != today => bail!(
+    if price.is_none() && date != today {
+        bail!(
             "Give the sale price for a past sale: stockwise portfolio sell {} {} <PRICE> --date {}",
             symbol,
             shares,
             date
+        );
+    }
+    // Lots must be in the sale date's share count: with a split or bonus not
+    // yet applied, FIFO would match the wrong number of shares.
+    let client = YahooClient::new().await;
+    let checked = match &client {
+        Ok(c) => pending_splits(c, &portfolio, &resolved).await.ok(),
+        Err(_) => None,
+    };
+    match checked {
+        Some(splits) => {
+            let before: Vec<Split> = splits.into_iter().filter(|s| s.date <= date).collect();
+            if !before.is_empty() {
+                bail!(
+                    "{} had a split/bonus ({}) that isn't applied to your lots yet, so the share \
+                     counts wouldn't match. Run `stockwise portfolio actions {} --apply` first.",
+                    resolved,
+                    describe_splits(&before),
+                    resolved
+                );
+            }
+        }
+        None => println!(
+            "  {} Couldn't check for splits or bonuses (offline?) — run `stockwise portfolio actions` later.",
+            "!".yellow()
         ),
+    }
+    let price = match price {
+        Some(p) => p,
         None => {
-            let client = YahooClient::new().await?;
+            let client = client?;
             let quotes = client.get_quote(&[resolved.as_str()]).await?;
             let q = quotes
                 .iter()
@@ -760,19 +948,17 @@ pub async fn cmd_portfolio_actions(
     market: Market,
 ) -> Result<()> {
     let mut portfolio = Portfolio::load()?;
+    // Fully sold symbols too: dividends received before the sale count.
+    let history = portfolio.symbols_with_history();
     let targets: Vec<String> = match symbol {
         Some(s) => {
             let resolved = held_symbol(&portfolio, s, market);
-            if portfolio.holding(&resolved).is_none() {
+            if !history.contains(&resolved) {
                 bail!("{} is not in your portfolio", resolved);
             }
             vec![resolved]
         }
-        None => portfolio
-            .holdings
-            .iter()
-            .map(|h| h.symbol.clone())
-            .collect(),
+        None => history,
     };
     if targets.is_empty() {
         println!("\n  {}", "Portfolio is empty.".dimmed());
@@ -781,8 +967,6 @@ pub async fn cmd_portfolio_actions(
 
     let client = YahooClient::new().await?;
     let today = pf::today();
-    let to_date =
-        |ts: i64| chrono::DateTime::from_timestamp(ts, 0).map(|d| d.date_naive().to_string());
     print_header(&portfolio_title("Corporate Actions"));
 
     let (mut split_lots, mut new_divs, mut div_total) =
@@ -804,48 +988,14 @@ pub async fn cmd_portfolio_actions(
             )
             .min()
             .unwrap_or_else(|| today.clone());
-        let since = chrono::NaiveDate::parse_from_str(&first, "%Y-%m-%d")
-            .map(|d| {
-                d.and_hms_opt(0, 0, 0)
-                    .expect("midnight")
-                    .and_utc()
-                    .timestamp()
-            })
-            .unwrap_or(0);
-        let events = match client.get_corporate_actions(sym, since).await {
-            Ok(e) => e,
+        let (splits, divs, quote_currency) = match fetch_actions(&client, sym, &first).await {
+            Ok(a) => a,
             Err(e) => {
                 failed.push(format!("{}: {:#}", sym, e));
                 continue;
             }
         };
-        let mut splits: Vec<Split> = events
-            .splits
-            .values()
-            .filter(|s| s.numerator > 0.0 && s.denominator > 0.0)
-            .filter_map(|s| {
-                Some(Split {
-                    date: to_date(s.date)?,
-                    numerator: s.numerator,
-                    denominator: s.denominator,
-                })
-            })
-            .collect();
-        splits.sort_by(|a, b| a.date.cmp(&b.date));
-        let mut divs: Vec<DividendEvent> = events
-            .dividends
-            .values()
-            .filter(|d| d.amount > 0.0)
-            .filter_map(|d| {
-                Some(DividendEvent {
-                    ex_date: to_date(d.date)?,
-                    per_share: d.amount,
-                })
-            })
-            .filter(|d| d.ex_date <= today)
-            .collect();
-        divs.sort_by(|a, b| a.ex_date.cmp(&b.ex_date));
-        let currency = pf::symbol_currency(sym).map(str::to_string);
+        let currency = quote_currency.or_else(|| pf::symbol_currency(sym).map(str::to_string));
         let cur = currency.as_deref();
 
         let mut lines = Vec::new();

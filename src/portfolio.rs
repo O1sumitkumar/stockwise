@@ -88,6 +88,11 @@ pub struct Lot {
     /// so `portfolio actions --apply` never applies one twice.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub adjustments: Vec<String>,
+    /// For a lot whose estimated date was corrected: the date its quantity
+    /// was recorded. The quantity is already in that day's share count, so
+    /// only splits after it can still apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub units_as_of: Option<String>,
 }
 
 impl Lot {
@@ -99,6 +104,16 @@ impl Lot {
             source: source.to_string(),
             date_estimated: false,
             adjustments: Vec::new(),
+            units_as_of: None,
+        }
+    }
+
+    /// The day the lot's quantity is expressed in: its purchase date, or a
+    /// later day when the quantity was recorded after splits (see `units_as_of`).
+    pub fn units_date(&self) -> &str {
+        match self.units_as_of.as_deref() {
+            Some(d) if d > self.date.as_str() => d,
+            _ => &self.date,
         }
     }
 
@@ -224,9 +239,9 @@ impl Split {
         format!("{}:{}:{}", self.date, self.numerator, self.denominator)
     }
 
-    /// Whether `lot` was bought before this split and not yet adjusted for it.
+    /// Whether `lot`'s quantity predates this split and was not yet adjusted for it.
     pub fn pending_for(&self, lot: &Lot) -> bool {
-        lot.date < self.date && !lot.adjustments.contains(&self.id())
+        lot.units_date() < self.date.as_str() && !lot.adjustments.contains(&self.id())
     }
 }
 
@@ -265,10 +280,33 @@ pub enum ImportOutcome {
     /// No dates in the file: existing lots kept, quantity matched.
     Synced(SyncChange),
     /// Dated rows: the symbol's lots rebuilt from the file.
-    Lots { lots: usize, sales: usize },
+    Lots {
+        lots: usize,
+        sales: usize,
+        /// Splits applied while replaying a tradebook.
+        splits: usize,
+    },
     /// Left unchanged: sells of `unmatched` shares had no earlier buy in the
     /// file, so it is not the symbol's whole history.
-    Skipped { unmatched: f64 },
+    Unmatched { unmatched: f64 },
+    /// Left unchanged: the holding has lots or sales from elsewhere that
+    /// rebuilding it from this file would replace (allowed with `replace`).
+    WouldReplace,
+}
+
+/// How [`Portfolio::apply_import`] treats a file.
+#[derive(Debug, Clone, Copy)]
+pub struct ImportOptions<'a> {
+    /// Recorded on lots and sales, e.g. `import:kite`.
+    pub source: &'a str,
+    /// Rebuild dated symbols even if that replaces lots or sales from
+    /// other sources.
+    pub replace: bool,
+    /// The file has a buy/sell column: quantities are as traded, so splits
+    /// (from `splits`) are applied while replaying it.
+    pub tradebook: bool,
+    /// Known splits per symbol.
+    pub splits: &'a [(String, Vec<Split>)],
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -327,6 +365,8 @@ impl Portfolio {
         Self::load_from(&crate::store::path(&file_name(name))?)
     }
 
+    /// Save to the *active* portfolio's file — not necessarily the one a
+    /// `load_named` call read.
     pub fn save(&self) -> Result<()> {
         self.save_to(&crate::store::path(&file_name(active()))?)
     }
@@ -525,6 +565,12 @@ impl Portfolio {
             .checked_sub(1)
             .and_then(|i| h.lots.get_mut(i))
             .with_context(|| format!("{} has no lot #{} (it has {})", sym, n, count))?;
+        // An estimated lot's quantity was recorded on its old date, already
+        // reflecting any split before then — keep that so `actions` doesn't
+        // apply those splits again.
+        if lot.date_estimated && lot.units_as_of.is_none() {
+            lot.units_as_of = Some(lot.date.clone());
+        }
         lot.date = date.to_string();
         lot.date_estimated = false;
         h.recompute();
@@ -537,18 +583,20 @@ impl Portfolio {
         self.holdings.len() < before
     }
 
-    /// Apply import rows for `source`, symbol by symbol. A symbol whose rows
-    /// have no dates (a holdings snapshot) keeps its lots and only syncs the
-    /// quantity. A symbol with dated rows or sells (a lot list or tradebook)
-    /// is rebuilt from the file: buys become lots, sells come out FIFO and are
-    /// recorded as realized — unless a sell has no earlier buy in the file, in
-    /// which case the symbol is left alone. Re-importing the same file
-    /// changes nothing.
+    /// Apply import rows symbol by symbol. A symbol whose rows have no dates
+    /// (a holdings snapshot) keeps its lots and only syncs the quantity. A
+    /// symbol with dated rows or sells (a lot list or tradebook) is rebuilt
+    /// from the file: buys become lots, sells come out FIFO and are recorded
+    /// as realized; for a tradebook, splits are applied as they happen. A
+    /// symbol is left alone when a sell has no earlier buy in the file, or
+    /// (without `replace`) when the rebuild would drop lots or sales from
+    /// another source. Re-importing the same file changes nothing.
     pub fn apply_import(
         &mut self,
         rows: &[ImportRow],
-        source: &str,
+        opts: ImportOptions,
     ) -> Vec<(String, ImportOutcome)> {
+        let source = opts.source;
         let mut order: Vec<String> = Vec::new();
         for r in rows {
             let sym = r.symbol.to_uppercase();
@@ -579,11 +627,46 @@ impl Portfolio {
                 let db = b.date.as_deref().unwrap_or(&today);
                 da.cmp(db).then(a.sell.cmp(&b.sell))
             });
+            let first = group[0].date.clone().unwrap_or_else(|| today.clone());
+            let foreign_lots = self
+                .holding(&sym)
+                .is_some_and(|h| h.lots.iter().any(|l| l.source != source));
+            let foreign_sales = self
+                .realized
+                .iter()
+                .any(|s| s.symbol == sym && s.source != source && s.sell_date >= first);
+            if (foreign_lots || foreign_sales) && !opts.replace {
+                out.push((sym, ImportOutcome::WouldReplace));
+                continue;
+            }
+
+            let splits: &[Split] = if opts.tradebook {
+                opts.splits
+                    .iter()
+                    .find(|(s, _)| s.to_uppercase() == sym)
+                    .map_or(&[], |(_, v)| v.as_slice())
+            } else {
+                &[]
+            };
+            let mut applied = Vec::new();
+            let apply_until = |lots: &mut Vec<Lot>, date: &str, applied: &mut Vec<String>| {
+                for split in splits.iter().filter(|s| s.date.as_str() <= date) {
+                    for lot in lots.iter_mut().filter(|l| split.pending_for(l)) {
+                        lot.qty *= split.ratio();
+                        lot.price /= split.ratio();
+                        lot.adjustments.push(split.id());
+                        if !applied.contains(&split.id()) {
+                            applied.push(split.id());
+                        }
+                    }
+                }
+            };
             let mut lots: Vec<Lot> = Vec::new();
             let mut sales = Vec::new();
             let mut unmatched = 0.0;
             for r in group {
                 let date = r.date.clone().unwrap_or_else(|| today.clone());
+                apply_until(&mut lots, &date, &mut applied);
                 if r.sell {
                     let (taken, left) = take_fifo(&mut lots, r.qty, &date);
                     sales.extend(
@@ -599,14 +682,16 @@ impl Portfolio {
                     lots.sort_by(|a, b| a.date.cmp(&b.date));
                 }
             }
+            // Bring the remaining lots up to today's share count.
+            apply_until(&mut lots, "9999-12-31", &mut applied);
             // A sell with no earlier buy means the file doesn't cover this
             // symbol's whole history: leave the holding as it is.
             if unmatched > EPS {
-                out.push((sym, ImportOutcome::Skipped { unmatched }));
+                out.push((sym, ImportOutcome::Unmatched { unmatched }));
                 continue;
             }
             self.realized
-                .retain(|s| !(s.symbol == sym && s.source == source));
+                .retain(|s| s.symbol != sym || (s.source != source && s.sell_date < first));
             let (n, n_sales) = (lots.len(), sales.len());
             self.realized.extend(sales);
             self.replace_lots(&sym, lots);
@@ -615,6 +700,7 @@ impl Portfolio {
                 ImportOutcome::Lots {
                     lots: n,
                     sales: n_sales,
+                    splits: applied.len(),
                 },
             ));
         }
@@ -930,6 +1016,15 @@ mod tests {
         Lot::new(qty, price, date, "manual")
     }
 
+    fn opts(source: &str) -> ImportOptions<'_> {
+        ImportOptions {
+            source,
+            replace: false,
+            tradebook: false,
+            splits: &[],
+        }
+    }
+
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "stockwise-portfolio-{}-{}",
@@ -1215,8 +1310,8 @@ mod tests {
             sell: false,
         }];
         let mut p = Portfolio::default();
-        p.apply_import(&rows, "import:kite");
-        let out = p.apply_import(&rows, "import:kite");
+        p.apply_import(&rows, opts("import:kite"));
+        let out = p.apply_import(&rows, opts("import:kite"));
         assert_eq!(out[0].1, ImportOutcome::Synced(SyncChange::Unchanged));
         assert_eq!(p.holdings[0].shares, 10.0);
     }
@@ -1238,16 +1333,83 @@ mod tests {
         ];
         let mut p = Portfolio::default();
         p.add_lot("INFY.NS", lot(99.0, 1.0, "2020-01-01"));
-        let out = p.apply_import(&rows, "import:kite");
-        assert_eq!(out[0].1, ImportOutcome::Lots { lots: 0, sales: 3 });
-        // Bought 15, sold 15: the holding is gone, three FIFO slices realized.
+        p.sell_fifo("INFY.NS", 1.0, 1.5, "2024-06-01", "manual")
+            .unwrap();
+
+        // The manual lot and sale would be replaced: refused without `replace`.
+        let out = p.apply_import(&rows, opts("import:kite"));
+        assert_eq!(out[0].1, ImportOutcome::WouldReplace);
+        assert_eq!(p.holding("INFY.NS").unwrap().shares, 98.0);
+
+        let replace = ImportOptions {
+            replace: true,
+            ..opts("import:kite")
+        };
+        let out = p.apply_import(&rows, replace);
+        assert_eq!(
+            out[0].1,
+            ImportOutcome::Lots {
+                lots: 0,
+                sales: 3,
+                splits: 0
+            }
+        );
+        // Bought 15, sold 15: the holding is gone, three FIFO slices realized
+        // (the manual sale inside the file's range is replaced).
         assert!(p.holding("INFY.NS").is_none());
         assert_eq!(p.realized.len(), 3);
         assert_eq!(p.realized[0].buy_date, "2023-01-01");
         assert_eq!(p.realized[1].qty, 2.0);
-        // Re-importing the same file does not duplicate the sales.
-        p.apply_import(&rows, "import:kite");
+        // Re-importing the same file changes nothing, even without `replace`.
+        p.apply_import(&rows, opts("import:kite"));
         assert_eq!(p.realized.len(), 3);
+    }
+
+    #[test]
+    fn tradebook_replay_applies_splits_between_buy_and_sell() {
+        // 10 bought at 2800, 2:1 bonus, then 20 (post-bonus) sold at 1500.
+        let rows = vec![
+            ImportRow {
+                symbol: "RELIANCE.NS".into(),
+                qty: 10.0,
+                price: 2800.0,
+                date: Some("2023-05-02".into()),
+                sell: false,
+            },
+            ImportRow {
+                symbol: "RELIANCE.NS".into(),
+                qty: 15.0,
+                price: 1500.0,
+                date: Some("2025-01-10".into()),
+                sell: true,
+            },
+        ];
+        let splits = vec![("RELIANCE.NS".to_string(), vec![split_2_for_1()])];
+        let tradebook = ImportOptions {
+            tradebook: true,
+            splits: &splits,
+            ..opts("import:kite")
+        };
+        let mut p = Portfolio::default();
+        let out = p.apply_import(&rows, tradebook);
+        assert_eq!(
+            out[0].1,
+            ImportOutcome::Lots {
+                lots: 1,
+                sales: 1,
+                splits: 1
+            }
+        );
+        assert_eq!(p.realized[0].buy_price, 1400.0);
+        assert_eq!(p.realized[0].gain(), 15.0 * 100.0);
+        let h = p.holding("RELIANCE.NS").unwrap();
+        assert_eq!((h.shares, h.avg_cost), (5.0, 1400.0));
+        // Already adjusted: `actions` has nothing left to apply.
+        assert_eq!(p.apply_split("RELIANCE.NS", &split_2_for_1()), 0);
+        // Re-import is stable.
+        p.apply_import(&rows, tradebook);
+        assert_eq!(p.holding("RELIANCE.NS").unwrap().shares, 5.0);
+        assert_eq!(p.realized.len(), 1);
     }
 
     #[test]
@@ -1261,8 +1423,12 @@ mod tests {
         }];
         let mut p = Portfolio::default();
         p.add_lot("X", lot(5.0, 8.0, "2023-01-01"));
-        let out = p.apply_import(&rows, "import:csv");
-        assert_eq!(out[0].1, ImportOutcome::Skipped { unmatched: 2.0 });
+        let replace = ImportOptions {
+            replace: true,
+            ..opts("import:csv")
+        };
+        let out = p.apply_import(&rows, replace);
+        assert_eq!(out[0].1, ImportOutcome::Unmatched { unmatched: 2.0 });
         assert_eq!(p.holding("X").unwrap().shares, 5.0);
         assert!(p.realized.is_empty());
     }
@@ -1325,6 +1491,26 @@ mod tests {
         assert_eq!(p.apply_split("RELIANCE.NS", &split_2_for_1()), 0);
         assert_eq!(p.holding("RELIANCE.NS").unwrap().shares, 24.0);
         assert_eq!(p.apply_split("NOPE", &split_2_for_1()), 0);
+    }
+
+    #[test]
+    fn correcting_an_estimated_date_does_not_reapply_earlier_splits() {
+        // Upgraded lot recorded on 2025-06-01 with 20 shares — already the
+        // post-bonus count. The real purchase was before the 2024 bonus.
+        let mut p = Portfolio::default();
+        let mut l = lot(20.0, 1400.0, "2025-06-01");
+        l.date_estimated = true;
+        p.add_lot("RELIANCE.NS", l);
+        p.set_lot_date("RELIANCE.NS", 1, "2023-05-02").unwrap();
+        let h = p.holding("RELIANCE.NS").unwrap();
+        assert_eq!(h.lots[0].units_date(), "2025-06-01");
+        assert_eq!(p.apply_split("RELIANCE.NS", &split_2_for_1()), 0);
+        assert_eq!(p.holding("RELIANCE.NS").unwrap().shares, 20.0);
+        // A real (non-estimated) date correction keeps splits applicable.
+        let mut q = Portfolio::default();
+        q.add_lot("RELIANCE.NS", lot(10.0, 2800.0, "2025-06-01"));
+        q.set_lot_date("RELIANCE.NS", 1, "2023-05-02").unwrap();
+        assert_eq!(q.apply_split("RELIANCE.NS", &split_2_for_1()), 1);
     }
 
     #[test]

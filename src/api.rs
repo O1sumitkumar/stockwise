@@ -284,6 +284,9 @@ pub struct ChartEvents {
     pub dividends: HashMap<String, DividendEvent>,
     #[serde(default)]
     pub splits: HashMap<String, SplitEvent>,
+    /// Currency of the dividend amounts (from the chart's metadata).
+    #[serde(skip)]
+    pub currency: Option<String>,
 }
 
 /// Cash dividend per share. Yahoo adjusts past amounts for later splits
@@ -639,7 +642,9 @@ impl YahooClient {
             .result
             .and_then(|mut r| (!r.is_empty()).then(|| r.remove(0)))
             .with_context(|| format!("No data for {}", symbol))?;
-        Ok(data.events.unwrap_or_default())
+        let mut events = data.events.unwrap_or_default();
+        events.currency = data.meta.and_then(|m| m.currency);
+        Ok(events)
     }
 
     pub fn crumb(&self) -> &str {

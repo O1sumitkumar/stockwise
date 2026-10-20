@@ -100,14 +100,14 @@ Data lives in the directory shown by `stockwise doctor`.
 |---------|-------------|
 | `portfolio [show] [--base inr\|usd]` (`p`) | Holdings with live P&L, XIRR and allocation; holdings without a live price show N/A. Mixed INR/USD holdings are totalled in `--base` (default: the market's currency) |
 | `portfolio add <SYMBOL> <SHARES> <COST> [--date YYYY-MM-DD]` | Add a purchase as a new lot (default date: today) |
-| `portfolio sell <SYMBOL> <SHARES> [PRICE] [--date YYYY-MM-DD]` | Record a sale, oldest lots first (FIFO). Price defaults to the live price; a past `--date` needs a price |
+| `portfolio sell <SYMBOL> <SHARES> [PRICE] [--date YYYY-MM-DD]` | Record a sale, oldest lots first (FIFO). Price defaults to the live price; a past `--date` needs a price. Refused while a split or bonus before the sale isn't applied to your lots |
 | `portfolio lots <SYMBOL> [--lot N --date YYYY-MM-DD]` | Lots, sales, dividends and XIRR of one holding; `--lot N --date` corrects a purchase date |
-| `portfolio actions [SYMBOL] [--apply]` | Splits, bonuses and dividends since your purchases (from Yahoo). Shows them; `--apply` adjusts lots and records dividends, and is safe to repeat |
+| `portfolio actions [SYMBOL] [--apply]` | Splits, bonuses and dividends since your purchases, including positions you have sold (from Yahoo). Shows them; `--apply` adjusts lots and records dividends, and is safe to repeat |
 | `portfolio list` | Your portfolios: the default one and every named one |
 | `portfolio remove <SYMBOL>` | Remove a holding and its lots without recording a sale |
 | `watch [show]` / `watch add <SYMBOLS...>` / `watch remove <SYMBOLS...>` (`w`) | Watchlist |
 | `alert [list]` / `alert add <SYMBOL> <above\|below> <PRICE>` / `alert check` / `alert remove <N>` | Price alerts |
-| `import <kite\|indmoney\|csv> <FILE>` | Import broker holdings or a tradebook; re-importing updates instead of doubling (see below) |
+| `import <kite\|indmoney\|csv> <FILE> [--replace]` | Import broker holdings, a lot list or a tradebook; re-importing updates instead of doubling (see below) |
 | `export <portfolio\|watchlist>` | Write a CSV to the current directory |
 | `wealth` | Save today's portfolio value and show growth (run daily) |
 | `rebalance` | Trades to reach equal weight |
@@ -155,13 +155,19 @@ lots against your tax statement.
 **Imports.** A holdings export (Kite, INDmoney) has no purchase dates: existing
 lots are kept and only the quantity is matched — more shares add a lot dated
 today, fewer shares come out of the oldest lots (not recorded as a sale).
-`trade holdings` syncs the same way. A file with a date column (`Date`,
-`Purchase Date`, `Buy Date`, `trade_date`, ...) is a list of lots: each
-symbol's lots are rebuilt from it. With a buy/sell column (`trade_type`,
-`Type`, `Side`) it is a tradebook — such as Zerodha Console's — and sells come
-out FIFO as realized sales. A symbol whose sells have no earlier buy in the
-file is left unchanged. Dates may be `YYYY-MM-DD`, `DD-MM-YYYY`, `DD/MM/YYYY`
-(`MM/DD/YYYY` with `-m us`) or `15-Mar-2024`.
+`trade holdings` syncs the same way. When the snapshot has more shares and a
+split or bonus isn't applied to your lots yet, that holding is skipped until
+you run `portfolio actions --apply` (otherwise the bonus shares would be
+counted twice). A file with a date column (`Date`, `Purchase Date`,
+`Buy Date`, `trade_date`, ...) is a list of lots: each symbol's lots are
+rebuilt from it. With a buy/sell column (`trade_type`, `Type`, `Side`) it is a
+tradebook — such as Zerodha Console's — sells come out FIFO as realized sales,
+and splits and bonuses are applied as they happened (this needs a network
+connection). A symbol is left unchanged when its sells have no earlier buy in
+the file, or when it already has lots or sales from elsewhere (manual entries,
+another import) — `--replace` rebuilds it from the file anyway. Dates may be
+`YYYY-MM-DD`, `DD-MM-YYYY`, `DD/MM/YYYY` (`MM/DD/YYYY` with `-m us`) or
+`15-Mar-2024`; a file with an unrecognized date is refused.
 
 **Upgrading.** Portfolios saved before lot tracking are upgraded on first
 load: each holding becomes one lot dated when it was added, and the original

@@ -400,6 +400,10 @@ enum Commands {
         source: ImportSource,
         /// Path to the exported CSV file
         file: String,
+        /// Rebuild holdings from a dated file even if that replaces lots or
+        /// sales recorded another way (manual entries, another import)
+        #[arg(long)]
+        replace: bool,
     },
 
     /// Snapshot portfolio value over time (run daily)
@@ -978,9 +982,11 @@ async fn main() {
             Some(AlertCmd::List) | None => commands::cmd_alert("list", None, None, None, m).await,
         },
         Commands::Export { what } => commands::cmd_export(&value_name(what), m).await,
-        Commands::Import { source, file } => {
-            commands::cmd_import(&value_name(source), &file, m).await
-        }
+        Commands::Import {
+            source,
+            file,
+            replace,
+        } => commands::cmd_import(&value_name(source), &file, replace, m).await,
         Commands::Wealth => commands::cmd_wealth(m).await,
         Commands::Rebalance => commands::cmd_rebalance(&[], m).await,
         Commands::Harvest => commands::cmd_harvest(m).await,
@@ -1143,6 +1149,7 @@ mod tests {
             vec!["stockwise", "portfolio", "show", "--base", "INR"],
             vec!["stockwise", "--portfolio", "long-term", "portfolio"],
             vec!["stockwise", "tax", "in", "--portfolio", "us"],
+            vec!["stockwise", "import", "csv", "tradebook.csv", "--replace"],
         ] {
             assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
         }

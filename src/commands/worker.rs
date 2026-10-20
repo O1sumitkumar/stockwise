@@ -502,9 +502,12 @@ pub async fn cmd_daemon(mode: &str, amount: Option<f64>, market: Market) -> Resu
                     .iter()
                     .map(|h| h.symbol.clone())
                     .collect();
-                // Totals in one currency; holdings without a price or an
-                // exchange rate are left out (and skip the wealth snapshot).
-                let val = super::portfolio::value_holdings(&client, &p_syms, market, None).await?;
+                // Totals in the market's currency (like `wealth`, so snapshots
+                // never mix currencies); holdings without a price or an
+                // exchange rate are left out and skip the wealth snapshot.
+                let base = super::portfolio::market_currency(market);
+                let val =
+                    super::portfolio::value_holdings(&client, &p_syms, market, Some(base)).await?;
                 let totals = val.totals(&portfolio);
                 let (total_value, total_cost) = (totals.value, totals.cost);
                 let unpriced = totals.unpriced.len() + totals.unconverted.len();
