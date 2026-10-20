@@ -35,8 +35,8 @@ use market::Market;
 
 /// Periods Yahoo Finance understands. Short periods give too few bars for
 /// some indicators; those commands say so instead of guessing.
-const PERIODS: [&str; 11] = [
-    "1d", "5d", "1w", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "max",
+const PERIODS: [&str; 12] = [
+    "1d", "5d", "1w", "1mo", "3mo", "6mo", "ytd", "1y", "2y", "5y", "10y", "max",
 ];
 
 #[derive(Parser)]
@@ -64,7 +64,8 @@ struct Cli {
         long = "market",
         global = true,
         default_value = "in",
-        env = "STOCKWISE_MARKET"
+        env = "STOCKWISE_MARKET",
+        ignore_case = true
     )]
     market: Market,
 
@@ -277,7 +278,7 @@ enum Commands {
     Picks,
     /// Screen large caps by a preset
     Screen {
-        #[arg(value_enum)]
+        #[arg(value_enum, ignore_case = true)]
         category: ScreenCategory,
     },
     /// Dividend yield, income projection and DRIP growth
@@ -287,7 +288,7 @@ enum Commands {
     /// Backtest a trading strategy on history
     Backtest {
         symbol: String,
-        #[arg(short, long, value_enum, default_value = "rsi")]
+        #[arg(short, long, value_enum, ignore_case = true, default_value = "rsi")]
         strategy: Strategy,
         #[arg(short, long, default_value = "2y", value_parser = PERIODS)]
         period: String,
@@ -328,7 +329,7 @@ enum Commands {
 
     /// Background worker: intraday paper-trading loop or daily long-term scan
     Daemon {
-        #[arg(value_enum)]
+        #[arg(value_enum, ignore_case = true)]
         mode: DaemonMode,
         /// Paper capital for intraday mode (default 25000)
         amount: Option<f64>,
@@ -369,13 +370,13 @@ enum Commands {
 
     /// Export portfolio or watchlist to CSV in the current directory
     Export {
-        #[arg(value_enum)]
+        #[arg(value_enum, ignore_case = true)]
         what: ExportWhat,
     },
 
     /// Import holdings from a broker CSV export
     Import {
-        #[arg(value_enum)]
+        #[arg(value_enum, ignore_case = true)]
         source: ImportSource,
         /// Path to the exported CSV file
         file: String,
@@ -389,7 +390,7 @@ enum Commands {
     Harvest,
     /// Capital-gains tax estimate for your portfolio
     Tax {
-        #[arg(value_enum)]
+        #[arg(value_enum, ignore_case = true)]
         country: TaxCountry,
     },
     /// Dividend calendar for portfolio + watchlist
@@ -407,7 +408,7 @@ enum Commands {
     // ── Setup ──
     /// Print a shell completion script (bash, zsh, fish, powershell, elvish)
     Completions {
-        #[arg(value_enum)]
+        #[arg(value_enum, ignore_case = true)]
         shell: clap_complete::Shell,
     },
 }
@@ -453,7 +454,7 @@ enum AlertCmd {
     /// Alert when a price crosses a level, e.g. `alert add TCS above 4200`
     Add {
         symbol: String,
-        #[arg(value_enum)]
+        #[arg(value_enum, ignore_case = true)]
         condition: AlertWhen,
         /// Price level
         target: f64,
@@ -472,8 +473,8 @@ enum AlertCmd {
 enum SimCmd {
     /// Start a paper session with the bot's picks
     Start {
-        /// Paper capital
-        amount: f64,
+        /// Paper capital (default 25000)
+        amount: Option<f64>,
         /// Target return in percent
         target: Option<f64>,
     },
@@ -572,12 +573,15 @@ enum Strategy {
     /// MACD crossover
     Macd,
     /// SMA crossover
+    #[value(alias = "sma_crossover")]
     Sma,
     /// Bollinger Band reversion
+    #[value(alias = "bollinger")]
     Bb,
     /// VWAP crossover
     Vwap,
     /// Mean reversion
+    #[value(alias = "mean_reversion")]
     Mr,
 }
 
@@ -848,7 +852,7 @@ async fn main() {
         Commands::Sim { action } => match action {
             Some(SimCmd::Reset { yes }) => commands::cmd_sim_reset(yes),
             Some(SimCmd::Start { amount, target }) => {
-                commands::cmd_sim("start", Some(amount), target, m).await
+                commands::cmd_sim("start", amount, target, m).await
             }
             Some(SimCmd::Status) => commands::cmd_sim("status", None, None, m).await,
             Some(SimCmd::Settle) => commands::cmd_sim("settle", None, None, m).await,
@@ -1006,6 +1010,12 @@ mod tests {
             vec!["stockwise", "tax", "india"],
             vec!["stockwise", "daemon", "intraday", "25000"],
             vec!["stockwise", "backtest", "TCS", "-s", "bb"],
+            vec!["stockwise", "backtest", "TCS", "-s", "bollinger"],
+            vec!["stockwise", "sim", "start"],
+            vec!["stockwise", "tax", "US"],
+            vec!["stockwise", "tax", "India"],
+            vec!["stockwise", "screen", "Growth"],
+            vec!["stockwise", "history", "TCS", "-p", "ytd"],
         ] {
             assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
         }

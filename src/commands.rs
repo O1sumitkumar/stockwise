@@ -2293,11 +2293,14 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
         let a_quotes = client.get_quote(&unique).await?;
         let mut triggered = Vec::new();
         for alert in &store.alerts {
-            let price = a_quotes
+            // No live price: never report it as triggered.
+            let Some(price) = a_quotes
                 .iter()
                 .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()))
                 .and_then(|q| q.regular_market_price)
-                .unwrap_or(0.0);
+            else {
+                continue;
+            };
             let hit = match alert.condition {
                 AlertCondition::Above => price >= alert.target,
                 AlertCondition::Below => price <= alert.target,
@@ -3846,11 +3849,16 @@ pub async fn cmd_rebalance(targets: &[(String, f64)], _market: Market) -> Result
     let mut total_value = 0.0;
     let mut holdings_value: Vec<(String, f64, f64)> = Vec::new(); // symbol, value, price
     for h in &portfolio.holdings {
-        let price = quotes
+        let Some(price) = quotes
             .iter()
             .find(|q| q.symbol.as_deref() == Some(&h.symbol))
             .and_then(|q| q.regular_market_price)
-            .unwrap_or(0.0);
+        else {
+            bail!(
+                "No live price for {} — fix or remove it before rebalancing",
+                h.symbol
+            );
+        };
         let value = h.shares * price;
         total_value += value;
         holdings_value.push((h.symbol.clone(), value, price));
@@ -6536,11 +6544,18 @@ pub async fn cmd_sim(
                 println!("  {}", "─".repeat(58).dimmed());
 
                 for trade in session.trades.iter_mut() {
-                    let current = quotes
+                    // Settling at a made-up price would write a fake result
+                    // into the track record; nothing is saved before this loop.
+                    let Some(current) = quotes
                         .iter()
                         .find(|q| q.symbol.as_deref() == Some(&trade.symbol))
                         .and_then(|q| q.regular_market_price)
-                        .unwrap_or(trade.entry_price);
+                    else {
+                        bail!(
+                            "No live price for {}; session not settled. Try again later.",
+                            trade.symbol
+                        );
+                    };
                     let is_long = trade.direction == "BUY";
                     let pnl = if is_long {
                         (current - trade.entry_price) * trade.qty as f64
@@ -7695,14 +7710,19 @@ pub async fn cmd_daemon(mode: &str, amount: Option<f64>, market: Market) -> Resu
                 let p_quotes = client.get_quote(&p_refs).await?;
                 let mut total_value = 0.0_f64;
                 let mut total_cost = 0.0_f64;
+                let mut unpriced = 0;
                 for h in &portfolio.holdings {
-                    let price = p_quotes
+                    match p_quotes
                         .iter()
                         .find(|q| q.symbol.as_deref() == Some(&h.symbol))
                         .and_then(|q| q.regular_market_price)
-                        .unwrap_or(0.0);
-                    total_value += h.shares * price;
-                    total_cost += h.shares * h.avg_cost;
+                    {
+                        Some(price) => {
+                            total_value += h.shares * price;
+                            total_cost += h.shares * h.avg_cost;
+                        }
+                        None => unpriced += 1,
+                    }
                 }
                 let pnl = total_value - total_cost;
                 let pnl_str = if pnl >= 0.0 {
@@ -7718,10 +7738,19 @@ pub async fn cmd_daemon(mode: &str, amount: Option<f64>, market: Market) -> Resu
                     portfolio.holdings.len()
                 );
 
-                // Wealth snapshot
-                let mut wealth = crate::wealth::WealthHistory::load()?;
-                wealth.add_snapshot(total_value, total_cost, portfolio.holdings.len());
-                wealth.save()?;
+                // Wealth snapshot — skipped when a price is missing, so the
+                // history never records a fake drop.
+                if unpriced == 0 {
+                    let mut wealth = crate::wealth::WealthHistory::load()?;
+                    wealth.add_snapshot(total_value, total_cost, portfolio.holdings.len());
+                    wealth.save()?;
+                } else {
+                    println!(
+                        "    {} {} holding(s) without a live price — wealth snapshot skipped.",
+                        "!".yellow(),
+                        unpriced
+                    );
+                }
             } else {
                 println!("    No portfolio holdings.");
             }
@@ -7737,11 +7766,13 @@ pub async fn cmd_daemon(mode: &str, amount: Option<f64>, market: Market) -> Resu
                 let a_quotes = client.get_quote(&unique).await?;
                 let mut triggered = 0;
                 for alert in &store.alerts {
-                    let price = a_quotes
+                    let Some(price) = a_quotes
                         .iter()
                         .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()))
                         .and_then(|q| q.regular_market_price)
-                        .unwrap_or(0.0);
+                    else {
+                        continue;
+                    };
                     let hit = match alert.condition {
                         crate::alerts::AlertCondition::Above => price >= alert.target,
                         crate::alerts::AlertCondition::Below => price <= alert.target,
@@ -7778,12 +7809,11 @@ pub async fn cmd_daemon(mode: &str, amount: Option<f64>, market: Market) -> Resu
                     .holdings
                     .iter()
                     .filter(|h| {
-                        let price = p_quotes
+                        p_quotes
                             .iter()
                             .find(|q| q.symbol.as_deref() == Some(&h.symbol))
                             .and_then(|q| q.regular_market_price)
-                            .unwrap_or(0.0);
-                        price < h.avg_cost
+                            .is_some_and(|price| price < h.avg_cost)
                     })
                     .collect();
                 if !losers.is_empty() {
@@ -7911,7 +7941,8 @@ pub async fn cmd_chart(symbol: &str, market: Market) -> Result<()> {
         let change = ((last / first) - 1.0) * 100.0;
         let min = closes.iter().cloned().fold(f64::INFINITY, f64::min);
         let max = closes.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let vol = technical::annualized_volatility(&closes);
+        let vol =
+            technical::annualized_volatility_with(&closes, technical::periods_per_year(interval));
 
         let change_str = if change >= 0.0 {
             format!("{:+.2}%", change).green().bold().to_string()

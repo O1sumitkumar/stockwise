@@ -553,6 +553,8 @@ impl YahooClient {
     }
 
     pub async fn get_chart(&self, symbol: &str, range: &str, interval: &str) -> Result<ChartData> {
+        // Yahoo has no "1w" range; StockWise accepts it as an alias for 5 days.
+        let range = if range == "1w" { "5d" } else { range };
         let url = build_url(
             "https://query1.finance.yahoo.com/v8/finance/chart",
             Some(symbol),

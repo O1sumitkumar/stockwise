@@ -57,7 +57,9 @@ pub fn load_from<T: DeserializeOwned + Default>(path: &Path) -> Result<T> {
 /// Unix) — used for broker credentials.
 pub fn save_to<T: Serialize>(path: &Path, value: &T, private: bool) -> Result<()> {
     let data = serde_json::to_string_pretty(value)?;
-    let tmp = path.with_extension("json.tmp");
+    // Per-process temp name so a concurrent writer (e.g. the daemon) can't
+    // rename our half-written file or delete it from under us.
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     // A leftover temp file would keep its old permissions on reopen.
     let _ = std::fs::remove_file(&tmp);
 
@@ -136,7 +138,12 @@ mod tests {
         };
         save_to(&path, &doc, false).unwrap();
         assert_eq!(load_from::<Doc>(&path).unwrap(), doc);
-        assert!(!path.with_extension("json.tmp").exists());
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
     }
 
     #[test]

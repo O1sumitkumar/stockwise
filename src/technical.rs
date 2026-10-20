@@ -232,9 +232,14 @@ pub fn xirr(cashflows: &[(f64, f64)]) -> Option<f64> {
 
 /// Bars per year for a Yahoo chart interval.
 pub fn periods_per_year(interval: &str) -> f64 {
+    // Intraday bars assume a 6.25-hour (NSE) session.
     match interval {
         "1wk" => 52.0,
         "1mo" => 12.0,
+        "1h" | "60m" => 252.0 * 6.25,
+        "30m" => 252.0 * 12.5,
+        "15m" => 252.0 * 25.0,
+        "5m" => 252.0 * 75.0,
         _ => 252.0,
     }
 }

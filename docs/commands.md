@@ -15,7 +15,8 @@ Other environment variables: `STOCKWISE_HOME` (data directory),
 `OLLAMA_HOST` (AI). `NO_COLOR` disables colour; colour is also off when output
 is piped.
 
-**Periods** (`-p`): `1d`, `5d`, `1w`, `1mo`, `3mo`, `6mo`, `1y`, `2y`, `5y`, `10y`, `max`.
+**Periods** (`-p`): `1d`, `5d`, `1w` (same as `5d`), `1mo`, `3mo`, `6mo`, `ytd`, `1y`, `2y`, `5y`, `10y`, `max`.
+Value names (`screen growth`, `tax in`, `-s macd`) are case-insensitive.
 
 **Exit codes**: `0` success, `1` runtime error (unknown symbol, no data,
 network), `2` invalid arguments.
@@ -85,7 +86,7 @@ network), `2` invalid arguments.
 | `longterm [MONTHLY_BUDGET]` | 6-pillar scoring, Monte Carlo, SIP allocation |
 | `daemon intraday [CAPITAL]` | Paper-trading loop, 9:00–15:30 IST: scan, enter, trail stops every 60s, book half at T1, square off 15:15, settle into `sim` history. **Never sends broker orders** |
 | `daemon longterm` | Post-market scan: scores, portfolio check, alerts, tax-harvest ideas |
-| `sim start <CAPITAL> [TARGET%]` | Start a paper session with the bot's picks |
+| `sim start [CAPITAL] [TARGET%]` | Start a paper session with the bot's picks (default ₹25,000, 2%) |
 | `sim status` / `settle` / `history` | Live P&L / close at current prices / record + confidence rating |
 | `sim reset [--yes]` | Delete simulator history after confirmation (a timestamped backup is kept) |
 | `report <intraday\|longterm\|portfolio\|SYMBOL>` | AI report via local Ollama |
