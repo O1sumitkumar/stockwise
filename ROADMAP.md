@@ -22,30 +22,61 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - Daemon workers, paper-trading simulator, Angel One live trading
 - Broker import (Kite, INDmoney, CSV), Redis cache, braille charts
 
-## 🛠️ Now — distribution & scripting (0.3.x)
+## 🛠️ Now — distribution, scripting & correctness (0.3.x)
 
+**Install anywhere**
 - 📋 Homebrew tap — `brew install iamsaquib8/tap/stockwise`
-- 📋 `--json` on more commands (`portfolio`, `technical`, `risk`, `backtest`)
+- 📋 Scoop / winget manifests for Windows; AUR package for Arch
+- 📋 Man page (`stockwise.1`) generated from the CLI definition
+
+**Scripting**
+- 📋 `--json` on more commands (`portfolio`, `technical`, `risk`, `backtest`, `screen`)
 - 📋 Config file (`~/.config/stockwise/config.toml`) for market, model, and defaults
+- 📋 `--csv` output for tables, for spreadsheets
+
+**Correctness**
 - 📋 Daemon resilience — survive network blips, square off on Ctrl+C, IST clock + exchange holidays
 - 📋 Lot-level holdings with purchase dates, for accurate LTCG/STCG after imports
+- 📋 Portfolio XIRR (money-weighted return) from lots
+- 📋 `sim settle` from intraday bars (did the stop or target hit first?) instead of the closing price
+- 📋 Intraday plans capped at total capital across positions
 
-## 📋 Next — brokers & alerts (0.4)
+## 📋 Next — India depth, brokers & alerts (0.4)
 
-- 📋 Native Zerodha Kite and Upstox brokers (beyond CSV import)
-- 📋 Named portfolios
+**Brokers & data in**
+- 📋 Native brokers: Zerodha Kite, Upstox, Dhan, Fyers — read-only holdings first; orders
+  through the same preview → confirm flow as Angel One
+- 📋 CAS import (CAMS / KFintech consolidated statements) for stocks + mutual funds
+- 📋 Groww and Upstox CSV import
+- 📋 Corporate actions — splits, bonuses, dividends adjust cost basis automatically
+
+**Mutual funds & India specifics**
+- 📋 Mutual funds via AMFI NAVs — `mf search`, `mf nav`, `mf sip` with XIRR
+- 📋 NSE holiday calendar and an IST market clock for every time-aware command
+- 📋 GTT / stop-loss orders with the same safety flow
+
+**Portfolio & alerts**
+- 📋 Named portfolios (`--portfolio long-term`)
 - 📋 Secure credential storage via the OS keyring (no plaintext broker secrets)
-- 📋 Daemon notifications — Telegram, Slack, and email on entries/exits/alerts
-- 📋 Optional cloud AI providers (OpenAI, Anthropic, Gemini) alongside Ollama
+- 📋 `alert watch` — a lightweight loop that checks alerts during market hours
+- 📋 Notifications — Telegram, Slack, Discord, email, and desktop, for alerts and daemon events
+
+**AI**
+- 📋 Optional cloud AI providers (OpenAI, Anthropic, Gemini) alongside Ollama, strictly opt-in
 
 ## 💡 Later — depth (0.5+)
 
-- 💡 Interactive TUI dashboard (ratatui) — live quotes, positions, P&L
-- 💡 Portfolio-level and walk-forward backtesting
-- 💡 Pluggable strategy system for `backtest` and the intraday bot
-- 💡 Crypto and forex symbols
-- 💡 Mutual-fund / ETF screening; options-chain greeks
-- 💡 Web/REST mode for remote dashboards
+- 💡 Interactive TUI dashboard (ratatui) — live quotes, positions, P&L, alerts
+- 💡 Portfolio-level and walk-forward backtesting with Indian costs (STT, brokerage, slippage)
+- 💡 Pluggable strategy system for `backtest` and the intraday bot (TOML rules or WASM)
+- 💡 F&O: option chains, greeks, IV, PCR, max pain
+- 💡 Crypto and forex as first-class markets (quotes already work: `BTC-USD`, `USDINR=X`)
+- 💡 Mutual-fund / ETF screening and overlap analysis
+- 💡 Mixed-currency portfolios with INR/USD conversion
+- 💡 Data-provider abstraction (official NSE feeds, Alpha Vantage, Polygon) beyond Yahoo
+- 💡 Web/REST mode for remote dashboards; Prometheus metrics for the daemon
+- 💡 Docker image and Nix flake
+- 💡 Hindi localization
 
 ## Non-goals
 
