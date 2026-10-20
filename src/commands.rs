@@ -34,15 +34,43 @@ fn resolve_symbols(symbols: &[String], market: Market) -> Vec<String> {
         .collect()
 }
 
-pub async fn cmd_quote(symbols: &[String], market: Market) -> Result<()> {
+pub async fn cmd_quote(symbols: &[String], market: Market, json: bool) -> Result<()> {
     let resolved = resolve_symbols(symbols, market);
     let client = YahooClient::new().await?;
     let sym_refs: Vec<&str> = resolved.iter().map(|s| s.as_str()).collect();
     let quotes = client.get_quote(&sym_refs).await?;
 
+    // Yahoo silently drops unknown symbols; name them instead.
+    let missing: Vec<&str> = resolved
+        .iter()
+        .filter(|r| {
+            !quotes.iter().any(|q| {
+                q.symbol
+                    .as_deref()
+                    .is_some_and(|s| s.eq_ignore_ascii_case(r))
+            })
+        })
+        .map(|s| s.as_str())
+        .collect();
+    let missing_err = || {
+        anyhow::anyhow!(
+            "No quote for {}{}",
+            missing.join(", "),
+            market::not_found_hint(market)
+        )
+    };
+
     if quotes.is_empty() {
-        println!("{}", "No results found. Check the symbol(s).".red());
-        return Ok(());
+        return Err(missing_err());
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&quotes)?);
+        return if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(missing_err())
+        };
     }
 
     for q in &quotes {
@@ -120,7 +148,11 @@ pub async fn cmd_quote(symbols: &[String], market: Market) -> Result<()> {
         }
     }
     println!();
-    Ok(())
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(missing_err())
+    }
 }
 
 pub async fn cmd_analyze(symbol: &str, market: Market) -> Result<()> {
@@ -260,7 +292,7 @@ pub async fn cmd_analyze(symbol: &str, market: Market) -> Result<()> {
 
     // AI-powered analysis (if Ollama available)
     let mut ai = crate::ai::AiClient::connect().await;
-    if ai.is_available().await {
+    if ai.auto_available().await {
         print_section("Ollama AI Analysis");
         let stock_data = crate::ai::StockData::from_quote(q);
         match ai.analyze_stock(&stock_data).await {
@@ -327,8 +359,7 @@ pub async fn cmd_technical(symbol: &str, period: &str, market: Market) -> Result
         .unwrap_or_default();
 
     if closes.len() < 30 {
-        println!("{}", "Not enough data for technical analysis".red());
-        return Ok(());
+        bail!("Not enough price data for technical analysis — try a longer period, e.g. -p 6mo");
     }
 
     let current = *closes.last().unwrap();
@@ -532,7 +563,7 @@ pub async fn cmd_technical(symbol: &str, period: &str, market: Market) -> Result
 
     // AI technical interpretation
     let mut ai = crate::ai::AiClient::connect().await;
-    if ai.is_available().await {
+    if ai.auto_available().await {
         let rsi_val: String =
             technical::rsi(&closes, 14).map_or("N/A".into(), |r| format!("{:.0}", r));
         let macd_val: String = technical::macd(&closes).map_or("N/A".into(), |(_, _, h)| {
@@ -588,8 +619,11 @@ pub async fn cmd_compare(symbols: &[String], market: Market) -> Result<()> {
     let quotes = client.get_quote(&sym_refs).await?;
 
     if quotes.is_empty() {
-        println!("{}", "No results found.".red());
-        return Ok(());
+        bail!(
+            "No quotes for {}{}",
+            resolved.join(", "),
+            market::not_found_hint(market)
+        );
     }
 
     print_header("Stock Comparison");
@@ -727,7 +761,7 @@ pub async fn cmd_compare(symbols: &[String], market: Market) -> Result<()> {
 
     // AI comparison verdict
     let mut ai = crate::ai::AiClient::connect().await;
-    if ai.is_available().await {
+    if ai.auto_available().await {
         let mut data = String::new();
         for q in &quotes {
             let sym = q.symbol.as_deref().unwrap_or("?");
@@ -752,7 +786,7 @@ pub async fn cmd_compare(symbols: &[String], market: Market) -> Result<()> {
     Ok(())
 }
 
-pub async fn cmd_history(symbol: &str, period: &str, market: Market) -> Result<()> {
+pub async fn cmd_history(symbol: &str, period: &str, market: Market, json: bool) -> Result<()> {
     let resolved = market::resolve_symbol(symbol, market);
     let client = YahooClient::new().await?;
 
@@ -785,7 +819,45 @@ pub async fn cmd_history(symbol: &str, period: &str, market: Market) -> Result<(
         .unwrap_or_default();
 
     if timestamps.is_empty() {
-        println!("{}", "No historical data available.".red());
+        bail!(
+            "No price history for {}{}",
+            resolved,
+            market::not_found_hint(market)
+        );
+    }
+
+    if json {
+        let ind = chart.indicators.quote.first();
+        let series = |pick: fn(&crate::api::QuoteIndicator) -> Option<&Vec<Option<f64>>>| {
+            ind.and_then(pick).cloned().unwrap_or_default()
+        };
+        let (opens, highs, lows) = (
+            series(|q| q.open.as_ref()),
+            series(|q| q.high.as_ref()),
+            series(|q| q.low.as_ref()),
+        );
+        let bars: Vec<serde_json::Value> = timestamps
+            .iter()
+            .enumerate()
+            .map(|(i, &ts)| {
+                serde_json::json!({
+                    "time": chrono::DateTime::from_timestamp(ts, 0).map(|d| d.to_rfc3339()),
+                    "open": opens.get(i).copied().flatten(),
+                    "high": highs.get(i).copied().flatten(),
+                    "low": lows.get(i).copied().flatten(),
+                    "close": closes.get(i).copied().flatten(),
+                    "volume": volumes.get(i).copied().flatten(),
+                })
+            })
+            .collect();
+        let out = serde_json::json!({
+            "symbol": resolved,
+            "currency": cur,
+            "period": period,
+            "interval": interval,
+            "bars": bars,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
 
@@ -913,7 +985,7 @@ pub async fn cmd_portfolio(
                 portfolio.save()?;
                 println!("  {} Removed {} from portfolio", "✓".green(), resolved);
             } else {
-                println!("  {} {} not found in portfolio", "✗".red(), resolved);
+                bail!("{} is not in your portfolio", resolved);
             }
         }
         "show" | "list" => {
@@ -952,6 +1024,7 @@ pub async fn cmd_portfolio(
             let mut total_cost = 0.0;
             let mut total_value = 0.0;
 
+            let mut unpriced: Vec<String> = Vec::new();
             for holding in &portfolio.holdings {
                 let quote = quotes
                     .iter()
@@ -960,7 +1033,22 @@ pub async fn cmd_portfolio(
                 let cur = quote.and_then(|q| q.currency.as_deref());
                 let csym = market::currency_symbol(cur);
 
-                let price = current_price.unwrap_or(0.0);
+                // No live price (delisted, renamed, or a bad symbol): show N/A
+                // and leave it out of the totals rather than valuing it at 0.
+                let Some(price) = current_price else {
+                    println!(
+                        "  {:<12} {:>8.2} {:>10} {:>10} {:>12} {:>10} {:>10}",
+                        holding.symbol.yellow(),
+                        holding.shares,
+                        format_price(holding.avg_cost, cur),
+                        "N/A",
+                        "N/A",
+                        "—",
+                        "—",
+                    );
+                    unpriced.push(holding.symbol.clone());
+                    continue;
+                };
                 let value = holding.shares * price;
                 let cost_basis = holding.shares * holding.avg_cost;
                 let pnl = value - cost_basis;
@@ -1034,6 +1122,13 @@ pub async fn cmd_portfolio(
                 total_pnl_str,
                 total_pnl_pct_str,
             );
+            if !unpriced.is_empty() {
+                println!(
+                    "\n  {} No live price for {} — excluded from totals. Check the symbol with `stockwise search`.",
+                    "!".yellow(),
+                    unpriced.join(", ")
+                );
+            }
 
             // Allocation chart
             if portfolio.holdings.len() > 1 {
@@ -1056,16 +1151,16 @@ pub async fn cmd_portfolio(
             }
             println!();
         }
-        _ => {
-            println!("  Unknown portfolio action: {}", action);
-            println!("  Available: add, remove, show");
-        }
+        _ => bail!(
+            "Unknown portfolio action '{}'. Use add, remove, or show",
+            action
+        ),
     }
 
     Ok(())
 }
 
-pub async fn cmd_markets(market: Market) -> Result<()> {
+pub async fn cmd_markets(market: Market, json: bool) -> Result<()> {
     let client = YahooClient::new().await?;
 
     let sections: Vec<(&str, &[(&str, &str)])> = match market {
@@ -1079,9 +1174,31 @@ pub async fn cmd_markets(market: Market) -> Result<()> {
         ],
     };
 
+    let mut rows = Vec::new();
     for (title, indices) in &sections {
         let symbols: Vec<&str> = indices.iter().map(|(sym, _)| *sym).collect();
         let quotes = client.get_quote(&symbols).await?;
+
+        if json {
+            for q in &quotes {
+                let q_sym = q.symbol.as_deref().unwrap_or("");
+                let label = indices
+                    .iter()
+                    .find(|(sym, _)| *sym == q_sym)
+                    .map(|(_, name)| *name)
+                    .unwrap_or(q_sym);
+                rows.push(serde_json::json!({
+                    "region": title,
+                    "symbol": q_sym,
+                    "name": label,
+                    "price": q.regular_market_price,
+                    "change": q.regular_market_change,
+                    "change_percent": q.regular_market_change_percent,
+                    "currency": q.currency,
+                }));
+            }
+            continue;
+        }
 
         print_header(title);
 
@@ -1108,6 +1225,10 @@ pub async fn cmd_markets(market: Market) -> Result<()> {
         }
     }
 
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
     println!();
     Ok(())
 }
@@ -1196,9 +1317,10 @@ pub async fn cmd_watchlist(action: &str, symbols: &[String], market: Market) -> 
             }
             println!();
         }
-        _ => {
-            println!("  Unknown action: {}. Available: add, remove, show", action);
-        }
+        _ => bail!(
+            "Unknown watch action '{}'. Use add, remove, or show",
+            action
+        ),
     }
     Ok(())
 }
@@ -1565,9 +1687,8 @@ pub async fn cmd_news(symbol: &str, market: Market) -> Result<()> {
 pub async fn cmd_risk(symbol: &str, period: &str, market: Market) -> Result<()> {
     let resolved = market::resolve_symbol(symbol, market);
     let client = YahooClient::new().await?;
-    let chart = client
-        .get_chart(&resolved, period, period_to_interval(period))
-        .await?;
+    // Always daily bars: every metric below annualizes with 252 trading days.
+    let chart = client.get_chart(&resolved, period, "1d").await?;
     let cur = chart.meta.as_ref().and_then(|m| m.currency.as_deref());
     let csym = market::currency_symbol(cur);
 
@@ -1580,8 +1701,7 @@ pub async fn cmd_risk(symbol: &str, period: &str, market: Market) -> Result<()> 
         .unwrap_or_default();
 
     if closes.len() < 30 {
-        println!("{}", "Not enough data for risk analysis".red());
-        return Ok(());
+        bail!("Not enough price data for risk analysis — try a longer period, e.g. -p 2y");
     }
 
     let current = *closes.last().unwrap();
@@ -1697,8 +1817,7 @@ pub async fn cmd_risk(symbol: &str, period: &str, market: Market) -> Result<()> 
 
 pub async fn cmd_correlate(symbols: &[String], market: Market) -> Result<()> {
     if symbols.len() < 2 {
-        println!("{}", "Need at least 2 symbols to correlate.".red());
-        return Ok(());
+        bail!("Need at least 2 symbols to correlate");
     }
     let resolved = resolve_symbols(symbols, market);
     let client = YahooClient::new().await?;
@@ -1822,9 +1941,7 @@ pub async fn cmd_export(what: &str, _market: Market) -> Result<()> {
             std::fs::write(path, &csv)?;
             println!("  {} Exported watchlist to {}", "✓".green(), path.cyan());
         }
-        _ => {
-            println!("  Unknown: {}. Available: portfolio, watchlist", what);
-        }
+        _ => bail!("Unknown export '{}'. Use portfolio or watchlist", what),
     }
     Ok(())
 }
@@ -1870,7 +1987,7 @@ pub async fn cmd_alert(
                 store.save()?;
                 println!("  {} Removed alert #{}", "✓".green(), idx);
             } else {
-                println!("  {} Invalid index", "✗".red());
+                bail!("No alert #{} — see `stockwise alert list`", idx);
             }
         }
         "check" => {
@@ -1887,11 +2004,18 @@ pub async fn cmd_alert(
             print_header("Alert Check");
             let mut triggered = 0;
             for alert in &store.alerts {
-                let price = quotes
+                let Some(price) = quotes
                     .iter()
                     .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()))
                     .and_then(|q| q.regular_market_price)
-                    .unwrap_or(0.0);
+                else {
+                    println!(
+                        "  {} {} — no live price, skipped",
+                        "?".yellow(),
+                        alert.symbol.cyan()
+                    );
+                    continue;
+                };
                 let cur = quotes
                     .iter()
                     .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()))
@@ -1943,12 +2067,10 @@ pub async fn cmd_alert(
             }
             println!();
         }
-        _ => {
-            println!(
-                "  Unknown action: {}. Available: add, remove, check, list",
-                action
-            );
-        }
+        _ => bail!(
+            "Unknown alert action '{}'. Use add, remove, check, or list",
+            action
+        ),
     }
     Ok(())
 }
@@ -1978,8 +2100,12 @@ pub async fn cmd_screen(category: &str, market: Market) -> Result<()> {
             ("Momentum Leaders (top daily gainers)".into(), s)
         }
         "bluechip" => ("Blue Chip (Market Cap > $100B / ₹5L Cr)".into(),
-            quotes.iter().filter(|q| q.market_cap.is_some_and(|mc| mc > 100_000_000_000.0)).collect()),
-        _ => { println!("  Unknown screen: {}. Available: {}", category, market::SCREENER_CATEGORIES.join(", ")); return Ok(()); }
+            // $100B for USD listings, ₹5L Cr (5e12) for INR listings.
+            quotes.iter().filter(|q| {
+                let floor = if market::is_inr(q.currency.as_deref()) { 5e12 } else { 1e11 };
+                q.market_cap.is_some_and(|mc| mc > floor)
+            }).collect()),
+        _ => bail!("Unknown screen '{}'. Use one of: {}", category, market::SCREENER_CATEGORIES.join(", ")),
     };
 
     if category != "momentum" {
@@ -2030,7 +2156,7 @@ pub async fn cmd_screen(category: &str, market: Market) -> Result<()> {
 
     // AI screen analysis
     let mut ai = crate::ai::AiClient::connect().await;
-    if ai.is_available().await && !filtered.is_empty() {
+    if ai.auto_available().await && !filtered.is_empty() {
         let mut data = format!("Screen: {}\n", category);
         for q in filtered.iter().take(8) {
             let sym = q.symbol.as_deref().unwrap_or("?");
@@ -2067,8 +2193,14 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
 
     print_header(&format!("Dashboard — {}", market_title));
     print_section("Market Indices");
-    for (i, q) in idx_quotes.iter().enumerate() {
-        let label = indices.get(i).map(|(_, n)| *n).unwrap_or("???");
+    for q in &idx_quotes {
+        // Match by symbol: Yahoo may reorder or drop symbols.
+        let q_sym = q.symbol.as_deref().unwrap_or("");
+        let label = indices
+            .iter()
+            .find(|(sym, _)| *sym == q_sym)
+            .map(|(_, n)| *n)
+            .unwrap_or(q_sym);
         let cur = q.currency.as_deref();
         println!(
             "  {:<16} {}  {}",
@@ -2093,13 +2225,15 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
         let mut total_cost = 0.0_f64;
         let mut total_value = 0.0_f64;
         for h in &portfolio.holdings {
-            let price = p_quotes
+            // Skip holdings without a live price instead of valuing them at 0.
+            if let Some(price) = p_quotes
                 .iter()
                 .find(|q| q.symbol.as_deref() == Some(&h.symbol))
                 .and_then(|q| q.regular_market_price)
-                .unwrap_or(0.0);
-            total_cost += h.shares * h.avg_cost;
-            total_value += h.shares * price;
+            {
+                total_cost += h.shares * h.avg_cost;
+                total_value += h.shares * price;
+            }
         }
         let pnl = total_value - total_cost;
         let pnl_pct = if total_cost > 0.0 {
@@ -2183,17 +2317,30 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
         }
     }
     println!();
+    if portfolio.holdings.is_empty() && wl.symbols.is_empty() && store.alerts.is_empty() {
+        print_section("Get started");
+        println!(
+            "  stockwise portfolio add TCS 10 3500     track a holding (symbol, shares, cost)"
+        );
+        println!("  stockwise import kite holdings.csv      or import from your broker");
+        println!("  stockwise watch add INFY HDFCBANK       watch a few stocks");
+        println!("  stockwise alert add RELIANCE below 1200 get alerted on a price level");
+        println!();
+    }
     Ok(())
 }
 
 // ── 11. Search ──
 
-pub async fn cmd_search(query: &str) -> Result<()> {
+pub async fn cmd_search(query: &str, json: bool) -> Result<()> {
     let client = YahooClient::new().await?;
     let results = client.search(query).await?;
-    if results.is_empty() {
-        println!("  {}", "No results found.".dimmed());
+    if json {
+        println!("{}", serde_json::to_string_pretty(&results)?);
         return Ok(());
+    }
+    if results.is_empty() {
+        bail!("No tickers match '{}'", query);
     }
     print_header(&format!("Search: {}", query));
     println!(
@@ -2494,17 +2641,12 @@ pub async fn cmd_intraday(amount: f64, target_pct: f64, market: Market) -> Resul
 pub async fn cmd_report(what: &str, market: Market) -> Result<()> {
     let mut ai = crate::ai::AiClient::connect().await;
     if !ai.is_available().await {
-        println!(
-            "  {} Ollama is not running. Start it with: {}",
-            "✗".red(),
-            "ollama serve".cyan()
+        bail!(
+            "Reports need a local AI model, but Ollama is not reachable. Install it from \
+             https://ollama.com, then run `ollama serve` and `ollama pull {}` \
+             (set STOCKWISE_MODEL to use another model, OLLAMA_HOST for a remote server).",
+            ai.model()
         );
-        println!(
-            "  {} Reports need a local AI model. Set model: {}",
-            "→".dimmed(),
-            "STOCKWISE_MODEL=gemma3:4b".cyan()
-        );
-        return Ok(());
     }
 
     let client = YahooClient::new().await?;
@@ -2701,13 +2843,10 @@ pub async fn cmd_backtest(
     let result = backtest::run_backtest(strategy, &closes, &highs, &lows, &volumes);
     let result = match result {
         Some(r) => r,
-        None => {
-            println!(
-                "  Unknown strategy: {}. Available: rsi, macd, sma, bb, vwap, mr",
-                strategy
-            );
-            return Ok(());
-        }
+        None => bail!(
+            "Unknown strategy '{}'. Use rsi, macd, sma, bb, vwap, or mr",
+            strategy
+        ),
     };
 
     print_header(&format!(
@@ -2804,7 +2943,7 @@ pub async fn cmd_backtest(
     }
     // AI backtest interpretation
     let mut ai = crate::ai::AiClient::connect().await;
-    if ai.is_available().await {
+    if ai.auto_available().await {
         let data = format!(
             "Strategy: {}, Period: {}, Return: {:.2}%, Buy&Hold: {:.2}%, Win rate: {:.0}%, Trades: {}, Max DD: {:.1}%, Sharpe: {}",
             strategy,
@@ -2843,54 +2982,39 @@ pub async fn cmd_sip(symbol: &str, amount: f64, period: &str, market: Market) ->
     let cur = chart.meta.as_ref().and_then(|m| m.currency.as_deref());
     let csym = market::currency_symbol(cur);
 
-    let timestamps = chart.timestamp.unwrap_or_default();
+    // Monthly bars; null bars (halts) are dropped.
     let closes: Vec<f64> = chart
         .indicators
         .quote
         .first()
         .and_then(|q| q.close.as_ref())
-        .map(|c| c.iter().filter_map(|v| *v).collect())
+        .map(|c| c.iter().filter_map(|v| *v).filter(|p| *p > 0.0).collect())
         .unwrap_or_default();
-    let n = timestamps.len().min(closes.len());
+    let n = closes.len();
 
     if n < 2 {
-        println!("{}", "Not enough data.".red());
-        return Ok(());
+        bail!("Not enough price data — try a longer period with -p");
     }
 
     let mut total_invested = 0.0;
     let mut total_units = 0.0;
     let mut value_history = Vec::new();
     let mut invested_history = Vec::new();
+    let mut cashflows = Vec::new();
 
-    for i in 0..n {
-        let price = closes[i];
-        if price <= 0.0 {
-            continue; // skip halt/delist bars with no valid price
-        }
-        let units = amount / price;
-        total_units += units;
+    for (i, &price) in closes.iter().enumerate() {
+        total_units += amount / price;
         total_invested += amount;
-        let current_value = total_units * closes[i];
-        value_history.push(current_value);
+        value_history.push(total_units * price);
         invested_history.push(total_invested);
-    }
-
-    if total_units <= 0.0 || total_invested <= 0.0 {
-        println!(
-            "{}",
-            "Not enough valid price data for SIP simulation.".red()
-        );
-        return Ok(());
+        cashflows.push((i as f64 / 12.0, -amount));
     }
 
     let final_value = total_units * closes[n - 1];
     let total_return = ((final_value / total_invested) - 1.0) * 100.0;
-    let xirr_approx = if n > 1 {
-        total_return / (n as f64 / 12.0)
-    } else {
-        0.0
-    }; // annualized approx
+    // XIRR: each instalment earns only from its own date, not the whole period.
+    cashflows.push(((n - 1) as f64 / 12.0, final_value));
+    let xirr = technical::xirr(&cashflows).map(|r| r * 100.0);
 
     print_header(&format!(
         "SIP Simulator: {} — {}{}/month for {}",
@@ -2934,7 +3058,10 @@ pub async fn cmd_sip(symbol: &str, amount: f64, period: &str, market: Market) ->
         format!("{:.2}%", total_return).red().to_string()
     };
     print_kv("Total Return", &ret_str);
-    print_kv("Annualized (approx)", &format!("{:.2}%", xirr_approx));
+    print_kv(
+        "Annualized (XIRR)",
+        &xirr.map_or("N/A".to_string(), |r| format!("{:.2}%", r)),
+    );
     print_kv("Total Units", &format!("{:.4}", total_units));
     print_kv(
         "Avg Cost/Unit",
@@ -2950,9 +3077,7 @@ pub async fn cmd_sip(symbol: &str, amount: f64, period: &str, market: Market) ->
 pub async fn cmd_forecast(symbol: &str, days: usize, period: &str, market: Market) -> Result<()> {
     let resolved = market::resolve_symbol(symbol, market);
     let client = YahooClient::new().await?;
-    let chart = client
-        .get_chart(&resolved, period, period_to_interval(period))
-        .await?;
+    let chart = client.get_chart(&resolved, period, "1d").await?;
     let cur = chart.meta.as_ref().and_then(|m| m.currency.as_deref());
     let csym = market::currency_symbol(cur);
 
@@ -2964,8 +3089,7 @@ pub async fn cmd_forecast(symbol: &str, days: usize, period: &str, market: Marke
         .map(|c| c.iter().filter_map(|v| *v).collect())
         .unwrap_or_default();
     if closes.len() < 30 {
-        println!("{}", "Not enough data.".red());
-        return Ok(());
+        bail!("Not enough price data — try a longer period with -p");
     }
 
     let n = closes.len();
@@ -3109,9 +3233,10 @@ pub async fn cmd_multitimeframe(symbol: &str, market: Market) -> Result<()> {
         }
 
         let ret = (closes.last().unwrap() / closes[0] - 1.0) * 100.0;
-        let vol = technical::annualized_volatility(&closes)
-            .map(|v| format!("{:.1}%", v * 100.0))
-            .unwrap_or("—".into());
+        let vol =
+            technical::annualized_volatility_with(&closes, technical::periods_per_year(interval))
+                .map(|v| format!("{:.1}%", v * 100.0))
+                .unwrap_or("—".into());
         let rsi = technical::rsi(&closes, 14)
             .map(|r| format!("{:.0}", r))
             .unwrap_or("—".into());
@@ -3541,7 +3666,10 @@ pub async fn cmd_harvest(_market: Market) -> Result<()> {
         let quote = quotes
             .iter()
             .find(|q| q.symbol.as_deref() == Some(&h.symbol));
-        let price = quote.and_then(|q| q.regular_market_price).unwrap_or(0.0);
+        // Never suggest selling something just because its price is missing.
+        let Some(price) = quote.and_then(|q| q.regular_market_price) else {
+            continue;
+        };
         let cur = quote.and_then(|q| q.currency.as_deref());
         let csym = market::currency_symbol(cur);
         let pnl = (price - h.avg_cost) * h.shares;
@@ -3608,14 +3736,27 @@ pub async fn cmd_wealth(_market: Market) -> Result<()> {
 
     let mut total_value = 0.0;
     let mut total_cost = 0.0;
+    let mut unpriced = Vec::new();
     for h in &portfolio.holdings {
-        let price = quotes
+        match quotes
             .iter()
             .find(|q| q.symbol.as_deref() == Some(&h.symbol))
             .and_then(|q| q.regular_market_price)
-            .unwrap_or(0.0);
-        total_value += h.shares * price;
-        total_cost += h.shares * h.avg_cost;
+        {
+            Some(price) => {
+                total_value += h.shares * price;
+                total_cost += h.shares * h.avg_cost;
+            }
+            None => unpriced.push(h.symbol.as_str()),
+        }
+    }
+    // A snapshot with a holding valued at 0 would show as a fake crash in the
+    // history forever, so refuse to save one.
+    if !unpriced.is_empty() {
+        bail!(
+            "No live price for {}; snapshot not saved. Fix or remove the holding, then retry.",
+            unpriced.join(", ")
+        );
     }
 
     // Save today's snapshot
@@ -4106,6 +4247,24 @@ pub async fn cmd_longterm(amount: Option<f64>, market: Market) -> Result<()> {
 
 // ── Tax Calculator ──
 
+/// Label for the tax year containing `today`. India runs April–March
+/// ("FY 2026-27"); the UK year starts on 6 April; the US uses the calendar year.
+fn tax_year_label(country: &str, today: chrono::NaiveDate) -> String {
+    use chrono::Datelike;
+    let (y, m, d) = (today.year(), today.month(), today.day());
+    match country {
+        "us" | "usa" => format!("Tax year {}", y),
+        "uk" => {
+            let start = if (m, d) >= (4, 6) { y } else { y - 1 };
+            format!("Tax year {}-{:02}", start, (start + 1) % 100)
+        }
+        _ => {
+            let start = if m >= 4 { y } else { y - 1 };
+            format!("FY {}-{:02}", start, (start + 1) % 100)
+        }
+    }
+}
+
 pub async fn cmd_tax(country: &str, _market: Market) -> Result<()> {
     let portfolio = Portfolio::load()?;
     if portfolio.holdings.is_empty() {
@@ -4132,13 +4291,14 @@ pub async fn cmd_tax(country: &str, _market: Market) -> Result<()> {
             "in" | "india" => ("India", 20.0, 12.5, 125000.0, 12, "₹"),
             "us" | "usa" => ("United States", 37.0, 20.0, 0.0, 12, "$"),
             "uk" => ("United Kingdom", 20.0, 20.0, 3000.0, 12, "£"),
-            _ => {
-                println!("  Supported countries: in (India), us (USA), uk (UK)");
-                return Ok(());
-            }
+            _ => bail!("Unsupported country '{}'. Use in, us, or uk", country),
         };
 
-    print_header(&format!("Tax Report — {} (FY 2025-26)", country_name));
+    print_header(&format!(
+        "Tax Report — {} ({})",
+        country_name,
+        tax_year_label(country, chrono::Local::now().date_naive())
+    ));
 
     println!(
         "  {:<14} {:>10} {:>10} {:>12} {:>8} {:>8}",
@@ -4151,12 +4311,17 @@ pub async fn cmd_tax(country: &str, _market: Market) -> Result<()> {
     );
     println!("  {}", "─".repeat(68).dimmed());
 
+    let mut unpriced = Vec::new();
     for h in &portfolio.holdings {
-        let price = quotes
+        // A missing price must not count as a 100% capital loss.
+        let Some(price) = quotes
             .iter()
             .find(|q| q.symbol.as_deref() == Some(&h.symbol))
             .and_then(|q| q.regular_market_price)
-            .unwrap_or(0.0);
+        else {
+            unpriced.push(h.symbol.as_str());
+            continue;
+        };
         let cost = h.shares * h.avg_cost;
         let value = h.shares * price;
         let gain = value - cost;
@@ -4178,18 +4343,11 @@ pub async fn cmd_tax(country: &str, _market: Market) -> Result<()> {
         let hold_type = if is_longterm { "LTCG" } else { "STCG" };
         let tax_rate = if is_longterm { ltcg_rate } else { stcg_rate };
 
-        if gain >= 0.0 {
-            if is_longterm {
-                total_ltcg += gain;
-            } else {
-                total_stcg += gain;
-            }
-        } else {
-            if is_longterm {
-                total_ltcl += gain.abs();
-            } else {
-                total_stcl += gain.abs();
-            }
+        match (gain >= 0.0, is_longterm) {
+            (true, true) => total_ltcg += gain,
+            (true, false) => total_stcg += gain,
+            (false, true) => total_ltcl += gain.abs(),
+            (false, false) => total_stcl += gain.abs(),
         }
 
         let gain_str = if gain >= 0.0 {
@@ -4298,6 +4456,13 @@ pub async fn cmd_tax(country: &str, _market: Market) -> Result<()> {
             .italic()
     );
     println!();
+    if !unpriced.is_empty() {
+        println!(
+            "  {} No live price for {} — excluded from this estimate.\n",
+            "!".yellow(),
+            unpriced.join(", ")
+        );
+    }
     Ok(())
 }
 
@@ -4306,9 +4471,8 @@ pub async fn cmd_tax(country: &str, _market: Market) -> Result<()> {
 pub async fn cmd_import(source: &str, file: &str, market: Market) -> Result<()> {
     let path = std::path::Path::new(file);
     if !path.exists() {
-        println!("  {} File not found: {}", "✗".red(), file);
         println!();
-        println!("  {} How to export:", "→".cyan());
+        println!("  {} How to export your holdings:", "→".cyan());
         match source {
             "kite" | "zerodha" => {
                 println!(
@@ -4336,14 +4500,14 @@ pub async fn cmd_import(source: &str, file: &str, market: Market) -> Result<()> 
                 println!("    Run: stockwise import csv <path-to-file.csv>");
             }
         }
-        return Ok(());
+        bail!("File not found: {}", file);
     }
 
-    let content = std::fs::read_to_string(path).context("Failed to read file")?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", file))?;
     let lines: Vec<&str> = content.lines().collect();
     if lines.len() < 2 {
-        println!("  {} File is empty or has no data rows.", "✗".red());
-        return Ok(());
+        bail!("{} is empty or has no data rows", file);
     }
 
     let header = lines[0].to_lowercase();
@@ -4374,10 +4538,10 @@ pub async fn cmd_import(source: &str, file: &str, market: Market) -> Result<()> 
             );
 
             if sym_col.is_none() || qty_col.is_none() || avg_col.is_none() {
-                println!("  {} Could not detect Kite CSV columns.", "✗".red());
-                println!("  Expected columns: Instrument, Qty., Avg. cost");
-                println!("  Found: {}", header);
-                return Ok(());
+                bail!(
+                    "Could not detect Kite CSV columns. Expected: Instrument, Qty., Avg. cost. Found: {}",
+                    header
+                );
             }
             let (si, qi, ai) = (sym_col.unwrap(), qty_col.unwrap(), avg_col.unwrap());
 
@@ -4450,10 +4614,10 @@ pub async fn cmd_import(source: &str, file: &str, market: Market) -> Result<()> 
             );
 
             if sym_col.is_none() || qty_col.is_none() || avg_col.is_none() {
-                println!("  {} Could not detect IndMoney CSV columns.", "✗".red());
-                println!("  Expected columns: Symbol/Stock Name, Quantity, Avg Buy Price");
-                println!("  Found: {}", header);
-                return Ok(());
+                bail!(
+                    "Could not detect IndMoney CSV columns. Expected: Symbol/Stock Name, Quantity, Avg Buy Price. Found: {}",
+                    header
+                );
             }
             let (si, qi, ai) = (sym_col.unwrap(), qty_col.unwrap(), avg_col.unwrap());
 
@@ -4530,10 +4694,10 @@ pub async fn cmd_import(source: &str, file: &str, market: Market) -> Result<()> 
             );
 
             if sym_col.is_none() || qty_col.is_none() || avg_col.is_none() {
-                println!("  {} Could not auto-detect CSV columns.", "✗".red());
-                println!("  Your CSV must have columns for: Symbol, Quantity, Average Price");
-                println!("  Found: {}", header);
-                return Ok(());
+                bail!(
+                    "Could not auto-detect CSV columns. Your CSV needs Symbol, Quantity and Average Price columns. Found: {}",
+                    header
+                );
             }
             let (si, qi, ai) = (sym_col.unwrap(), qty_col.unwrap(), avg_col.unwrap());
 
@@ -5145,8 +5309,7 @@ pub async fn cmd_support(symbol: &str, period: &str, market: Market) -> Result<(
         .map(|c| c.iter().filter_map(|v| *v).collect())
         .unwrap_or_default();
     if closes.len() < 5 {
-        println!("{}", "Not enough data.".red());
-        return Ok(());
+        bail!("Not enough price data — try a longer period with -p");
     }
 
     let current = *closes.last().unwrap();
@@ -5265,8 +5428,7 @@ pub async fn cmd_volume(symbol: &str, period: &str, market: Market) -> Result<()
         .unwrap_or_default();
     let n = closes.len().min(volumes.len());
     if n < 10 {
-        println!("{}", "Not enough data.".red());
-        return Ok(());
+        bail!("Not enough price data — try a longer period with -p");
     }
 
     print_header(&format!("Volume Analysis: {}", resolved));
@@ -5474,15 +5636,13 @@ pub async fn cmd_stoploss(
         .map(|c| c.iter().filter_map(|v| *v).collect())
         .unwrap_or_default();
     if closes.len() < 14 {
-        println!("{}", "Not enough data.".red());
-        return Ok(());
+        bail!("Not enough price data — try a longer period with -p");
     }
 
     let current = *closes.last().unwrap();
     let entry_price = entry.unwrap_or(current);
     if entry_price <= 0.0 {
-        println!("{}", "Entry price must be greater than zero.".red());
-        return Ok(());
+        bail!("Entry price must be greater than zero");
     }
     let atr = technical::atr(&highs, &lows, &closes, 14).unwrap_or(0.0);
 
@@ -5809,9 +5969,7 @@ pub async fn cmd_options(symbol: &str, period: &str, market: Market) -> Result<(
     }
 
     // Fetch 1mo data for realized vol
-    let chart = client
-        .get_chart(&resolved, period, period_to_interval(period))
-        .await?;
+    let chart = client.get_chart(&resolved, period, "1d").await?;
     let closes: Vec<f64> = chart
         .indicators
         .quote
@@ -5899,8 +6057,7 @@ pub async fn cmd_fibs(symbol: &str, period: &str, market: Market) -> Result<()> 
         .map(|c| c.iter().filter_map(|v| *v).collect())
         .unwrap_or_default();
     if closes.len() < 20 {
-        println!("{}", "Not enough data.".red());
-        return Ok(());
+        bail!("Not enough price data — try a longer period with -p");
     }
 
     let current = *closes.last().unwrap();
@@ -5942,6 +6099,171 @@ pub async fn cmd_fibs(symbol: &str, period: &str, market: Market) -> Result<()> 
 // ══════════════════════════════════════════════════════════
 // PAPER TRADING SIMULATOR
 // ══════════════════════════════════════════════════════════
+
+/// Clear the simulator history after confirmation. The old file is kept as a
+/// timestamped backup so a mistaken reset can be undone by hand.
+pub fn cmd_sim_reset(yes: bool) -> Result<()> {
+    let history = SimHistory::load()?;
+    if history.sessions.is_empty() {
+        println!("  Simulator history is already empty.\n");
+        return Ok(());
+    }
+    if !yes {
+        use std::io::{BufRead, IsTerminal, Write};
+        if !std::io::stdin().is_terminal() {
+            bail!("Refusing to delete simulator history without confirmation. Pass --yes.");
+        }
+        print!(
+            "  Delete {} simulator session(s)? Type {} to confirm: ",
+            history.sessions.len(),
+            "yes".bold()
+        );
+        std::io::stdout().flush()?;
+        let mut line = String::new();
+        std::io::stdin().lock().read_line(&mut line)?;
+        if line.trim() != "yes" {
+            println!("  Cancelled — nothing was deleted.\n");
+            return Ok(());
+        }
+    }
+    let path = crate::store::path("sim_history.json")?;
+    let backup = path.with_extension(format!(
+        "json.{}.bak",
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    ));
+    std::fs::copy(&path, &backup)
+        .with_context(|| format!("Could not back up {}", path.display()))?;
+    SimHistory::default().save()?;
+    println!(
+        "  {} Simulator history cleared. Backup: {}\n",
+        "✓".green(),
+        backup.display()
+    );
+    Ok(())
+}
+
+/// `stockwise doctor` — one screen that answers "is my setup working?".
+pub async fn cmd_doctor(market: Market) -> Result<()> {
+    let ok = |s: &str| format!("{} {}", "✓".green(), s);
+    let warn = |s: &str| format!("{} {}", "!".yellow(), s);
+    let bad = |s: &str| format!("{} {}", "✗".red(), s);
+
+    print_header(&format!("StockWise {} — doctor", env!("CARGO_PKG_VERSION")));
+
+    // Defaults
+    let market_src = if std::env::var_os("STOCKWISE_MARKET").is_some() {
+        "from STOCKWISE_MARKET"
+    } else {
+        "default; change with -m or STOCKWISE_MARKET"
+    };
+    let market_name = match market {
+        Market::In => "in (India, NSE)",
+        Market::Us => "us",
+    };
+    print_kv("Market", &format!("{} — {}", market_name, market_src));
+
+    // Data directory
+    match crate::store::data_dir() {
+        Ok(dir) => {
+            print_kv("Data directory", &ok(&dir.display().to_string()));
+            let files = [
+                "portfolio.json",
+                "watchlist.json",
+                "alerts.json",
+                "sim_history.json",
+                "wealth_history.json",
+            ];
+            let present: Vec<&str> = files
+                .iter()
+                .copied()
+                .filter(|f| dir.join(f).exists())
+                .collect();
+            print_kv(
+                "Data files",
+                &if present.is_empty() {
+                    "none yet (created on first use)".to_string()
+                } else {
+                    present.join(", ")
+                },
+            );
+        }
+        Err(e) => print_kv("Data directory", &bad(&format!("{:#}", e))),
+    }
+
+    // Market data
+    let started = std::time::Instant::now();
+    let yahoo = match YahooClient::new().await {
+        Ok(client) => client
+            .get_quote(&["^GSPC"])
+            .await
+            .map(|q| !q.is_empty())
+            .unwrap_or(false),
+        Err(_) => false,
+    };
+    print_kv(
+        "Yahoo Finance",
+        &if yahoo {
+            ok(&format!("reachable ({} ms)", started.elapsed().as_millis()))
+        } else {
+            bad("unreachable — check your internet connection or proxy")
+        },
+    );
+
+    // Cache
+    let redis = crate::api::connect_redis().await.is_some();
+    print_kv(
+        "Redis cache",
+        &if redis {
+            ok("connected")
+        } else {
+            "not used (optional; in-memory cache instead)"
+                .dimmed()
+                .to_string()
+        },
+    );
+
+    // AI
+    let ai = crate::ai::AiClient::connect().await;
+    print_kv(
+        "Ollama (AI)",
+        &match ai.has_model().await {
+            Some(true) => ok(&format!(
+                "model {} ready — use `report` or add --ai",
+                ai.model()
+            )),
+            Some(false) => warn(&format!(
+                "running, but model {} is not pulled — run `ollama pull {}`",
+                ai.model(),
+                ai.model()
+            )),
+            None => "not running (optional; needed for `report` and --ai)"
+                .dimmed()
+                .to_string(),
+        },
+    );
+
+    // Broker
+    let broker = match crate::angel::AngelConfig::load() {
+        Ok(c) if c.is_configured() => ok(&format!(
+            "configured for {}{}",
+            c.client_id,
+            c.max_order_value
+                .map(|v| format!(", max order ₹{:.0}", v))
+                .unwrap_or_default()
+        )),
+        Ok(_) => "not configured (optional; `trade setup` for live trading)"
+            .dimmed()
+            .to_string(),
+        Err(e) => warn(&format!("{:#}", e)),
+    };
+    print_kv("Angel One", &broker);
+    println!();
+
+    if !yahoo {
+        bail!("Market data is unreachable");
+    }
+    Ok(())
+}
 
 pub async fn cmd_sim(
     action: &str,
@@ -6451,11 +6773,7 @@ pub async fn cmd_sim(
             }
             println!();
         }
-        "reset" => {
-            SimHistory::default().save()?;
-            println!("  {} Simulation history cleared.", "✓".green());
-            println!();
-        }
+        "reset" => return cmd_sim_reset(false),
         _ => {
             println!();
             println!("  {} Paper Trading Simulator:", "→".cyan());
@@ -6646,9 +6964,7 @@ pub async fn cmd_deep(symbol: &str, period: &str, market: Market) -> Result<()> 
     }
 
     // ── 2. Technical Indicators ──
-    let chart = client
-        .get_chart(&resolved, period, period_to_interval(period))
-        .await?;
+    let chart = client.get_chart(&resolved, period, "1d").await?;
     let closes: Vec<f64> = chart
         .indicators
         .quote
@@ -6846,7 +7162,7 @@ pub async fn cmd_deep(symbol: &str, period: &str, market: Market) -> Result<()> 
 
     // ── 4. AI Analysis ──
     let mut ai = crate::ai::AiClient::connect().await;
-    if ai.is_available().await {
+    if ai.auto_available().await {
         print_section("AI Analysis (Ollama)");
         let stock_data = crate::ai::StockData::from_quote(q);
         match ai.analyze_stock(&stock_data).await {
@@ -8209,8 +8525,7 @@ pub async fn cmd_patterns(symbol: &str, period: &str, market: Market) -> Result<
         .min(lows.len())
         .min(closes.len());
     if n < 3 {
-        println!("{}", "Not enough data.".red());
-        return Ok(());
+        bail!("Not enough price data — try a longer period with -p");
     }
 
     print_header(&format!("Candlestick Patterns: {}", resolved));
@@ -8318,8 +8633,7 @@ pub async fn cmd_sectorcmp(sector1: &str, sector2: &str, market: Market) -> Resu
     let sym2 = find(sector2).context(format!("Sector '{}' not found", sector2))?;
     let quotes = client.get_quote(&[sym1, sym2]).await?;
     if quotes.len() < 2 {
-        println!("{}", "Could not fetch both sectors.".red());
-        return Ok(());
+        bail!("Could not fetch both sectors");
     }
 
     print_header(&format!("{} vs {}", sector1, sector2));
@@ -8433,8 +8747,7 @@ pub async fn cmd_whatif(symbol: &str, amount: f64, date_str: &str, market: Marke
         .filter_map(|(&ts, &c)| c.map(|p| (ts, p)))
         .collect();
     if series.is_empty() {
-        println!("{}", "No price data available for that range.".red());
-        return Ok(());
+        bail!("No price data available for that range");
     }
 
     // Find closest price to target date
@@ -8456,8 +8769,7 @@ pub async fn cmd_whatif(symbol: &str, amount: f64, date_str: &str, market: Marke
     let buy_price = series[best_idx].1;
     let current = series.last().map(|(_, p)| *p).unwrap_or(0.0);
     if buy_price <= 0.0 {
-        println!("{}", "Could not find price for that date.".red());
-        return Ok(());
+        bail!("Could not find a price for that date (use YYYY-MM-DD on or after the listing date)");
     }
 
     let shares = (amount / buy_price).floor();

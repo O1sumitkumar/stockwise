@@ -184,6 +184,12 @@ pub fn daily_returns(prices: &[f64]) -> Vec<f64> {
 
 /// Annualized volatility from daily prices
 pub fn annualized_volatility(prices: &[f64]) -> Option<f64> {
+    annualized_volatility_with(prices, 252.0)
+}
+
+/// Annualized volatility from prices sampled `periods_per_year` times a year
+/// (252 for daily bars, 52 weekly, 12 monthly).
+pub fn annualized_volatility_with(prices: &[f64], periods_per_year: f64) -> Option<f64> {
     let returns = daily_returns(prices);
     if returns.len() < 2 {
         return None;
@@ -191,7 +197,46 @@ pub fn annualized_volatility(prices: &[f64]) -> Option<f64> {
     let mean = returns.iter().sum::<f64>() / returns.len() as f64;
     let variance =
         returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (returns.len() - 1) as f64;
-    Some(variance.sqrt() * (252.0_f64).sqrt())
+    Some(variance.sqrt() * periods_per_year.sqrt())
+}
+
+/// Annualized internal rate of return (XIRR) of `cashflows`, given as
+/// `(time in years, amount)` with investments negative and the final value
+/// positive. Solved by bisection; `None` if there is no sign change.
+pub fn xirr(cashflows: &[(f64, f64)]) -> Option<f64> {
+    let npv = |r: f64| -> f64 {
+        cashflows
+            .iter()
+            .map(|&(t, cf)| cf / (1.0 + r).powf(t))
+            .sum()
+    };
+    let (mut lo, mut hi) = (-0.9999, 100.0);
+    let (f_lo, f_hi) = (npv(lo), npv(hi));
+    if !f_lo.is_finite() || !f_hi.is_finite() || f_lo.signum() == f_hi.signum() {
+        return None;
+    }
+    for _ in 0..200 {
+        let mid = (lo + hi) / 2.0;
+        let f_mid = npv(mid);
+        if f_mid.abs() < 1e-9 {
+            return Some(mid);
+        }
+        if f_mid.signum() == f_lo.signum() {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Some((lo + hi) / 2.0)
+}
+
+/// Bars per year for a Yahoo chart interval.
+pub fn periods_per_year(interval: &str) -> f64 {
+    match interval {
+        "1wk" => 52.0,
+        "1mo" => 12.0,
+        _ => 252.0,
+    }
 }
 
 /// Sharpe Ratio (annualized, assuming risk-free rate)
@@ -829,5 +874,33 @@ mod tests {
     #[test]
     fn test_find_swing_points_zero_lookback_is_none() {
         assert!(find_swing_points(&[], &[], 0).is_none());
+    }
+
+    #[test]
+    fn weekly_volatility_is_annualized_with_52_periods() {
+        // Same alternating ±1% moves: as daily bars vs weekly bars.
+        let prices: Vec<f64> = (0..60)
+            .map(|i| if i % 2 == 0 { 100.0 } else { 101.0 })
+            .collect();
+        let daily = annualized_volatility(&prices).unwrap();
+        let weekly = annualized_volatility_with(&prices, periods_per_year("1wk")).unwrap();
+        assert!((daily / weekly - (252.0_f64 / 52.0).sqrt()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn xirr_of_monthly_sip_matches_known_rate() {
+        // 60 monthly instalments of 100 into an asset growing 1% a month.
+        let mut flows: Vec<(f64, f64)> = (0..60).map(|i| (i as f64 / 12.0, -100.0)).collect();
+        let fv: f64 = (0..60).map(|i| 100.0 * 1.01_f64.powi(59 - i)).sum();
+        flows.push((59.0 / 12.0, fv));
+        let r = xirr(&flows).unwrap();
+        assert!((r - (1.01_f64.powi(12) - 1.0)).abs() < 1e-6, "{r}");
+    }
+
+    #[test]
+    fn xirr_lump_sum_doubling_in_one_year_is_100_percent() {
+        let r = xirr(&[(0.0, -100.0), (1.0, 200.0)]).unwrap();
+        assert!((r - 1.0).abs() < 1e-6);
+        assert!(xirr(&[(0.0, -100.0)]).is_none());
     }
 }

@@ -2,25 +2,43 @@ use clap::ValueEnum;
 
 #[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
 pub enum Market {
-    /// US stock market (default)
+    /// US stock market (NYSE/NASDAQ)
     #[value(alias = "US")]
     Us,
-    /// Indian stock market (NSE/BSE)
+    /// Indian stock market (NSE/BSE) — the default
     #[value(alias = "IN", alias = "india")]
     In,
 }
 
-/// Auto-append `.NS` for Indian market if no exchange suffix is present
+/// Normalise a user-typed symbol for Yahoo Finance.
+///
+/// In the Indian market a bare ticker gets the NSE suffix (`TCS` → `TCS.NS`).
+/// Symbols that already say where they trade are passed through untouched:
+/// an exchange suffix (`RELIANCE.BO`, `VOD.L`), an index (`^NSEI`), or a
+/// currency/futures pair (`USDINR=X`, `BTC-USD`).
 pub fn resolve_symbol(symbol: &str, market: Market) -> String {
-    let upper = symbol.to_uppercase();
+    let upper = symbol.trim().to_uppercase();
+    let explicit = upper.contains('.')
+        || upper.starts_with('^')
+        || upper.contains('=')
+        || upper.ends_with("-USD")
+        || upper.ends_with("-INR");
     match market {
         Market::Us => upper,
+        Market::In if explicit => upper,
+        Market::In => format!("{}.NS", upper),
+    }
+}
+
+/// Hint shown when a symbol is not found, pointing at the most common cause:
+/// a US ticker looked up in the default Indian market.
+pub fn not_found_hint(market: Market) -> &'static str {
+    match market {
         Market::In => {
-            if upper.ends_with(".NS") || upper.ends_with(".BO") {
-                upper
-            } else {
-                format!("{}.NS", upper)
-            }
+            " (Indian market is the default — for US stocks add `-m us`; use `stockwise search <name>` to find a ticker)"
+        }
+        Market::Us => {
+            " (use `stockwise search <name>` to find a ticker; Indian stocks need `-m in` or a .NS suffix)"
         }
     }
 }
@@ -102,7 +120,7 @@ pub const INDIA_POPULAR: &[&str] = &[
     "MARUTI.NS",
     "TITAN.NS",
     "SUNPHARMA.NS",
-    "TATAMOTORS.NS",
+    "TMPV.NS", // Tata Motors Passenger Vehicles; TATAMOTORS.NS no longer quotes after the demerger
     "BAJFINANCE.NS",
     "WIPRO.NS",
     "HCLTECH.NS",
@@ -153,6 +171,17 @@ mod tests {
         assert!(is_inr(Some("INR")));
         assert!(!is_inr(Some("USD")));
         assert!(!is_inr(None));
+    }
+
+    #[test]
+    fn test_resolve_symbol_india_passes_through_explicit_symbols() {
+        assert_eq!(resolve_symbol("^nsei", Market::In), "^NSEI");
+        assert_eq!(resolve_symbol("^GSPC", Market::In), "^GSPC");
+        assert_eq!(resolve_symbol("usdinr=x", Market::In), "USDINR=X");
+        assert_eq!(resolve_symbol("btc-usd", Market::In), "BTC-USD");
+        assert_eq!(resolve_symbol("vod.l", Market::In), "VOD.L");
+        assert_eq!(resolve_symbol(" m&m ", Market::In), "M&M.NS");
+        assert_eq!(resolve_symbol("BAJAJ-AUTO", Market::In), "BAJAJ-AUTO.NS");
     }
 
     #[test]

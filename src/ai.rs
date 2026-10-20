@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
@@ -34,6 +35,21 @@ struct OllamaRequest {
 #[derive(Deserialize)]
 struct OllamaResponse {
     response: Option<String>,
+    error: Option<String>,
+}
+
+/// Whether analysis commands (analyze, technical, compare, screen, backtest,
+/// deep) append an AI section. Off by default: a local model turns a
+/// sub-second command into a 40–60 second one. Enabled by `--ai` or
+/// `STOCKWISE_AI=1`. `report` always uses AI.
+static AUTO_AI: AtomicBool = AtomicBool::new(false);
+
+pub fn set_auto_ai(enabled: bool) {
+    AUTO_AI.store(enabled, Ordering::Relaxed);
+}
+
+pub fn auto_ai_enabled() -> bool {
+    AUTO_AI.load(Ordering::Relaxed)
 }
 
 fn hash_prompt(model: &str, prompt: &str) -> String {
@@ -74,6 +90,39 @@ impl AiClient {
             model,
             redis: None,
         }
+    }
+
+    /// True when auto-AI is enabled (`--ai`) and Ollama is reachable.
+    pub async fn auto_available(&self) -> bool {
+        auto_ai_enabled() && self.is_available().await
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Whether the configured model is pulled on the Ollama server.
+    /// `None` when the server can't be reached.
+    pub async fn has_model(&self) -> Option<bool> {
+        let tags: serde_json::Value = self
+            .client
+            .get(format!("{}/api/tags", ollama_url()))
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+            .await
+            .ok()?
+            .json()
+            .await
+            .ok()?;
+        let wanted = &self.model;
+        Some(
+            tags["models"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|m| m["name"].as_str())
+                .any(|name| name == wanted || name == format!("{wanted}:latest")),
+        )
     }
 
     pub async fn is_available(&self) -> bool {
@@ -117,6 +166,16 @@ impl AiClient {
             return Ok(cached);
         }
 
+        {
+            use std::io::IsTerminal;
+            if std::io::stderr().is_terminal() {
+                eprintln!(
+                    "  \u{27f3} Asking {} via Ollama (local models can take a minute)...",
+                    self.model
+                );
+            }
+        }
+
         let req = OllamaRequest {
             model: self.model.clone(),
             prompt: prompt.to_string(),
@@ -135,6 +194,16 @@ impl AiClient {
             .context("Failed to read Ollama response")?;
 
         let response_text = if let Ok(resp) = serde_json::from_str::<OllamaResponse>(&raw) {
+            if let Some(err) = resp.error {
+                if err.contains("not found") {
+                    anyhow::bail!(
+                        "Ollama model '{}' is not installed. Run: ollama pull {}  (or set STOCKWISE_MODEL)",
+                        self.model,
+                        self.model
+                    );
+                }
+                anyhow::bail!("Ollama error: {}", err);
+            }
             resp.response.unwrap_or_default()
         } else {
             let mut combined = String::new();
@@ -152,10 +221,11 @@ impl AiClient {
         let cleaned = strip_think_tags(&response_text);
         let result = cleaned.trim().to_string();
 
-        // Cache to Redis (1 hour TTL)
-        if !result.is_empty() {
-            self.cache_set(&cache_key, &result).await;
+        if result.is_empty() {
+            anyhow::bail!("Ollama returned an empty response (model '{}')", self.model);
         }
+        // Cache to Redis (1 hour TTL)
+        self.cache_set(&cache_key, &result).await;
 
         Ok(result)
     }

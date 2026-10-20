@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use reqwest::header;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -171,7 +171,7 @@ pub struct QuoteResponseInner {
     pub result: Vec<Quote>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Quote {
     pub symbol: Option<String>,
@@ -318,7 +318,7 @@ pub struct SearchResponse {
     pub quotes: Vec<SearchResult>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SearchResult {
     pub symbol: Option<String>,
     #[serde(rename = "shortname")]
