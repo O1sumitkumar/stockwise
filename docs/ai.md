@@ -61,15 +61,18 @@ With a cloud provider they only do so when started with `--ai`.
 
 ## Configuration
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `STOCKWISE_AI_PROVIDER` | `ollama` | `ollama`, `openai`, `anthropic` (or `claude`), `gemini` (or `google`) |
-| `STOCKWISE_MODEL` | per provider | Model name; overrides the provider's default below |
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server (`host:port` or a full URL) |
-| `OPENAI_API_KEY` | — | Key for `STOCKWISE_AI_PROVIDER=openai` |
-| `ANTHROPIC_API_KEY` | — | Key for `STOCKWISE_AI_PROVIDER=anthropic` |
-| `GEMINI_API_KEY` | — | Key for `STOCKWISE_AI_PROVIDER=gemini` |
-| `STOCKWISE_AI` | off | `1` to add AI sections to analysis commands by default |
+| Variable | Config key | Default | Purpose |
+|----------|------------|---------|---------|
+| `STOCKWISE_AI_PROVIDER` | `ai_provider` | `ollama` | `ollama`, `openai`, `anthropic` (or `claude`), `gemini` (or `google`) |
+| `STOCKWISE_MODEL` | `model` | per provider | Model name; overrides the provider's default below |
+| `OLLAMA_HOST` | `ollama_host` | `http://localhost:11434` | Ollama server (`host:port` or a full URL) |
+| `OPENAI_API_KEY` | — | — | Key for `STOCKWISE_AI_PROVIDER=openai` |
+| `ANTHROPIC_API_KEY` | — | — | Key for `STOCKWISE_AI_PROVIDER=anthropic` |
+| `GEMINI_API_KEY` | — | — | Key for `STOCKWISE_AI_PROVIDER=gemini` |
+| `STOCKWISE_AI` | `ai` | off | `1` to add AI sections to analysis commands by default (`--no-ai` turns it off for one run) |
+
+Environment variables win over the [config file](commands.md#configuration-file).
+API keys are read from the environment only, never from the config file.
 
 ```bash
 STOCKWISE_MODEL=llama3.1:8b stockwise report portfolio

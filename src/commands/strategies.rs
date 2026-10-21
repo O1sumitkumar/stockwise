@@ -5,7 +5,13 @@ use super::*;
 
 // ── SIP/DCA Simulator ──
 
-pub async fn cmd_sip(symbol: &str, amount: f64, period: &str, market: Market) -> Result<()> {
+pub async fn cmd_sip(
+    symbol: &str,
+    amount: f64,
+    period: &str,
+    market: Market,
+    fmt: Format,
+) -> Result<()> {
     let resolved = market::resolve_symbol(symbol, market);
     let client = YahooClient::new().await?;
     let chart = client.get_chart(&resolved, period, "1mo").await?;
@@ -45,6 +51,25 @@ pub async fn cmd_sip(symbol: &str, amount: f64, period: &str, market: Market) ->
     // XIRR: each instalment earns only from its own date, not the whole period.
     cashflows.push(((n - 1) as f64 / 12.0, final_value));
     let xirr = technical::xirr(&cashflows).map(|r| r * 100.0);
+
+    if fmt == Format::Json {
+        return output::print_json(&serde_json::json!({
+            "symbol": resolved,
+            "currency": cur,
+            "period": period,
+            "interval": "1mo",
+            "monthly_amount": amount,
+            "months": n,
+            "total_invested": round(total_invested, 2),
+            "final_value": round(final_value, 2),
+            "profit": round(final_value - total_invested, 2),
+            "total_return_percent": round(total_return, 2),
+            "xirr_percent": round_opt(xirr, 2),
+            "total_units": round(total_units, 4),
+            "avg_cost": round(total_invested / total_units, 2),
+            "current_price": closes[n - 1],
+        }));
+    }
 
     print_header(&format!(
         "SIP Simulator: {} — {}{}/month for {}",
@@ -104,7 +129,13 @@ pub async fn cmd_sip(symbol: &str, amount: f64, period: &str, market: Market) ->
 
 // ── Forecast ──
 
-pub async fn cmd_whatif(symbol: &str, amount: f64, date_str: &str, market: Market) -> Result<()> {
+pub async fn cmd_whatif(
+    symbol: &str,
+    amount: f64,
+    date_str: &str,
+    market: Market,
+    fmt: Format,
+) -> Result<()> {
     let resolved = market::resolve_symbol(symbol, market);
     let client = YahooClient::new().await?;
 
@@ -166,7 +197,9 @@ pub async fn cmd_whatif(symbol: &str, amount: f64, date_str: &str, market: Marke
     }
 
     let buy_price = series[best_idx].1;
-    let current = series.last().map(|(_, p)| *p).unwrap_or(0.0);
+    let Some(current) = series.last().map(|(_, p)| *p) else {
+        bail!("No price data available for that range");
+    };
     if buy_price <= 0.0 {
         bail!("Could not find a price for that date (use YYYY-MM-DD on or after the listing date)");
     }
@@ -183,6 +216,28 @@ pub async fn cmd_whatif(symbol: &str, amount: f64, date_str: &str, market: Marke
     } else {
         pnl_pct
     };
+
+    if fmt == Format::Json {
+        let buy_date = chrono::DateTime::from_timestamp(series[best_idx].0, 0)
+            .map(|d| d.format("%Y-%m-%d").to_string());
+        return output::print_json(&serde_json::json!({
+            "symbol": resolved,
+            "currency": cur,
+            "amount": amount,
+            "date": date_str,
+            "buy_date": buy_date,
+            "buy_price": buy_price,
+            "shares": shares,
+            "invested": round(invested, 2),
+            "current_price": current,
+            "value": round(value, 2),
+            "pnl": round(pnl, 2),
+            "pnl_percent": round(pnl_pct, 2),
+            "cagr_percent": round(cagr, 2),
+            "days": days,
+            "years": round(years, 2),
+        }));
+    }
 
     print_header(&format!(
         "What If: {}{:.0} in {} on {}",

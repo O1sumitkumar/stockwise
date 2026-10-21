@@ -282,6 +282,12 @@ All channels are opt-in, set with environment variables:
 | Email | `STOCKWISE_SMTP_HOST`, `STOCKWISE_SMTP_USER`, `STOCKWISE_SMTP_PASSWORD`, `STOCKWISE_EMAIL_TO` (comma-separated); optional `STOCKWISE_EMAIL_FROM`, `STOCKWISE_SMTP_PORT`, `STOCKWISE_SMTP_TLS` (`starttls` — default, port 587 — `tls` for 465, or `none` for a server on this machine) |
 | Desktop | `STOCKWISE_DESKTOP_NOTIFY=1`, in a build with the `desktop-notify` feature: `cargo install stockwise --features desktop-notify` |
 
+The same settings can live in the [config file](commands.md#configuration-file)
+under `[notify]`, named without the `STOCKWISE_` prefix in lower case
+(`telegram_chat_id = "123"`, `smtp_host = "smtp.gmail.com"`). An environment
+variable wins over the file. If you put a token or password there, keep the
+file private (`chmod 600`); `config show` and `doctor` warn otherwise.
+
 ```bash
 stockwise notify          # which channels are configured (secrets are never shown)
 stockwise notify test     # send a test message to each; exits 1 if any fails

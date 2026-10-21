@@ -183,9 +183,12 @@ stockwise backtest walkforward RELIANCE -s rsi --train 1y --test 3mo -p 10y
    `vwap`, `mr` (`mean_reversion`).
 2. The name of a file in your strategies folder: `-s trend_pullback` loads
    `trend_pullback.toml` from
-   - `$STOCKWISE_HOME/strategies/` when `STOCKWISE_HOME` is set, else
-   - `$XDG_CONFIG_HOME/stockwise/strategies/`, else
-   - `~/.config/stockwise/strategies/` (on every OS).
+   - `strategies/` next to your config file — `stockwise config path` shows
+     where that is (`~/Library/Application Support/stockwise/` on macOS,
+     `~/.config/stockwise/` on Linux, `%APPDATA%\stockwise\` on Windows), or
+   - `$STOCKWISE_HOME/strategies/` when `STOCKWISE_HOME` is set.
+
+   `stockwise backtest strategies` prints the folder it uses.
 
    Built-in names win over files of the same name.
 3. A path: `-s file:path/to/rules.toml` (or any path ending in `.toml`).

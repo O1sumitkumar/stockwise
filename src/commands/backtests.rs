@@ -19,7 +19,8 @@ pub struct BacktestOpts {
     pub slippage_bps: Option<f64>,
     pub fill: Fill,
     pub capital: f64,
-    pub json: bool,
+    /// `--json` (the full result) or `--csv` (the trades).
+    pub fmt: Format,
 }
 
 impl BacktestOpts {
@@ -328,6 +329,69 @@ fn single(symbol: &str, bars: &Bars, def: &StrategyDef, cfg: &SimConfig) -> Resu
     ))
 }
 
+/// Trades as CSV rows (`--csv`): one row per round trip, oldest exit first.
+impl CsvRow for engine::Trade {
+    const COLUMNS: &'static [&'static str] = &[
+        "symbol",
+        "entry_date",
+        "exit_date",
+        "qty",
+        "entry_price",
+        "exit_price",
+        "gross_pnl",
+        "costs",
+        "net_pnl",
+        "pnl_percent",
+        "bars_held",
+        "exit_reason",
+    ];
+}
+
+/// `backtest SYMBOL --json`. Headline numbers are after costs;
+/// `gross_return_percent` is the same rules without them.
+pub(crate) fn single_json(
+    symbol: &str,
+    currency: Option<&str>,
+    period: &str,
+    bars: &Bars,
+    def: &StrategyDef,
+    opts: &BacktestOpts,
+    costs: &CostModel,
+    net: &SimResult,
+    gross: &Metrics,
+    buy_hold_pct: f64,
+) -> Result<serde_json::Value> {
+    let m = net.metrics();
+    let mut out = json!({
+        "symbol": symbol,
+        "currency": currency,
+        "strategy": def.name,
+        "period": period,
+        "interval": "1d",
+        "bars": bars.len(),
+        "start": backtest::date(bars.time[0]),
+        "end": backtest::date(bars.time[bars.len() - 1]),
+        "fill": opts.fill,
+        "capital": opts.capital,
+    });
+    extend(&mut out, &m)?;
+    extend(
+        &mut out,
+        json!({
+            "gross_return_percent": gross.total_return_pct,
+            "buy_hold_return_percent": buy_hold_pct,
+            "alpha_percent": m.total_return_pct - buy_hold_pct,
+            "skipped_entries": net.skipped_entries,
+            "costs": net.costs,
+            "cost_model": costs,
+            "rules": def,
+            "trades": net.trades,
+            "equity": equity_json(&net.times, &net.equity),
+        }),
+    )?;
+    Ok(out)
+}
+
 // ── backtest SYMBOL ──
 
 pub async fn cmd_backtest(
@@ -358,37 +422,23 @@ pub async fn cmd_backtest(
     let (m, gm) = (net.metrics(), gross.metrics());
     let bh = backtest::buy_and_hold_pct(&bars).unwrap_or(0.0);
 
-    if opts.json {
-        // Headline numbers are after costs; `gross_return_percent` is without.
-        let mut out = json!({
-            "symbol": resolved,
-            "currency": currency,
-            "strategy": def.name,
-            "period": period,
-            "interval": "1d",
-            "bars": bars.len(),
-            "start": backtest::date(bars.time[0]),
-            "end": backtest::date(bars.time[bars.len() - 1]),
-            "fill": opts.fill,
-            "capital": opts.capital,
-        });
-        extend(&mut out, &m)?;
-        extend(
-            &mut out,
-            json!({
-                "gross_return_percent": gm.total_return_pct,
-                "buy_hold_return_percent": bh,
-                "alpha_percent": m.total_return_pct - bh,
-                "skipped_entries": net.skipped_entries,
-                "costs": net.costs,
-                "cost_model": costs,
-                "rules": def,
-                "trades": net.trades,
-                "equity": equity_json(&net.times, &net.equity),
-            }),
-        )?;
-        println!("{}", serde_json::to_string_pretty(&out)?);
-        return Ok(());
+    match opts.fmt {
+        Format::Csv => return output::print_csv(&net.trades),
+        Format::Json => {
+            return output::print_json(&single_json(
+                &resolved,
+                currency.as_deref(),
+                period,
+                &bars,
+                &def,
+                &opts,
+                &costs,
+                &net,
+                &gm,
+                bh,
+            )?);
+        }
+        Format::Table => {}
     }
 
     print_header(&format!(
@@ -538,7 +588,10 @@ pub async fn cmd_backtest_portfolio(
         .map(|((b, _), w)| w * backtest::buy_and_hold_pct(b).unwrap_or(0.0))
         .sum();
 
-    if opts.json {
+    if opts.fmt == Format::Csv {
+        return output::print_csv(&net.trades);
+    }
+    if opts.fmt == Format::Json {
         let mut out = json!({
             "symbols": resolved,
             "currency": currency,
@@ -567,8 +620,7 @@ pub async fn cmd_backtest_portfolio(
                 "equity": equity_json(&net.times, &net.equity),
             }),
         )?;
-        println!("{}", serde_json::to_string_pretty(&out)?);
-        return Ok(());
+        return output::print_json(&out);
     }
 
     print_header(&format!(
@@ -671,7 +723,10 @@ pub async fn cmd_backtest_walkforward(
     );
     let wf = walkforward::run(&def, &resolved, &bars, train, test, &cfg)?;
 
-    if opts.json {
+    if opts.fmt == Format::Csv {
+        return output::print_csv(&wf.trades);
+    }
+    if opts.fmt == Format::Json {
         let mut out = json!({
             "symbol": resolved,
             "currency": currency,
@@ -688,8 +743,7 @@ pub async fn cmd_backtest_walkforward(
             &mut out,
             json!({ "equity": equity_json(&wf.times, &wf.equity) }),
         )?;
-        println!("{}", serde_json::to_string_pretty(&out)?);
-        return Ok(());
+        return output::print_json(&out);
     }
 
     print_header(&format!(
@@ -862,7 +916,7 @@ pub fn cmd_backtest_strategies(files: &[String], json: bool) -> Result<()> {
                 })
                 .collect::<Vec<_>>(),
         });
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        output::print_json(&out)?;
     } else {
         print_header("Backtest Strategies");
         print_section("Built-in");
@@ -942,7 +996,7 @@ fn report_files(results: &[(String, Result<StrategyDef>)], json: bool) -> Result
                 Err(e) => json!({ "path": path, "ok": false, "error": format!("{e:#}") }),
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        output::print_json(&out)?;
     } else {
         println!();
         for (path, r) in results {

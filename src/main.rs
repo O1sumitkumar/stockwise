@@ -12,13 +12,15 @@
 
 mod ai;
 mod alerts;
-mod angel;
 mod api;
 mod backtest;
+mod brokers;
 mod charts;
 mod clock;
 mod commands;
+mod config;
 mod daemon;
+mod daemon_status;
 mod derivatives;
 mod display;
 mod funds;
@@ -29,19 +31,27 @@ mod intraday;
 mod longterm;
 mod market;
 mod notify;
+mod output;
 mod portfolio;
 mod providers;
+#[cfg(feature = "server")]
+mod server;
 mod simulator;
 mod store;
 mod tax;
 mod technical;
 #[cfg(test)]
 mod testutil;
+#[cfg(feature = "tui")]
+mod tui;
+mod views;
 mod watchlist;
 mod wealth;
 
+use clap::parser::ValueSource;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use market::Market;
+use output::Format;
 
 /// Periods Yahoo Finance understands. Short periods give too few bars for
 /// some indicators; those commands say so instead of guessing.
@@ -64,11 +74,13 @@ stockwise quote RELIANCE TCS          Indian stocks (default market)\n  \
 stockwise quote AAPL NVDA -m us       US stocks\n  \
 stockwise deep HDFCBANK               everything about one stock\n  \
 stockwise backtest INFY -s macd       test a strategy on history\n  \
-stockwise quote AAPL -m us --json     machine-readable output\n\n\
-Run `stockwise doctor` to check your setup, `stockwise <command> --help` for details."
+stockwise quote AAPL -m us --json     machine-readable output\n  \
+stockwise portfolio --csv > p.csv     spreadsheet-ready CSV\n\n\
+Run `stockwise doctor` to check your setup, `stockwise config init` to set your own \
+defaults, `stockwise <command> --help` for details."
 )]
 struct Cli {
-    /// Market for bare tickers: `in` (India, adds .NS — the default) or `us`
+    /// Market for bare tickers: `in` (India, adds .NS) or `us`
     #[arg(
         short = 'm',
         long = "market",
@@ -84,9 +96,14 @@ struct Cli {
         long,
         global = true,
         env = "STOCKWISE_AI",
-        value_parser = clap::builder::BoolishValueParser::new()
+        value_parser = clap::builder::BoolishValueParser::new(),
+        overrides_with = "no_ai"
     )]
     ai: bool,
+
+    /// Turn the AI section off, even if STOCKWISE_AI or the config file turn it on
+    #[arg(long, global = true, overrides_with = "ai")]
+    no_ai: bool,
 
     /// Language for tables and messages: `en` or `hi` (Hindi). Default: your locale
     #[arg(
@@ -137,9 +154,8 @@ enum Commands {
         /// Tickers, e.g. RELIANCE TCS (India) or AAPL MSFT with -m us
         #[arg(required = true, num_args = 1..)]
         symbols: Vec<String>,
-        /// Print JSON instead of a table
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        out: TableOutput,
     },
 
     /// Everything about a stock in one command
@@ -151,9 +167,8 @@ enum Commands {
 
     /// Major market indices (US + India)
     Markets {
-        /// Print JSON instead of a table
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        out: TableOutput,
         /// Add the largest cryptocurrencies (trade 24/7)
         #[arg(long)]
         crypto: bool,
@@ -170,9 +185,8 @@ enum Commands {
     Search {
         /// Company name or partial ticker, e.g. "tata motors"
         query: String,
-        /// Print JSON instead of a table
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        out: TableOutput,
     },
 
     /// Check your setup: data directory, network, cache, AI, broker
@@ -189,6 +203,8 @@ enum Commands {
         symbol: String,
         #[arg(short, long, default_value = "3mo", value_parser = PERIODS)]
         period: String,
+        #[command(flatten)]
+        out: JsonOutput,
     },
 
     /// Price history with a terminal chart and volume bars
@@ -196,9 +212,12 @@ enum Commands {
         symbol: String,
         #[arg(short, long, default_value = "1mo", value_parser = PERIODS)]
         period: String,
-        /// Print JSON (date, open, high, low, close, volume) instead of a chart
-        #[arg(long)]
+        /// Print every OHLCV bar as JSON instead of a chart
+        #[arg(long, conflicts_with = "csv")]
         json: bool,
+        /// Print every OHLCV bar as CSV instead of a chart
+        #[arg(long)]
+        csv: bool,
     },
 
     /// Charts for 1W, 1M, 3M and 1Y at once
@@ -210,6 +229,8 @@ enum Commands {
         /// Two or more tickers
         #[arg(required = true, num_args = 2..)]
         symbols: Vec<String>,
+        #[command(flatten)]
+        out: TableOutput,
     },
 
     /// Risk metrics: volatility, Sharpe, max drawdown, VaR
@@ -218,6 +239,8 @@ enum Commands {
         /// History used for the metrics (daily bars; needs ~30+ trading days)
         #[arg(short, long, default_value = "1y", value_parser = PERIODS)]
         period: String,
+        #[command(flatten)]
+        out: JsonOutput,
     },
 
     /// Price correlation matrix between stocks
@@ -226,6 +249,8 @@ enum Commands {
         /// Two or more tickers
         #[arg(required = true, num_args = 2..)]
         symbols: Vec<String>,
+        #[command(flatten)]
+        out: TableOutput,
     },
 
     /// Trend and momentum across timeframes at a glance
@@ -233,7 +258,11 @@ enum Commands {
     Timeframes { symbol: String },
 
     /// Returns over 1W, 1M, 3M, 6M, 1Y, 3Y, 5Y
-    Returns { symbol: String },
+    Returns {
+        symbol: String,
+        #[command(flatten)]
+        out: TableOutput,
+    },
 
     /// Candlestick pattern detection
     Patterns {
@@ -294,9 +323,15 @@ enum Commands {
 
     // ── Market ──
     /// Top gainers and losers today
-    Movers,
+    Movers {
+        #[command(flatten)]
+        out: TableOutput,
+    },
     /// Sector performance with bars
-    Sectors,
+    Sectors {
+        #[command(flatten)]
+        out: TableOutput,
+    },
     /// Market heatmap
     Heatmap,
     /// Fear & Greed style sentiment gauge
@@ -325,9 +360,15 @@ enum Commands {
     Screen {
         #[arg(value_enum, ignore_case = true)]
         category: ScreenCategory,
+        #[command(flatten)]
+        out: TableOutput,
     },
     /// Dividend yield, income projection and DRIP growth
-    Dividends { symbol: String },
+    Dividends {
+        symbol: String,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
 
     // ── Funds & F&O ──
     /// Mutual funds (AMFI NAVs): search, nav, history, sip, screen, overlap
@@ -368,6 +409,8 @@ stockwise options TCS                     expected moves (same as `options moves
         amount: f64,
         #[arg(short, long, default_value = "5y", value_parser = PERIODS)]
         period: String,
+        #[command(flatten)]
+        out: JsonOutput,
     },
 
     /// What if you had invested X on a past date
@@ -377,6 +420,8 @@ stockwise options TCS                     expected moves (same as `options moves
         amount: f64,
         /// Date in YYYY-MM-DD format
         date: String,
+        #[command(flatten)]
+        out: JsonOutput,
     },
 
     /// Intraday trade ideas sized for your capital (signals only, no orders)
@@ -420,26 +465,33 @@ stockwise options TCS                     expected moves (same as `options moves
 
     // ── Portfolio ──
     /// Track holdings, lots and P&L (default: show)
-    #[command(alias = "p")]
+    #[command(alias = "p", args_conflicts_with_subcommands = true)]
     Portfolio {
         /// Currency for totals when holdings mix INR and USD (default: the market's)
         #[arg(long, global = true, value_enum, ignore_case = true)]
         base: Option<BaseCurrency>,
         #[command(subcommand)]
         action: Option<PortfolioCmd>,
+        #[command(flatten)]
+        out: TableOutput,
     },
 
     /// Manage your watchlist (default: show)
-    #[command(alias = "w")]
+    #[command(alias = "w", args_conflicts_with_subcommands = true)]
     Watch {
         #[command(subcommand)]
         action: Option<WatchCmd>,
+        #[command(flatten)]
+        out: TableOutput,
     },
 
     /// Price alerts (default: list)
+    #[command(args_conflicts_with_subcommands = true)]
     Alert {
         #[command(subcommand)]
         action: Option<AlertCmd>,
+        #[command(flatten)]
+        out: TableOutput,
     },
 
     /// Export portfolio or watchlist to CSV in the current directory
@@ -448,11 +500,11 @@ stockwise options TCS                     expected moves (same as `options moves
         what: ExportWhat,
     },
 
-    /// Import holdings from a broker CSV export
+    /// Import holdings from a broker CSV export or a CAS statement
     Import {
         #[arg(value_enum, ignore_case = true)]
         source: ImportSource,
-        /// Path to the exported CSV file
+        /// Path to the exported CSV file (or casparser JSON/CSV for `cas`)
         file: String,
         /// Rebuild holdings from a dated file even if that replaces lots or
         /// sales recorded another way (manual entries, another import)
@@ -470,6 +522,8 @@ stockwise options TCS                     expected moves (same as `options moves
     Tax {
         #[arg(value_enum, ignore_case = true)]
         country: TaxCountry,
+        #[command(flatten)]
+        out: TableOutput,
     },
     /// Dividend calendar for portfolio + watchlist
     Divcal,
@@ -477,13 +531,56 @@ stockwise options TCS                     expected moves (same as `options moves
     Pcorr,
 
     // ── Live trading ──
-    /// Live trading via Angel One (real money — try `sim` first)
+    /// Live orders: Angel One; Zerodha/Upstox/Dhan/Fyers experimental (real money — try `sim` first)
     Trade {
+        /// Broker to use. angel is the original integration; zerodha, upstox, dhan and
+        /// fyers are experimental — untested against a live account
+        #[arg(
+            long,
+            global = true,
+            value_enum,
+            env = "STOCKWISE_BROKER",
+            default_value = "angel",
+            ignore_case = true
+        )]
+        broker: brokers::BrokerKind,
         #[command(subcommand)]
         action: TradeCmd,
     },
 
+    // ── Interfaces ──
+    /// Full-screen live dashboard: indices, watchlist, portfolio, alerts, charts
+    Tui {
+        /// Seconds between price refreshes (quotes are cached for 30s)
+        #[arg(
+            short,
+            long,
+            default_value_t = 30,
+            value_parser = clap::value_parser!(u64).range(10..=3600)
+        )]
+        interval: u64,
+        /// Print one frame of COLSxROWS to stdout and exit (for screenshots)
+        #[arg(long, value_name = "COLSxROWS", hide = true)]
+        snapshot: Option<String>,
+    },
+
+    /// Read-only JSON API and Prometheus metrics over HTTP
+    Serve {
+        /// Address to listen on. Non-loopback needs --allow-remote
+        #[arg(long, default_value = "127.0.0.1:8787", env = "STOCKWISE_BIND")]
+        bind: String,
+        /// Allow a non-loopback --bind; requires a STOCKWISE_API_TOKEN bearer token
+        #[arg(long)]
+        allow_remote: bool,
+    },
+
     // ── Setup ──
+    /// Your defaults: config file path, effective settings, template (default: show)
+    Config {
+        #[command(subcommand)]
+        action: Option<ConfigCmd>,
+    },
+
     /// Notification channels for alerts and the daemon (default: status)
     Notify {
         #[command(subcommand)]
@@ -552,7 +649,10 @@ enum PortfolioCmd {
     #[command(alias = "rm")]
     Remove { symbol: String },
     /// Show holdings with live P&L and XIRR
-    Show,
+    Show {
+        #[command(flatten)]
+        out: TableOutput,
+    },
     /// List your portfolios (see --portfolio)
     List,
 }
@@ -580,7 +680,10 @@ enum WatchCmd {
     },
     /// Show the watchlist with live prices
     #[command(alias = "list")]
-    Show,
+    Show {
+        #[command(flatten)]
+        out: TableOutput,
+    },
 }
 
 #[derive(Subcommand)]
@@ -597,7 +700,10 @@ enum AlertCmd {
     #[command(alias = "rm")]
     Remove { index: usize },
     /// Check all alerts against live prices
-    Check,
+    Check {
+        #[command(flatten)]
+        out: TableOutput,
+    },
     /// Keep checking alerts while their market is open; notify each trigger once
     Watch {
         /// Seconds between checks
@@ -609,7 +715,10 @@ enum AlertCmd {
     },
     /// List alerts
     #[command(alias = "show")]
-    List,
+    List {
+        #[command(flatten)]
+        out: TableOutput,
+    },
 }
 
 #[derive(Subcommand)]
@@ -631,13 +740,72 @@ enum SimCmd {
     },
     /// Past sessions and the bot's confidence rating
     #[command(alias = "stats")]
-    History,
+    History {
+        #[command(flatten)]
+        out: JsonOutput,
+    },
     /// Delete all simulator history (a backup is kept)
     Reset {
         /// Don't ask for confirmation
         #[arg(short, long)]
         yes: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum ConfigCmd {
+    /// Print the config file path (it may not exist yet)
+    Path,
+    /// Effective settings and where each comes from: flag, env, config file, or default
+    Show {
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Write a commented config template to the config file path
+    Init {
+        /// Replace an existing config file
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+/// `--json` / `--csv` for commands that print a table.
+#[derive(Args, Clone, Copy, Default)]
+struct TableOutput {
+    /// Print JSON instead of a table
+    #[arg(long, conflicts_with = "csv")]
+    json: bool,
+    /// Print CSV (RFC 4180, header row first) instead of a table
+    #[arg(long)]
+    csv: bool,
+}
+
+/// `--json` for commands whose output is more than one table.
+#[derive(Args, Clone, Copy, Default)]
+struct JsonOutput {
+    /// Print JSON instead of text
+    #[arg(long)]
+    json: bool,
+}
+
+impl From<TableOutput> for Format {
+    fn from(o: TableOutput) -> Self {
+        Format::from_flags(o.json, o.csv)
+    }
+}
+
+impl From<JsonOutput> for Format {
+    fn from(o: JsonOutput) -> Self {
+        Format::from_flags(o.json, false)
+    }
+}
+
+impl TableOutput {
+    /// Flags given on either the parent (`portfolio --json`) or the action
+    /// (`portfolio show --json`).
+    fn or(self, other: TableOutput) -> Format {
+        Format::from_flags(self.json || other.json, self.csv || other.csv)
+    }
 }
 
 /// Months for an MF period such as `6mo`, `3y` or `max` (validated here,
@@ -827,31 +995,53 @@ impl From<OrderFlags> for commands::OrderOpts {
     }
 }
 
+/// Order-type prices for `trade buy` / `trade sell`: none = MARKET,
+/// `--limit` = LIMIT, `--trigger` = SL-M, both = SL.
+#[derive(Args, Clone, Copy)]
+struct PriceFlags {
+    /// Limit price (a LIMIT order; with --trigger, an SL order)
+    #[arg(long)]
+    limit: Option<f64>,
+    /// Stop-loss trigger price (an SL-M order; with --limit, an SL order)
+    #[arg(long, alias = "stop")]
+    trigger: Option<f64>,
+}
+
 #[derive(Subcommand)]
 enum TradeCmd {
-    /// How to connect your Angel One account
+    /// How to connect your broker account
     Setup,
     /// Create the credentials file, or show whether it is configured
-    Config,
+    Config {
+        /// Move secrets from the file into the OS keyring now
+        #[arg(long)]
+        keyring: bool,
+    },
+    /// Log in and save today's session (Zerodha, Upstox, Fyers; paste a Dhan token)
+    Login,
     /// Live holdings (also synced into `portfolio`)
     Holdings,
     /// Open intraday positions
     Positions,
     /// Today's order book
     Orders,
-    /// Market BUY on NSE (asks for confirmation)
+    /// BUY on NSE: market, or --limit / --trigger for LIMIT, SL, SL-M (asks for confirmation)
     Buy {
         symbol: String,
         /// Number of shares
         qty: u32,
         #[command(flatten)]
+        prices: PriceFlags,
+        #[command(flatten)]
         flags: OrderFlags,
     },
-    /// Market SELL on NSE (asks for confirmation)
+    /// SELL on NSE: market, or --limit / --trigger for LIMIT, SL, SL-M (asks for confirmation)
     Sell {
         symbol: String,
         /// Number of shares
         qty: u32,
+        #[command(flatten)]
+        prices: PriceFlags,
         #[command(flatten)]
         flags: OrderFlags,
     },
@@ -862,6 +1052,53 @@ enum TradeCmd {
         qty: u32,
         /// Limit price
         price: f64,
+        #[command(flatten)]
+        flags: OrderFlags,
+    },
+    /// GTT (good-till-triggered) orders: buy, sell, list, cancel
+    Gtt {
+        #[command(subcommand)]
+        action: GttCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum GttCmd {
+    /// GTT BUY: place a LIMIT buy once the trigger trades (asks for confirmation)
+    Buy {
+        symbol: String,
+        /// Number of shares
+        qty: u32,
+        /// Price that activates the GTT
+        #[arg(long)]
+        trigger: f64,
+        /// Limit price of the order placed when it triggers
+        #[arg(long)]
+        limit: f64,
+        #[command(flatten)]
+        flags: OrderFlags,
+    },
+    /// GTT SELL: a stop-loss below the market or a target above it (asks for confirmation)
+    Sell {
+        symbol: String,
+        /// Number of shares
+        qty: u32,
+        /// Price that activates the GTT
+        #[arg(long)]
+        trigger: f64,
+        /// Limit price of the order placed when it triggers
+        #[arg(long)]
+        limit: f64,
+        #[command(flatten)]
+        flags: OrderFlags,
+    },
+    /// Your GTT orders
+    #[command(alias = "show")]
+    List,
+    /// Cancel a GTT by id (asks for confirmation)
+    Cancel {
+        /// GTT id from `trade gtt list`
+        id: String,
         #[command(flatten)]
         flags: OrderFlags,
     },
@@ -979,9 +1216,9 @@ struct BacktestFlags {
     /// Starting capital, in the stock's currency
     #[arg(long, default_value = "100000", value_parser = capital)]
     capital: f64,
-    /// Print JSON instead of a report
-    #[arg(long)]
-    json: bool,
+    /// `--json` prints the whole result, `--csv` the trades
+    #[command(flatten)]
+    out: TableOutput,
 }
 
 impl From<BacktestFlags> for commands::BacktestOpts {
@@ -1006,7 +1243,7 @@ impl From<BacktestFlags> for commands::BacktestOpts {
                 FillArg::Close => backtest::engine::Fill::Close,
             },
             capital: f.capital,
-            json: f.json,
+            fmt: f.out.into(),
         }
     }
 }
@@ -1093,6 +1330,13 @@ enum ImportSource {
     Kite,
     /// INDmoney holdings CSV
     Indmoney,
+    /// Groww stocks holdings export, saved as CSV
+    Groww,
+    /// Upstox holdings export (CSV)
+    Upstox,
+    /// CAMS / KFintech consolidated account statement (casparser JSON or CSV)
+    #[value(alias = "cams", alias = "kfintech")]
+    Cas,
     /// Any CSV with symbol, quantity and average-price columns
     Csv,
 }
@@ -1209,8 +1453,9 @@ const GROUPS: &[(&str, &[&str])] = &[
             "pcorr",
         ],
     ),
+    ("Interfaces", &["tui", "serve"]),
     ("Live trading", &["trade"]),
-    ("Setup", &["notify", "completions", "man", "help"]),
+    ("Setup", &["notify", "config", "completions", "man", "help"]),
 ];
 
 /// The catalog entry for a help group title. Titles without one (e.g. a
@@ -1224,6 +1469,7 @@ fn group_msg(english: &str) -> Option<i18n::Msg> {
         "Strategies & bots" => Msg::GroupStrategies,
         "Funds & F&O" => Msg::GroupFunds,
         "Portfolio" => Msg::GroupPortfolio,
+        "Interfaces" => Msg::GroupInterfaces,
         "Live trading" => Msg::GroupLiveTrading,
         "Setup" => Msg::GroupSetup,
         _ => return None,
@@ -1301,6 +1547,62 @@ fn build_cli() -> clap::Command {
     cmd.help_template(template)
 }
 
+/// Commands that take `-p/--period`, with their current default period.
+fn period_defaults(cmd: &clap::Command) -> Vec<(String, String)> {
+    cmd.get_subcommands()
+        .filter_map(|sc| {
+            let arg = sc.get_arguments().find(|a| a.get_id() == "period")?;
+            let default = arg
+                .get_default_values()
+                .first()
+                .map(|v| v.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            Some((sc.get_name().to_string(), default))
+        })
+        .collect()
+}
+
+/// Make the config file's values the clap defaults, so flags and env vars
+/// still win and `--help` shows the effective default. `cfg` is validated.
+fn with_config_defaults(mut cmd: clap::Command, cfg: &config::Config) -> clap::Command {
+    if let Some(m) = cfg
+        .market
+        .as_deref()
+        .and_then(|m| config::market_value(m).ok())
+    {
+        cmd = cmd.mut_arg("market", |a| a.default_value(m));
+    }
+    if cfg.ai == Some(true) {
+        cmd = cmd.mut_arg("ai", |a| a.default_value("true"));
+    }
+    // clap defaults are 'static; these few strings live for the whole run.
+    let leak = |s: &str| -> &'static str { Box::leak(s.trim().to_string().into_boxed_str()) };
+    if let Some(q) = cfg.quote_currency.as_deref() {
+        let q = leak(q);
+        cmd = cmd.mut_arg("quote_currency", |a| a.default_value(q));
+    }
+    if let Some(p) = cfg.portfolio.as_deref() {
+        let p = leak(p);
+        cmd = cmd.mut_arg("portfolio", |a| a.default_value(p));
+    }
+    for (name, period) in &cfg.periods {
+        if let Ok(p) = config::period_value(period) {
+            cmd = cmd.mut_subcommand(name, |sc| sc.mut_arg("period", |a| a.default_value(p)));
+        }
+    }
+    cmd
+}
+
+/// Where a global option's value came from.
+fn arg_source(matches: &clap::ArgMatches, id: &str, in_file: bool) -> config::Source {
+    match matches.value_source(id) {
+        Some(ValueSource::CommandLine) => config::Source::Flag,
+        Some(ValueSource::EnvVariable) => config::Source::Env,
+        _ if in_file => config::Source::File,
+        _ => config::Source::Default,
+    }
+}
+
 /// `stockwise man`: roff rendered from the clap definition, so the pages always
 /// match the binary. Release archives ship the `--dir` output under `man/`.
 fn cmd_man(dir: Option<&std::path::Path>) -> anyhow::Result<()> {
@@ -1347,12 +1649,48 @@ async fn main() {
     let args: Vec<String> = std::env::args_os()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
-    let (lang, source) = i18n::detect(&args, |k| std::env::var(k).ok());
+    // The config file comes first: it can set the language too.
+    let period_cmds: Vec<String> = period_defaults(&Cli::command())
+        .into_iter()
+        .map(|(c, _)| c)
+        .collect();
+    let period_refs: Vec<&str> = period_cmds.iter().map(String::as_str).collect();
+    let cfg_state = config::install(config::load(&period_refs));
+    let (lang, source) = i18n::detect_with_config(
+        &args,
+        |k| std::env::var(k).ok(),
+        config::get().lang.as_deref(),
+    );
     i18n::set_lang(lang, source);
-    let matches = build_cli().get_matches();
+    let cmd = with_config_defaults(build_cli(), config::get());
+    let periods = period_defaults(&cmd);
+    let matches = cmd.get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+
+    // A broken config file stops everything except the commands that help fix it.
+    if let config::Status::Invalid(msg) = &cfg_state.status
+        && !matches!(
+            cli.command,
+            Commands::Config { .. } | Commands::Doctor | Commands::Completions { .. }
+        )
+    {
+        eprintln!("\n  {} {}\n", colored::Colorize::red("Error:"), msg);
+        std::process::exit(1);
+    }
+
+    let cfg = config::get();
+    let sources = config::CliSources {
+        market: arg_source(&matches, "market", cfg.market.is_some()),
+        ai: if matches.value_source("no_ai") == Some(ValueSource::CommandLine) {
+            config::Source::Flag
+        } else {
+            arg_source(&matches, "ai", cfg.ai.is_some())
+        },
+        quote_currency: arg_source(&matches, "quote_currency", cfg.quote_currency.is_some()),
+        portfolio: arg_source(&matches, "portfolio", cfg.portfolio.is_some()),
+    };
     let m = cli.market;
-    ai::set_auto_ai(cli.ai);
+    ai::set_auto_ai(cli.ai && !cli.no_ai);
     market::set_quote_currency(&cli.quote_currency);
     if let Err(e) = portfolio::select(cli.portfolio.as_deref()) {
         eprintln!("\n  {} {:#}\n", colored::Colorize::red("Error:"), e);
@@ -1360,28 +1698,39 @@ async fn main() {
     }
 
     let result = match cli.command {
-        Commands::Quote { symbols, json } => commands::cmd_quote(&symbols, m, json).await,
+        Commands::Quote { symbols, out } => commands::cmd_quote(&symbols, m, out.into()).await,
         Commands::Deep { symbol, period } => commands::cmd_deep(&symbol, &period, m).await,
-        Commands::Markets { json, crypto, fx } => commands::cmd_markets(m, json, crypto, fx).await,
+        Commands::Markets { out, crypto, fx } => {
+            commands::cmd_markets(m, out.into(), crypto, fx).await
+        }
         Commands::Dashboard => commands::cmd_dashboard(m).await,
-        Commands::Search { query, json } => commands::cmd_search(&query, json).await,
-        Commands::Doctor => commands::cmd_doctor(m).await,
+        Commands::Search { query, out } => commands::cmd_search(&query, out.into()).await,
+        Commands::Doctor => commands::cmd_doctor(m, sources).await,
 
         Commands::Analyze { symbol } => commands::cmd_analyze(&symbol, m).await,
-        Commands::Technical { symbol, period } => {
-            commands::cmd_technical(&symbol, &period, m).await
-        }
+        Commands::Technical {
+            symbol,
+            period,
+            out,
+        } => commands::cmd_technical(&symbol, &period, m, out.into()).await,
         Commands::History {
             symbol,
             period,
             json,
-        } => commands::cmd_history(&symbol, &period, m, json).await,
+            csv,
+        } => commands::cmd_history(&symbol, &period, m, Format::from_flags(json, csv)).await,
         Commands::Chart { symbol } => commands::cmd_chart(&symbol, m).await,
-        Commands::Compare { symbols } => commands::cmd_compare(&symbols, m).await,
-        Commands::Risk { symbol, period } => commands::cmd_risk(&symbol, &period, m).await,
-        Commands::Correlate { symbols } => commands::cmd_correlate(&symbols, m).await,
+        Commands::Compare { symbols, out } => commands::cmd_compare(&symbols, m, out.into()).await,
+        Commands::Risk {
+            symbol,
+            period,
+            out,
+        } => commands::cmd_risk(&symbol, &period, m, out.into()).await,
+        Commands::Correlate { symbols, out } => {
+            commands::cmd_correlate(&symbols, m, out.into()).await
+        }
         Commands::Timeframes { symbol } => commands::cmd_multitimeframe(&symbol, m).await,
-        Commands::Returns { symbol } => commands::cmd_returns(&symbol, m).await,
+        Commands::Returns { symbol, out } => commands::cmd_returns(&symbol, m, out.into()).await,
         Commands::Patterns { symbol, period } => commands::cmd_patterns(&symbol, &period, m).await,
         Commands::Support { symbol, period } => commands::cmd_support(&symbol, &period, m).await,
         Commands::Fibs { symbol, period } => commands::cmd_fibs(&symbol, &period, m).await,
@@ -1398,8 +1747,8 @@ async fn main() {
             period,
         } => commands::cmd_forecast(&symbol, days, &period, m).await,
 
-        Commands::Movers => commands::cmd_movers(m).await,
-        Commands::Sectors => commands::cmd_sectors(m).await,
+        Commands::Movers { out } => commands::cmd_movers(m, out.into()).await,
+        Commands::Sectors { out } => commands::cmd_sectors(m, out.into()).await,
         Commands::Heatmap => commands::cmd_heatmap(m).await,
         Commands::Sentiment => commands::cmd_sentiment().await,
         Commands::News { symbol } => commands::cmd_news(&symbol, m).await,
@@ -1414,8 +1763,12 @@ async fn main() {
         Commands::Surprise => commands::cmd_surprise(m).await,
         Commands::Matrix => commands::cmd_matrix(m).await,
         Commands::Picks => commands::cmd_picks(m).await,
-        Commands::Screen { category } => commands::cmd_screen(&value_name(category), m).await,
-        Commands::Dividends { symbol } => commands::cmd_dividends(&symbol, m).await,
+        Commands::Screen { category, out } => {
+            commands::cmd_screen(&value_name(category), m, out.into()).await
+        }
+        Commands::Dividends { symbol, out } => {
+            commands::cmd_dividends(&symbol, m, out.into()).await
+        }
 
         Commands::Mf { action } => match action {
             MfCmd::Search { query, limit, json } => {
@@ -1530,12 +1883,14 @@ async fn main() {
             symbol,
             amount,
             period,
-        } => commands::cmd_sip(&symbol, amount, &period, m).await,
+            out,
+        } => commands::cmd_sip(&symbol, amount, &period, m, out.into()).await,
         Commands::Whatif {
             symbol,
             amount,
             date,
-        } => commands::cmd_whatif(&symbol, amount, &date, m).await,
+            out,
+        } => commands::cmd_whatif(&symbol, amount, &date, m, out.into()).await,
         Commands::Intraday {
             amount,
             target,
@@ -1552,12 +1907,12 @@ async fn main() {
             }
             Some(SimCmd::Status) => commands::cmd_sim("status", None, None, m).await,
             Some(SimCmd::Settle { now }) => commands::cmd_sim_settle(now).await,
-            Some(SimCmd::History) => commands::cmd_sim("history", None, None, m).await,
+            Some(SimCmd::History { out }) => commands::cmd_sim_history(m, out.into()),
             None => commands::cmd_sim("help", None, None, m).await,
         },
         Commands::Report { what } => commands::cmd_report(&what, m).await,
 
-        Commands::Portfolio { base, action } => match action {
+        Commands::Portfolio { base, action, out } => match action {
             Some(PortfolioCmd::Add {
                 symbol,
                 shares,
@@ -1580,19 +1935,24 @@ async fn main() {
                 commands::cmd_portfolio_remove(&symbol, m).await
             }
             Some(PortfolioCmd::List) => commands::cmd_portfolio_list(),
-            Some(PortfolioCmd::Show) | None => {
+            Some(PortfolioCmd::Show { out: show }) => {
                 let base = base.map(|b| value_name(b).to_uppercase());
-                commands::cmd_portfolio_show(m, base.as_deref()).await
+                commands::cmd_portfolio_show(m, base.as_deref(), out.or(show)).await
+            }
+            None => {
+                let base = base.map(|b| value_name(b).to_uppercase());
+                commands::cmd_portfolio_show(m, base.as_deref(), out.into()).await
             }
         },
-        Commands::Watch { action } => match action {
+        Commands::Watch { action, out } => match action {
             Some(WatchCmd::Add { symbols }) => commands::cmd_watchlist("add", &symbols, m).await,
             Some(WatchCmd::Remove { symbols }) => {
                 commands::cmd_watchlist("remove", &symbols, m).await
             }
-            Some(WatchCmd::Show) | None => commands::cmd_watchlist("show", &[], m).await,
+            Some(WatchCmd::Show { out: show }) => commands::cmd_watchlist_show(out.or(show)).await,
+            None => commands::cmd_watchlist_show(out.into()).await,
         },
-        Commands::Alert { action } => match action {
+        Commands::Alert { action, out } => match action {
             Some(AlertCmd::Add {
                 symbol,
                 condition,
@@ -1605,11 +1965,12 @@ async fn main() {
                 let index = index.to_string();
                 commands::cmd_alert("remove", Some(&index), None, None, m).await
             }
-            Some(AlertCmd::Check) => commands::cmd_alert("check", None, None, None, m).await,
+            Some(AlertCmd::Check { out: check }) => commands::cmd_alert_check(out.or(check)).await,
+            Some(AlertCmd::List { out: list }) => commands::cmd_alert_list(out.or(list)),
             Some(AlertCmd::Watch { interval, once }) => {
                 commands::cmd_alert_watch(interval, once, m).await
             }
-            Some(AlertCmd::List) | None => commands::cmd_alert("list", None, None, None, m).await,
+            None => commands::cmd_alert_list(out.into()),
         },
         Commands::Export { what } => commands::cmd_export(&value_name(what), m).await,
         Commands::Import {
@@ -1620,33 +1981,102 @@ async fn main() {
         Commands::Wealth => commands::cmd_wealth(m).await,
         Commands::Rebalance => commands::cmd_rebalance(&[], m).await,
         Commands::Harvest => commands::cmd_harvest(m).await,
-        Commands::Tax { country } => commands::cmd_tax(&value_name(country), m).await,
+        Commands::Tax { country, out } => {
+            commands::cmd_tax(&value_name(country), m, out.into()).await
+        }
         Commands::Divcal => commands::cmd_divcal(m).await,
         Commands::Pcorr => commands::cmd_pcorr(m).await,
 
-        Commands::Trade { action } => {
-            let (name, symbol, qty, price, flags) = match action {
-                TradeCmd::Setup => ("setup", None, None, None, None),
-                TradeCmd::Config => ("config", None, None, None, None),
-                TradeCmd::Holdings => ("holdings", None, None, None, None),
-                TradeCmd::Positions => ("positions", None, None, None, None),
-                TradeCmd::Orders => ("orders", None, None, None, None),
-                TradeCmd::Buy { symbol, qty, flags } => {
-                    ("buy", Some(symbol), Some(qty), None, Some(flags))
-                }
-                TradeCmd::Sell { symbol, qty, flags } => {
-                    ("sell", Some(symbol), Some(qty), None, Some(flags))
-                }
+        Commands::Trade { broker, action } => {
+            use brokers::Side;
+            use commands::TradeAction as A;
+            let order = |side, symbol, qty, prices: PriceFlags, flags: OrderFlags| A::Order {
+                side,
+                symbol,
+                qty,
+                limit: prices.limit,
+                trigger: prices.trigger,
+                opts: flags.into(),
+            };
+            let gtt = |side, symbol, qty, trigger, limit, flags: OrderFlags| A::GttCreate {
+                side,
+                symbol,
+                qty,
+                trigger,
+                limit,
+                opts: flags.into(),
+            };
+            let action = match action {
+                TradeCmd::Setup => A::Setup,
+                TradeCmd::Config { keyring } => A::Config { keyring },
+                TradeCmd::Login => A::Login,
+                TradeCmd::Holdings => A::Holdings,
+                TradeCmd::Positions => A::Positions,
+                TradeCmd::Orders => A::Orders,
+                TradeCmd::Buy {
+                    symbol,
+                    qty,
+                    prices,
+                    flags,
+                } => order(Side::Buy, symbol, qty, prices, flags),
+                TradeCmd::Sell {
+                    symbol,
+                    qty,
+                    prices,
+                    flags,
+                } => order(Side::Sell, symbol, qty, prices, flags),
                 TradeCmd::Limit {
                     symbol,
                     qty,
                     price,
                     flags,
-                } => ("limit", Some(symbol), Some(qty), Some(price), Some(flags)),
+                } => order(
+                    Side::Buy,
+                    symbol,
+                    qty,
+                    PriceFlags {
+                        limit: Some(price),
+                        trigger: None,
+                    },
+                    flags,
+                ),
+                TradeCmd::Gtt { action } => match action {
+                    GttCmd::Buy {
+                        symbol,
+                        qty,
+                        trigger,
+                        limit,
+                        flags,
+                    } => gtt(Side::Buy, symbol, qty, trigger, limit, flags),
+                    GttCmd::Sell {
+                        symbol,
+                        qty,
+                        trigger,
+                        limit,
+                        flags,
+                    } => gtt(Side::Sell, symbol, qty, trigger, limit, flags),
+                    GttCmd::List => A::GttList,
+                    GttCmd::Cancel { id, flags } => A::GttCancel {
+                        id,
+                        opts: flags.into(),
+                    },
+                },
             };
-            let opts = flags.map(Into::into).unwrap_or_default();
-            commands::cmd_trade(name, symbol.as_deref(), qty, price, opts, m).await
+            commands::cmd_trade(broker, action, m).await
         }
+
+        Commands::Tui { interval, snapshot } => {
+            commands::cmd_tui(interval, snapshot.as_deref(), m).await
+        }
+        Commands::Serve { bind, allow_remote } => commands::cmd_serve(&bind, allow_remote, m).await,
+        Commands::Config { action } => match action {
+            Some(ConfigCmd::Path) => commands::cmd_config_path(),
+            Some(ConfigCmd::Init { force }) => commands::cmd_config_init(force),
+            Some(ConfigCmd::Show { out }) => {
+                commands::cmd_config_show(m, sources, &periods, out.into())
+            }
+            None => commands::cmd_config_show(m, sources, &periods, Format::Table),
+        },
 
         Commands::Notify { action } => match action {
             Some(NotifyCmd::Test) => commands::cmd_notify("test").await,
@@ -1803,6 +2233,8 @@ mod tests {
             vec!["stockwise", "sim", "start", "100000", "2"],
             vec!["stockwise", "trade", "buy", "RELIANCE", "10"],
             vec!["stockwise", "trade", "limit", "RELIANCE", "10", "1300"],
+            vec!["stockwise", "trade", "config"],
+            vec!["stockwise", "trade", "holdings"],
             vec!["stockwise", "import", "zerodha", "holdings.csv"],
             vec!["stockwise", "tax", "india"],
             vec!["stockwise", "daemon", "intraday", "25000"],
@@ -1860,7 +2292,7 @@ mod tests {
                 }) => {
                     assert_eq!(symbols, ["TCS", "INFY"]);
                     assert_eq!(weights, backtest::engine::Weights::Fixed(vec![0.6, 0.4]));
-                    assert!(flags.json);
+                    assert!(flags.out.json);
                 }
                 _ => panic!("expected backtest portfolio"),
             },
@@ -1920,6 +2352,8 @@ mod tests {
             ],
             vec!["stockwise", "backtest", "TCS", "--brokerage", "20,0.03%"],
             vec!["stockwise", "backtest", "AAPL", "-m", "us", "--costs", "us"],
+            vec!["stockwise", "backtest", "portfolio", "TCS", "INFY", "--csv"],
+            vec!["stockwise", "backtest", "wf", "TCS", "--csv"],
         ] {
             assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
         }
@@ -1950,6 +2384,7 @@ mod tests {
                 "x",
             ],
             vec!["stockwise", "backtest", "TCS", "portfolio"],
+            vec!["stockwise", "backtest", "TCS", "--json", "--csv"],
         ] {
             assert!(Cli::try_parse_from(&args).is_err(), "{args:?} should fail");
         }
@@ -2033,10 +2468,212 @@ mod tests {
     }
 
     #[test]
+    fn interface_flags_parse() {
+        assert!(Cli::try_parse_from(["stockwise", "tui"]).is_ok());
+        assert!(Cli::try_parse_from(["stockwise", "tui", "-i", "60"]).is_ok());
+        assert!(Cli::try_parse_from(["stockwise", "tui", "-i", "1"]).is_err());
+        assert!(Cli::try_parse_from(["stockwise", "serve"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "stockwise",
+                "serve",
+                "--bind",
+                "0.0.0.0:9000",
+                "--allow-remote"
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn typos_in_actions_are_rejected() {
         assert!(Cli::try_parse_from(["stockwise", "portfolio", "ad", "TCS", "1", "1"]).is_err());
         assert!(Cli::try_parse_from(["stockwise", "screen", "growht"]).is_err());
         assert!(Cli::try_parse_from(["stockwise", "trade", "by", "TCS", "1"]).is_err());
+    }
+
+    fn parses(args: &[&str]) -> bool {
+        Cli::try_parse_from(args).is_ok()
+    }
+
+    #[test]
+    fn json_and_csv_flags_parse_where_supported() {
+        for args in [
+            vec!["stockwise", "quote", "TCS", "--csv"],
+            vec!["stockwise", "portfolio", "--json"],
+            vec!["stockwise", "portfolio", "--csv"],
+            vec!["stockwise", "portfolio", "show", "--csv"],
+            vec!["stockwise", "p", "show", "--json"],
+            vec!["stockwise", "portfolio", "--base", "usd", "--json"],
+            vec!["stockwise", "watch", "--csv"],
+            vec!["stockwise", "watch", "show", "--json"],
+            vec!["stockwise", "alert", "--json"],
+            vec!["stockwise", "alert", "list", "--csv"],
+            vec!["stockwise", "alert", "check", "--json"],
+            vec!["stockwise", "technical", "TCS", "--json"],
+            vec!["stockwise", "history", "TCS", "-p", "6mo", "--csv"],
+            vec!["stockwise", "risk", "TCS", "--json"],
+            vec!["stockwise", "backtest", "TCS", "-s", "macd", "--csv"],
+            vec!["stockwise", "backtest", "TCS", "--json"],
+            vec!["stockwise", "screen", "growth", "--csv"],
+            vec!["stockwise", "movers", "--csv"],
+            vec!["stockwise", "sectors", "--json"],
+            vec!["stockwise", "compare", "TCS", "INFY", "--csv"],
+            vec!["stockwise", "correlate", "TCS", "INFY", "--csv"],
+            vec!["stockwise", "sip", "TCS", "5000", "--json"],
+            vec![
+                "stockwise",
+                "whatif",
+                "TCS",
+                "100000",
+                "2024-01-15",
+                "--json",
+            ],
+            vec!["stockwise", "returns", "TCS", "--csv"],
+            vec!["stockwise", "dividends", "ITC", "--json"],
+            vec!["stockwise", "tax", "in", "--csv"],
+            vec!["stockwise", "sim", "history", "--json"],
+            vec!["stockwise", "config", "show", "--json"],
+        ] {
+            assert!(parses(&args), "{args:?} should parse");
+        }
+    }
+
+    #[test]
+    fn json_and_csv_are_mutually_exclusive() {
+        for args in [
+            vec!["stockwise", "quote", "TCS", "--json", "--csv"],
+            vec!["stockwise", "portfolio", "--json", "--csv"],
+            vec!["stockwise", "history", "TCS", "--csv", "--json"],
+            vec!["stockwise", "backtest", "TCS", "--json", "--csv"],
+        ] {
+            assert!(!parses(&args), "{args:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn output_flags_only_where_they_make_sense() {
+        // CSV only for tables; no output flags on actions that change data.
+        assert!(!parses(&["stockwise", "technical", "TCS", "--csv"]));
+        assert!(!parses(&["stockwise", "risk", "TCS", "--csv"]));
+        assert!(!parses(&[
+            "stockwise",
+            "portfolio",
+            "add",
+            "TCS",
+            "1",
+            "1",
+            "--json"
+        ]));
+        assert!(!parses(&[
+            "stockwise",
+            "portfolio",
+            "--json",
+            "add",
+            "TCS",
+            "1",
+            "1"
+        ]));
+        assert!(!parses(&["stockwise", "watch", "add", "TCS", "--csv"]));
+    }
+
+    #[test]
+    fn output_flags_map_to_formats() {
+        let cli = Cli::try_parse_from(["stockwise", "portfolio", "show", "--csv"]).unwrap();
+        let Commands::Portfolio {
+            action: Some(PortfolioCmd::Show { out: show }),
+            out,
+            ..
+        } = cli.command
+        else {
+            panic!("expected portfolio show");
+        };
+        assert_eq!(out.or(show), Format::Csv);
+        assert_eq!(Format::from(JsonOutput { json: true }), Format::Json);
+        assert_eq!(Format::from(TableOutput::default()), Format::Table);
+    }
+
+    #[test]
+    fn config_subcommands_parse() {
+        assert!(parses(&["stockwise", "config"]));
+        assert!(parses(&["stockwise", "config", "path"]));
+        assert!(parses(&["stockwise", "config", "init", "--force"]));
+        assert!(!parses(&["stockwise", "config", "path", "--json"]));
+    }
+
+    fn with_config(text: &str) -> clap::Command {
+        let cmd = build_cli();
+        let names: Vec<String> = period_defaults(&cmd).into_iter().map(|(c, _)| c).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let cfg = config::parse(text, &refs).unwrap();
+        with_config_defaults(cmd, &cfg)
+    }
+
+    fn matches(cmd: clap::Command, args: &[&str]) -> Cli {
+        Cli::from_arg_matches(&cmd.try_get_matches_from(args).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn config_file_sets_defaults_and_flags_still_win() {
+        let cfg = "market = \"us\"\nai = true\n[periods]\ntechnical = \"6mo\"\n";
+
+        let cli = matches(with_config(cfg), &["stockwise", "technical", "AAPL"]);
+        assert_eq!(cli.market, Market::Us, "config beats the built-in default");
+        assert!(cli.ai && !cli.no_ai);
+        let Commands::Technical { period, .. } = cli.command else {
+            panic!("expected technical");
+        };
+        assert_eq!(period, "6mo");
+
+        let cli = matches(
+            with_config(cfg),
+            &[
+                "stockwise",
+                "-m",
+                "in",
+                "--no-ai",
+                "technical",
+                "TCS",
+                "-p",
+                "1y",
+            ],
+        );
+        assert_eq!(cli.market, Market::In, "a flag beats the config file");
+        assert!(cli.no_ai);
+        let Commands::Technical { period, .. } = cli.command else {
+            panic!("expected technical");
+        };
+        assert_eq!(period, "1y");
+
+        // Other commands keep their built-in default period.
+        let cli = matches(with_config(cfg), &["stockwise", "risk", "TCS"]);
+        let Commands::Risk { period, .. } = cli.command else {
+            panic!("expected risk");
+        };
+        assert_eq!(period, "1y");
+    }
+
+    #[test]
+    fn help_shows_the_config_default() {
+        let mut cmd = with_config("[periods]\nbacktest = \"5y\"\n");
+        let help = cmd
+            .find_subcommand_mut("backtest")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("[default: 5y]"), "{help}");
+    }
+
+    #[test]
+    fn period_defaults_cover_every_period_command() {
+        let names: Vec<String> = period_defaults(&build_cli())
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect();
+        for cmd in ["technical", "history", "risk", "backtest", "sip", "deep"] {
+            assert!(names.iter().any(|n| n == cmd), "{cmd} takes --period");
+        }
+        assert!(!names.iter().any(|n| n == "quote"));
     }
 
     fn options_cmd(args: &[&str]) -> (Option<OptionsCmd>, Option<String>, String) {
@@ -2125,10 +2762,111 @@ mod tests {
     }
 
     #[test]
+    fn trade_broker_flag_and_order_types_parse() {
+        for args in [
+            vec!["stockwise", "trade", "--broker", "zerodha", "holdings"],
+            vec!["stockwise", "trade", "holdings", "--broker", "kite"],
+            vec!["stockwise", "trade", "orders", "--broker", "Upstox"],
+            vec!["stockwise", "trade", "login", "--broker", "fyers"],
+            vec![
+                "stockwise",
+                "trade",
+                "config",
+                "--keyring",
+                "--broker",
+                "dhan",
+            ],
+            vec![
+                "stockwise",
+                "trade",
+                "sell",
+                "TCS",
+                "5",
+                "--trigger",
+                "3400",
+            ],
+            vec![
+                "stockwise",
+                "trade",
+                "sell",
+                "TCS",
+                "5",
+                "--trigger",
+                "3400",
+                "--limit",
+                "3390",
+            ],
+            vec![
+                "stockwise",
+                "trade",
+                "buy",
+                "TCS",
+                "5",
+                "--limit",
+                "3300",
+                "--dry-run",
+            ],
+            vec![
+                "stockwise",
+                "trade",
+                "gtt",
+                "sell",
+                "TCS",
+                "5",
+                "--trigger",
+                "3400",
+                "--limit",
+                "3390",
+            ],
+            vec!["stockwise", "trade", "gtt", "list"],
+            vec!["stockwise", "trade", "gtt", "cancel", "12345", "--yes"],
+            vec!["stockwise", "import", "groww", "h.csv"],
+            vec!["stockwise", "import", "upstox", "h.csv"],
+            vec!["stockwise", "import", "cas", "cas.json"],
+            vec!["stockwise", "import", "cams", "cas.json"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
+        }
+        // GTT needs both prices; unknown brokers are rejected.
+        assert!(
+            Cli::try_parse_from([
+                "stockwise",
+                "trade",
+                "gtt",
+                "sell",
+                "TCS",
+                "5",
+                "--trigger",
+                "1"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["stockwise", "trade", "--broker", "robinhood", "holdings"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn trade_defaults_to_angel() {
+        // SAFETY of the default: an unset STOCKWISE_BROKER keeps 0.3 behaviour.
+        if std::env::var_os("STOCKWISE_BROKER").is_some() {
+            return;
+        }
+        let cli = Cli::try_parse_from(["stockwise", "trade", "holdings"]).unwrap();
+        let Commands::Trade { broker, .. } = cli.command else {
+            panic!("expected trade");
+        };
+        assert_eq!(broker, brokers::BrokerKind::Angel);
+    }
+
+    #[test]
     fn value_names_match_handler_strings() {
         assert_eq!(value_name(CostsArg::InDelivery), "in-delivery");
         assert_eq!(value_name(FillArg::NextOpen), "next-open");
         assert_eq!(value_name(ImportSource::Kite), "kite");
+        assert_eq!(value_name(ImportSource::Groww), "groww");
+        assert_eq!(value_name(ImportSource::Cas), "cas");
         assert_eq!(value_name(TaxCountry::In), "in");
         assert_eq!(value_name(AlertWhen::Above), "above");
         assert_eq!(value_name(DaemonMode::Longterm), "longterm");

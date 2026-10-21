@@ -857,7 +857,8 @@ pub fn xirr(flows: &[(NaiveDate, f64)], value_now: f64, today: NaiveDate) -> Opt
 /// live quote says otherwise.
 pub fn symbol_currency(symbol: &str) -> Option<&'static str> {
     let s = symbol.to_uppercase();
-    if s.ends_with(".NS") || s.ends_with(".BO") || s.ends_with("-INR") {
+    // `MF:<AMFI code>` — Indian mutual funds from a CAS import.
+    if s.ends_with(".NS") || s.ends_with(".BO") || s.ends_with("-INR") || s.starts_with("MF:") {
         Some("INR")
     } else if s.ends_with(".L") {
         Some("GBp")
@@ -1614,6 +1615,7 @@ mod tests {
         assert_eq!(symbol_currency("BTC-USD"), Some("USD"));
         assert_eq!(symbol_currency("VOD.L"), Some("GBp"));
         assert_eq!(symbol_currency("SAP.DE"), None);
+        assert_eq!(symbol_currency("MF:118834"), Some("INR"));
     }
 
     #[test]

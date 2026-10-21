@@ -1,0 +1,27 @@
+{
+  "status": true,
+  "message": "SUCCESS",
+  "errorcode": "",
+  "data": [
+    {
+      "stoplossprice": 0.0,
+      "stoplosstriggerprice": 0.0,
+      "gttType": "GENERIC",
+      "status": "NEW",
+      "createddate": "2026-10-20T10:15:02Z",
+      "updateddate": "2026-10-20T10:15:02Z",
+      "expirydate": "2027-10-20T10:15:02Z",
+      "clientid": "A1",
+      "tradingsymbol": "SBIN-EQ",
+      "symboltoken": "3045",
+      "exchange": "NSE",
+      "producttype": "DELIVERY",
+      "transactiontype": "SELL",
+      "price": 779.0,
+      "qty": 10,
+      "triggerprice": 780.0,
+      "disclosedqty": 0,
+      "id": 757
+    }
+  ]
+}

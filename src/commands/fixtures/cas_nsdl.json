@@ -1,0 +1,21 @@
+{
+  "statement_period": { "from": "01-Sep-2026", "to": "30-Sep-2026" },
+  "file_type": "NSDL",
+  "investor_info": { "name": "JOHN DOE", "email": "john@example.com", "address": "1, MAIN STREET, BENGALURU 560001", "mobile": "+919999999999" },
+  "accounts": [
+    {
+      "name": "ZERODHA BROKING LIMITED", "type": "NSDL", "dp_id": "IN300123", "client_id": "12345678", "folios": 1, "balance": "182345.50",
+      "owners": [ { "name": "JOHN DOE", "PAN": "ABCDE1234F" } ],
+      "equities": [
+        { "isin": "INE040A01034", "name": "HDFC BANK LIMITED", "num_shares": "100", "price": "1710.25", "value": "171025.00", "symbol": "HDFCBANK", "exchange": "NSE" },
+        { "isin": "INE002A01018", "name": "RELIANCE INDUSTRIES LIMITED", "num_shares": "8", "price": "1410.00", "value": "11280.00", "symbol": "RELIANCE", "exchange": "NSE" }
+      ],
+      "mutual_funds": [
+        { "isin": "INF879O01027", "name": "Parag Parikh Flexi Cap Fund", "amfi": "122639", "balance": "10.5", "nav": "85.1", "value": "893.55", "avg_cost": "60.00", "total_cost": "630.00" }
+      ],
+      "bonds": []
+    }
+  ],
+  "nps": null,
+  "parse_warnings": []
+}

@@ -8,6 +8,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `stockwise tui` — a full-screen, read-only live dashboard: indices,
+  watchlist, portfolio P&L, triggered alerts and a chart of the selected
+  symbol (periods 1d–5y), with symbol search to add to the watchlist. Refresh
+  interval with `-i` (default 30s); works at 80×24 and degrades on smaller
+  terminals; honours `NO_COLOR`. See [docs/tui.md](docs/tui.md).
+- `stockwise serve` — a read-only JSON API (`/api/quote`, `/api/history/{symbol}`,
+  `/api/markets`, `/api/search`, `/api/portfolio`, `/api/watchlist`,
+  `/api/alerts`), `/healthz`, and Prometheus `/metrics` (request counts and
+  latency, Yahoo errors, cache hits, and the intraday daemon's open paper
+  positions, day P&L and kill switch). Loopback only unless `--allow-remote`
+  with a `STOCKWISE_API_TOKEN` bearer token. See [docs/server.md](docs/server.md).
+- Cargo features `tui` and `server` (both default); `--no-default-features`
+  builds without ratatui and axum.
+- `--json` on 17 more commands: `portfolio`, `watch`,
+  `alert list`/`check`, `technical`, `risk`, `backtest`, `screen`, `movers`,
+  `sectors`, `compare`, `correlate`, `sip`, `whatif`, `returns`, `dividends`,
+  `tax` and `sim history`, alongside `quote`, `history`, `markets` and
+  `search`. Keys are snake_case; shapes are documented in docs/commands.md.
+- `--csv` (RFC 4180, header row first) for tables: `portfolio`, `watch`,
+  `alert list`/`check`, `movers`, `screen`, `sectors`, `history` bars,
+  `backtest` trades, `compare`, `correlate`, `returns`, `tax`, `quote`,
+  `markets` and `search`. `--json` and `--csv` are mutually exclusive.
+- Config file (`config.toml` in the platform config directory, or
+  `STOCKWISE_CONFIG`) for `market`, `ai`, `model`, `ollama_host`,
+  `redis_url`, `home`, and a default `-p` per command under `[periods]`.
+  Precedence: flag > environment variable > config file > default, and
+  `--help` shows defaults from the file.
+- `stockwise config [show]`, `config path` and `config init [--force]`.
+- `--no-ai` turns the AI section off when `STOCKWISE_AI` or the config file
+  turn it on.
+- `doctor` reports the config file and whether it parsed.
+
+### Changed
+- `backtest` with too little history is an error (exit 1) instead of a
+  message with exit 0.
+- `movers` leaves out stocks without a change today instead of ranking them
+  at 0%; `correlate` shows N/A instead of 0 when two series can't be compared.
+- `watch` lists symbols that have no live quote (as N/A) instead of hiding
+  them; `dividends` errors when there is no live price instead of dividing by
+  zero.
+- An invalid config file stops every command except `config`, `doctor` and
+  `completions`, with an error naming the file and the key.
+- `quote`, `history` and `markets` gather their data through a shared layer
+  (`src/views.rs`) that the TUI and the server also use, so `--json` and the
+  HTTP API return the same shapes.
+- `portfolio --json/--csv` and `tax --json/--csv` follow the lot-based
+  portfolio: holdings carry `xirr_percent`, totals are in the base currency
+  (`--base`), and holdings without an exchange rate are listed in
+  `unconverted`. `tax --json` reports this tax year's sales, each open
+  holding's short- and long-term gain, and the estimate with and without
+  selling everything today.
+- The config file also covers `lang`, `quote_currency`, `portfolio`,
+  `ai_provider`, `data_provider` and a `[notify]` table for notification
+  channels (API keys stay in environment variables). `config show` and
+  `doctor` warn when the file holds secrets and other users can read it.
+
+### Added
+- **More brokers (experimental — untested against a live account):** Zerodha
+  Kite Connect, Upstox, Dhan and Fyers via `trade --broker <name>` (or
+  `STOCKWISE_BROKER`): holdings (synced into `portfolio`), positions, order
+  book, and orders. Built from each broker's public API docs and tested against
+  a local mock server. They stay read-only until you add
+  `"enable_orders": true` to the broker's config file. `trade login` handles the
+  daily browser login (Kite, Upstox, Fyers) or a pasted Dhan token.
+- **Stop-loss and GTT orders:** `trade buy|sell ... --trigger T [--limit P]`
+  places SL-M / SL orders; `trade gtt buy|sell|list|cancel` manages single-leg
+  GTTs (Angel One, Kite, Dhan Forever Orders, Fyers). Triggers are checked
+  against the side, the limit and the last price before anything is sent.
+  These are experimental on Angel One too and need `"enable_orders": true`.
+- **OS keyring for broker secrets** (macOS Keychain, Windows Credential
+  Manager, Secret Service). Secrets in an existing `angel_config.json` move
+  into the keyring automatically; `trade config --keyring` does it now. Without
+  a keyring (headless Linux) the owner-only file is used; `STOCKWISE_KEYRING=off`
+  forces that. `doctor` shows where each broker's secrets live.
+- `import groww`, `import upstox`, and `import cas` (CAMS / KFintech / NSDL /
+  CDSL statements as casparser JSON or CSV). Mutual funds are stored as
+  `MF:<AMFI code>`. Groww's ISIN-only exports are mapped to NSE tickers.
 - **Trading costs in backtests**, on by default: `--costs in-delivery`
   (brokerage, STT, exchange and SEBI fees, GST, stamp duty, DP charge),
   `in-intraday`, `us`, `crypto`, `fx`, or `none`, plus `--slippage-bps` and
@@ -22,13 +99,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   likely overfitting.
 - **Strategy files**: entry/exit rules in TOML over the built-in indicators
   (`and`/`or`/`not`, crossovers, arithmetic, stop-loss and take-profit,
-  parameters and a walk-forward grid). Load with `-s NAME` from
-  `~/.config/stockwise/strategies/` or `-s file:PATH`; override parameters
+  parameters and a walk-forward grid). Load with `-s NAME` from a
+  `strategies/` folder next to the config file, or `-s file:PATH`; override parameters
   with `-P name=value`. The six built-ins ship as files in
   `examples/strategies/`, with two more examples.
 - `backtest strategies` lists and checks strategy files.
 - `intraday -s STRATEGY` adds a strategy file as an extra signal.
-- `--json` on every form of `backtest`.
+- `--json` on every form of `backtest` (and `--csv` for their trades); the
+  `backtest --json` shape changed with the new engine (see
+  docs/backtesting.md).
 - Docs: [docs/backtesting.md](docs/backtesting.md).
 
 - `stockwise man` prints the `stockwise.1` man page; `stockwise man --dir DIR`
@@ -199,6 +278,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (e.g. `AAPL` while the market is India).
 
 ### Changed
+- Every order type and broker goes through one safety flow
+  (`place_live_order`): exact instrument, price checks, preview,
+  `max_order_value`, `--dry-run`, typed `yes` / `--yes`. Angel One MARKET and
+  LIMIT orders behave as in 0.3.
+- `trade` tables show N/A instead of ₹0.00 when the broker sends no price.
+- `docs/angel-one.md` is now `docs/brokers.md`.
+
+### Fixed
+- Angel One P&L and position quantities read the documented fields
+  (`profitandloss`, `netqty`); they showed 0 before.
 - **Backtests fill at the next bar's open** instead of the signal bar's close,
   which used a price not yet known when the signal fired. `--fill close`
   restores the old behaviour.
@@ -207,7 +296,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a per-trade ratio. Max drawdown uses the daily equity curve.
 - Backtest bars with any missing price are dropped together; before, a gap in
   one series could misalign opens, highs, lows and closes.
-- `backtest` with too little history is an error (exit 1).
 
 ## [0.3.0] - 2026-10-21
 

@@ -1,0 +1,5 @@
+amc,folio,pan,scheme,advisor,isin,amfi,date,description,amount,units,nav,balance,type,dividend
+HDFC Mutual Fund,12345678 / 90,ABCDE1234F,HDFC Flexi Cap Fund - Direct Plan - Growth,ARN-12345,INF179K01VY8,118834,2024-04-02,SIP Purchase - Instalment 1/12,4999.75,33.412,149.64,33.412,PURCHASE_SIP,
+HDFC Mutual Fund,12345678 / 90,ABCDE1234F,HDFC Flexi Cap Fund - Direct Plan - Growth,ARN-12345,INF179K01VY8,118834,2024-04-02,*** Stamp Duty ***,0.25,,,,STAMP_DUTY_TAX,
+HDFC Mutual Fund,12345678 / 90,ABCDE1234F,HDFC Flexi Cap Fund - Direct Plan - Growth,ARN-12345,INF179K01VY8,118834,2024-09-10,Redemption,1499.00,-10.000,149.90,23.412,REDEMPTION,
+HDFC Mutual Fund,55555,ABCDE1234F,HDFC Flexi Cap Fund - Direct Plan - Growth,,INF179K01VY8,118834,2024-05-02,Purchase,1000.00,6.5,153.85,6.5,PURCHASE,

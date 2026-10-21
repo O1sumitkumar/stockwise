@@ -51,6 +51,8 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets -- -D warnings
+      - name: clippy (minimal build, no tui/server)
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
 
   msrv:
     name: msrv (1.88)

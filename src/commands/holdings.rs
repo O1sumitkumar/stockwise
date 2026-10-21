@@ -31,63 +31,125 @@ pub async fn cmd_watchlist(action: &str, symbols: &[String], market: Market) -> 
             }
             wl.save()?;
         }
-        "show" | "list" | "" => {
-            if wl.symbols.is_empty() {
-                println!(
-                    "\n  {}",
-                    "Watchlist is empty. Use 'stockwise watch add <SYMBOL>' to add.".dimmed()
-                );
-                return Ok(());
-            }
-
-            let client = YahooClient::new().await?;
-            let sym_refs: Vec<&str> = wl.symbols.iter().map(|s| s.as_str()).collect();
-            let quotes = client.get_quote(&sym_refs).await?;
-
-            print_header("Watchlist");
-            println!(
-                "  {:<12} {:>10} {:>12} {:>10} {:>14}",
-                "Symbol".bold(),
-                "Price".bold(),
-                "Change".bold(),
-                "Change %".bold(),
-                "Volume".bold(),
-            );
-            println!("  {}", "─".repeat(62).dimmed());
-
-            for q in &quotes {
-                let sym = q.symbol.as_deref().unwrap_or("???");
-                let cur = q.currency.as_deref();
-                let price = q.regular_market_price.unwrap_or(0.0);
-                let change = q.regular_market_change.unwrap_or(0.0);
-                let pct = q.regular_market_change_percent.unwrap_or(0.0);
-                let vol = q.regular_market_volume.unwrap_or(0);
-                let change_str = if change >= 0.0 {
-                    format!("+{:.2}", change).green().to_string()
-                } else {
-                    format!("{:.2}", change).red().to_string()
-                };
-                let pct_str = if pct >= 0.0 {
-                    format!("+{:.2}%", pct).green().to_string()
-                } else {
-                    format!("{:.2}%", pct).red().to_string()
-                };
-                println!(
-                    "  {:<12} {:>10} {:>12} {:>10} {:>14}",
-                    sym.cyan(),
-                    format_price(price, cur),
-                    change_str,
-                    pct_str,
-                    format_volume(vol),
-                );
-            }
-            println!();
-        }
+        "show" | "list" | "" => return cmd_watchlist_show(Format::Table).await,
         _ => bail!(
             "Unknown watch action '{}'. Use add, remove, or show",
             action
         ),
     }
+    Ok(())
+}
+
+/// One watchlist entry as `watch --json/--csv` prints it.
+#[derive(Debug, Serialize)]
+pub(crate) struct WatchRow {
+    pub(crate) symbol: String,
+    pub(crate) price: Option<f64>,
+    pub(crate) change: Option<f64>,
+    pub(crate) change_percent: Option<f64>,
+    pub(crate) volume: Option<u64>,
+    pub(crate) currency: Option<String>,
+}
+
+impl CsvRow for WatchRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "symbol",
+        "price",
+        "change",
+        "change_percent",
+        "volume",
+        "currency",
+    ];
+}
+
+/// One row per watched symbol, in watchlist order; nulls when Yahoo has no quote.
+pub(crate) fn watch_rows(symbols: &[String], quotes: &[crate::api::Quote]) -> Vec<WatchRow> {
+    symbols
+        .iter()
+        .map(|sym| {
+            let q = quotes.iter().find(|q| q.symbol.as_deref() == Some(sym));
+            WatchRow {
+                symbol: sym.clone(),
+                price: q.and_then(|q| q.regular_market_price),
+                change: q.and_then(|q| q.regular_market_change),
+                change_percent: q.and_then(|q| q.regular_market_change_percent),
+                volume: q.and_then(|q| q.regular_market_volume),
+                currency: q.and_then(|q| q.currency.clone()),
+            }
+        })
+        .collect()
+}
+
+/// `watch [show]`: the watchlist with live prices.
+pub async fn cmd_watchlist_show(fmt: Format) -> Result<()> {
+    let wl = Watchlist::load()?;
+    if wl.symbols.is_empty() && fmt.is_table() {
+        println!(
+            "\n  {}",
+            "Watchlist is empty. Use 'stockwise watch add <SYMBOL>' to add.".dimmed()
+        );
+        return Ok(());
+    }
+
+    let quotes = if wl.symbols.is_empty() {
+        Vec::new()
+    } else {
+        let sym_refs: Vec<&str> = wl.symbols.iter().map(|s| s.as_str()).collect();
+        YahooClient::new().await?.get_quote(&sym_refs).await?
+    };
+    let rows = watch_rows(&wl.symbols, &quotes);
+    match fmt {
+        Format::Json => return output::print_json(&rows),
+        Format::Csv => return output::print_csv(&rows),
+        Format::Table => {}
+    }
+
+    print_header("Watchlist");
+    println!(
+        "  {:<12} {:>10} {:>12} {:>10} {:>14}",
+        "Symbol".bold(),
+        "Price".bold(),
+        "Change".bold(),
+        "Change %".bold(),
+        "Volume".bold(),
+    );
+    println!("  {}", "─".repeat(62).dimmed());
+
+    for row in &rows {
+        let cur = row.currency.as_deref();
+        let Some(price) = row.price else {
+            println!(
+                "  {:<12} {:>10} {:>12} {:>10} {:>14}",
+                row.symbol.yellow(),
+                "N/A",
+                "—",
+                "—",
+                "—"
+            );
+            continue;
+        };
+        let change = row.change.unwrap_or(0.0);
+        let pct = row.change_percent.unwrap_or(0.0);
+        let change_str = if change >= 0.0 {
+            format!("+{:.2}", change).green().to_string()
+        } else {
+            format!("{:.2}", change).red().to_string()
+        };
+        let pct_str = if pct >= 0.0 {
+            format!("+{:.2}%", pct).green().to_string()
+        } else {
+            format!("{:.2}%", pct).red().to_string()
+        };
+        println!(
+            "  {:<12} {:>10} {:>12} {:>10} {:>14}",
+            row.symbol.cyan(),
+            format_price(price, cur),
+            change_str,
+            pct_str,
+            row.volume.map_or("N/A".to_string(), format_volume),
+        );
+    }
+    println!();
     Ok(())
 }
 
@@ -135,88 +197,192 @@ pub async fn cmd_alert(
                 bail!("No alert #{} — see `stockwise alert list`", idx);
             }
         }
-        "check" => {
-            if store.alerts.is_empty() {
-                println!("  {}", "No alerts configured.".dimmed());
-                return Ok(());
-            }
-            let a_syms: Vec<String> = store.alerts.iter().map(|a| a.symbol.clone()).collect();
-            let mut unique: Vec<&str> = a_syms.iter().map(|s| s.as_str()).collect();
-            unique.sort();
-            unique.dedup();
-            let client = YahooClient::new().await?;
-            let quotes = client.get_quote(&unique).await?;
-            print_header("Alert Check");
-            let mut triggered = 0;
-            for alert in &store.alerts {
-                let Some(price) = quotes
-                    .iter()
-                    .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()))
-                    .and_then(|q| q.regular_market_price)
-                else {
-                    println!(
-                        "  {} {} — no live price, skipped",
-                        "?".yellow(),
-                        alert.symbol.cyan()
-                    );
-                    continue;
-                };
-                let cur = quotes
-                    .iter()
-                    .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()))
-                    .and_then(|q| q.currency.as_deref());
-                let is_hit = match alert.condition {
-                    AlertCondition::Above => price >= alert.target,
-                    AlertCondition::Below => price <= alert.target,
-                };
-                let status = if is_hit {
-                    triggered += 1;
-                    "TRIGGERED".red().bold().to_string()
-                } else {
-                    "waiting".dimmed().to_string()
-                };
-                println!(
-                    "  {} {} {:.2} | Now: {} | {}",
-                    alert.symbol.cyan(),
-                    alert.condition,
-                    alert.target,
-                    format_price(price, cur),
-                    status
-                );
-            }
-            if triggered == 0 {
-                println!("\n  {}", "No alerts triggered.".dimmed());
-            } else {
-                println!("\n  {} {} alert(s) triggered!", "⚠".yellow(), triggered);
-            }
-            println!();
-        }
-        "list" | "show" | "" => {
-            if store.alerts.is_empty() {
-                println!(
-                    "\n  {}",
-                    "No alerts. Use 'stockwise alert add <SYMBOL> above/below <PRICE>'.".dimmed()
-                );
-                return Ok(());
-            }
-            print_header("Price Alerts");
-            for (i, a) in store.alerts.iter().enumerate() {
-                println!(
-                    "  #{} {} {} {:.2}  (set {})",
-                    i,
-                    a.symbol.cyan(),
-                    a.condition,
-                    a.target,
-                    a.created_at.dimmed()
-                );
-            }
-            println!();
-        }
+        "check" => return cmd_alert_check(Format::Table).await,
+        "list" | "show" | "" => return cmd_alert_list(Format::Table),
         _ => bail!(
             "Unknown alert action '{}'. Use add, remove, check, or list",
             action
         ),
     }
+    Ok(())
+}
+
+/// One alert as `alert list --json/--csv` prints it. `index` is the number
+/// `alert remove` takes.
+#[derive(Debug, Serialize)]
+pub(crate) struct AlertRow {
+    pub(crate) index: usize,
+    pub(crate) symbol: String,
+    pub(crate) condition: String,
+    pub(crate) target: f64,
+    pub(crate) created_at: String,
+}
+
+impl CsvRow for AlertRow {
+    const COLUMNS: &'static [&'static str] =
+        &["index", "symbol", "condition", "target", "created_at"];
+}
+
+fn alert_rows(store: &AlertStore) -> Vec<AlertRow> {
+    store
+        .alerts
+        .iter()
+        .enumerate()
+        .map(|(i, a)| AlertRow {
+            index: i,
+            symbol: a.symbol.clone(),
+            condition: a.condition.to_string(),
+            target: a.target,
+            created_at: a.created_at.clone(),
+        })
+        .collect()
+}
+
+/// `alert [list]`.
+pub fn cmd_alert_list(fmt: Format) -> Result<()> {
+    let store = AlertStore::load()?;
+    let rows = alert_rows(&store);
+    match fmt {
+        Format::Json => return output::print_json(&rows),
+        Format::Csv => return output::print_csv(&rows),
+        Format::Table => {}
+    }
+    if rows.is_empty() {
+        println!(
+            "\n  {}",
+            "No alerts. Use 'stockwise alert add <SYMBOL> above/below <PRICE>'.".dimmed()
+        );
+        return Ok(());
+    }
+    print_header("Price Alerts");
+    for a in &rows {
+        println!(
+            "  #{} {} {} {:.2}  (set {})",
+            a.index,
+            a.symbol.cyan(),
+            a.condition,
+            a.target,
+            a.created_at.dimmed()
+        );
+    }
+    println!();
+    Ok(())
+}
+
+/// One alert checked against its live price, as `alert check --json/--csv`
+/// prints it. `status` is `triggered`, `waiting`, or `no_price`.
+#[derive(Debug, Serialize)]
+pub(crate) struct AlertCheckRow {
+    pub(crate) index: usize,
+    pub(crate) symbol: String,
+    pub(crate) condition: String,
+    pub(crate) target: f64,
+    pub(crate) price: Option<f64>,
+    pub(crate) currency: Option<String>,
+    pub(crate) status: &'static str,
+}
+
+impl CsvRow for AlertCheckRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "index",
+        "symbol",
+        "condition",
+        "target",
+        "price",
+        "currency",
+        "status",
+    ];
+}
+
+pub(crate) fn alert_check_rows(
+    alerts: &[crate::alerts::Alert],
+    quotes: &[crate::api::Quote],
+) -> Vec<AlertCheckRow> {
+    alerts
+        .iter()
+        .enumerate()
+        .map(|(i, alert)| {
+            let quote = quotes
+                .iter()
+                .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()));
+            let price = quote.and_then(|q| q.regular_market_price);
+            // No live price: never report it as triggered.
+            let status = match price {
+                None => "no_price",
+                Some(p) => {
+                    let hit = match alert.condition {
+                        AlertCondition::Above => p >= alert.target,
+                        AlertCondition::Below => p <= alert.target,
+                    };
+                    if hit { "triggered" } else { "waiting" }
+                }
+            };
+            AlertCheckRow {
+                index: i,
+                symbol: alert.symbol.clone(),
+                condition: alert.condition.to_string(),
+                target: alert.target,
+                price,
+                currency: quote.and_then(|q| q.currency.clone()),
+                status,
+            }
+        })
+        .collect()
+}
+
+/// `alert check`: every alert against its live price.
+pub async fn cmd_alert_check(fmt: Format) -> Result<()> {
+    let store = AlertStore::load()?;
+    if store.alerts.is_empty() && fmt.is_table() {
+        println!("  {}", "No alerts configured.".dimmed());
+        return Ok(());
+    }
+    let quotes = if store.alerts.is_empty() {
+        Vec::new()
+    } else {
+        let mut unique: Vec<&str> = store.alerts.iter().map(|a| a.symbol.as_str()).collect();
+        unique.sort();
+        unique.dedup();
+        YahooClient::new().await?.get_quote(&unique).await?
+    };
+    let rows = alert_check_rows(&store.alerts, &quotes);
+    match fmt {
+        Format::Json => return output::print_json(&rows),
+        Format::Csv => return output::print_csv(&rows),
+        Format::Table => {}
+    }
+
+    print_header("Alert Check");
+    for row in &rows {
+        let Some(price) = row.price else {
+            println!(
+                "  {} {} — no live price, skipped",
+                "?".yellow(),
+                row.symbol.cyan()
+            );
+            continue;
+        };
+        let status = if row.status == "triggered" {
+            "TRIGGERED".red().bold().to_string()
+        } else {
+            "waiting".dimmed().to_string()
+        };
+        println!(
+            "  {} {} {:.2} | Now: {} | {}",
+            row.symbol.cyan(),
+            row.condition,
+            row.target,
+            format_price(price, row.currency.as_deref()),
+            status
+        );
+    }
+    let triggered = rows.iter().filter(|r| r.status == "triggered").count();
+    if triggered == 0 {
+        println!("\n  {}", "No alerts triggered.".dimmed());
+    } else {
+        println!("\n  {} {} alert(s) triggered!", "⚠".yellow(), triggered);
+    }
+    println!();
     Ok(())
 }
 
@@ -321,6 +487,35 @@ pub async fn cmd_import(source: &str, file: &str, replace: bool, market: Market)
                 println!("    3. Save the CSV/Excel file");
                 println!("    4. Run: stockwise import indmoney <path-to-file.csv>");
             }
+            "groww" => {
+                println!("    1. Open {} → Stocks → Holdings", "groww.in".cyan());
+                println!(
+                    "    2. Click {} to get the holdings statement",
+                    "Download".bold()
+                );
+                println!("    3. Open the .xlsx file and save it as CSV");
+                println!("    4. Run: stockwise import groww <path-to-file.csv>");
+            }
+            "upstox" => {
+                println!(
+                    "    1. Open {} → Portfolio → Holdings",
+                    "pro.upstox.com".cyan()
+                );
+                println!("    2. Click {} and save the CSV file", "Download".bold());
+                println!("    3. Run: stockwise import upstox <path-to-file.csv>");
+            }
+            "cas" => {
+                println!(
+                    "    1. Request a detailed CAS from {} or {} (emailed as a password-protected PDF)",
+                    "camsonline.com".cyan(),
+                    "kfintech.com".cyan()
+                );
+                println!(
+                    "    2. Convert it with casparser: {}",
+                    "pip install casparser && casparser CAS.pdf -p <password> -o cas.json".bold()
+                );
+                println!("    3. Run: stockwise import cas cas.json");
+            }
             _ => {
                 println!("    Provide a CSV with columns: Symbol, Quantity, Average Price");
                 println!("    Run: stockwise import csv <path-to-file.csv>");
@@ -331,6 +526,37 @@ pub async fn cmd_import(source: &str, file: &str, replace: bool, market: Market)
 
     let content =
         std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", file))?;
+    match source {
+        "groww" => {
+            return super::imports::import_rows(
+                "groww",
+                file,
+                replace,
+                // Groww and Upstox list Indian stocks, whatever -m says.
+                super::imports::parse_groww(&content, Market::In)?,
+            )
+            .await;
+        }
+        "upstox" => {
+            return super::imports::import_rows(
+                "upstox",
+                file,
+                replace,
+                super::imports::parse_upstox(&content, Market::In)?,
+            )
+            .await;
+        }
+        "cas" => {
+            return super::imports::import_rows(
+                "cas",
+                file,
+                replace,
+                super::imports::parse_cas(&content)?,
+            )
+            .await;
+        }
+        _ => {}
+    }
     let lines: Vec<&str> = content.lines().collect();
     if lines.len() < 2 {
         bail!("{} is empty or has no data rows", file);
@@ -502,8 +728,21 @@ pub async fn cmd_import(source: &str, file: &str, replace: bool, market: Market)
         );
     }
 
+    apply_import_rows(source, file, rows, side_col.is_some(), replace).await
+}
+
+/// Apply parsed import rows (from any source) to the portfolio and report
+/// what changed: dated rows rebuild a symbol's lots, undated rows sync its
+/// quantity and keep existing lots. Re-importing the same rows changes
+/// nothing.
+pub(super) async fn apply_import_rows(
+    source: &str,
+    file: &str,
+    rows: Vec<ImportRow>,
+    tradebook: bool,
+    replace: bool,
+) -> Result<()> {
     let mut portfolio = Portfolio::load()?;
-    let tradebook = side_col.is_some();
     let dated = |sym: &str| {
         rows.iter()
             .any(|r| r.symbol == sym && (r.date.is_some() || r.sell))
@@ -1090,26 +1329,173 @@ fn print_tax_estimate(country: Country, b: &tax::Buckets) {
     }
 }
 
+/// One sale this tax year in `tax --json`. `term` is `short` or `long`, or
+/// null where the country has no holding-period rule (UK).
+#[derive(Debug, Serialize)]
+pub(crate) struct TaxSaleRow {
+    pub(crate) symbol: String,
+    pub(crate) qty: f64,
+    pub(crate) bought: String,
+    pub(crate) bought_estimated: bool,
+    pub(crate) sold: String,
+    pub(crate) gain: f64,
+    pub(crate) term: Option<&'static str>,
+}
+
+/// One open holding in `tax --json/--csv`: what selling it today would
+/// realize, split by holding period (every lot uses its own date).
+#[derive(Debug, Serialize)]
+pub(crate) struct TaxHoldingRow {
+    pub(crate) symbol: String,
+    pub(crate) cost: f64,
+    pub(crate) value: f64,
+    pub(crate) short_term_gain: f64,
+    pub(crate) long_term_gain: f64,
+    pub(crate) estimated_dates: bool,
+}
+
+impl CsvRow for TaxHoldingRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "symbol",
+        "cost",
+        "value",
+        "short_term_gain",
+        "long_term_gain",
+        "estimated_dates",
+    ];
+}
+
+/// The tax estimate's inputs, gathered before anything is printed.
+pub(crate) struct TaxReport {
+    pub(crate) sales: Vec<TaxSaleRow>,
+    pub(crate) holdings: Vec<TaxHoldingRow>,
+    pub(crate) realized: tax::Buckets,
+    pub(crate) unrealized: tax::Buckets,
+    pub(crate) unpriced: Vec<String>,
+    pub(crate) other_currency: Vec<String>,
+}
+
+/// Gains realized this tax year and what selling every open lot at `quotes`
+/// would add, in the country's currency. Holdings without a live price or
+/// in another currency are named, not counted.
+pub(crate) fn tax_report(
+    country: Country,
+    portfolio: &Portfolio,
+    quotes: &[crate::api::Quote],
+    today: chrono::NaiveDate,
+) -> TaxReport {
+    let (year_start, year_end) = country.tax_year(today);
+    let date = |d: &str| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
+    let quote = |sym: &str| quotes.iter().find(|q| q.symbol.as_deref() == Some(sym));
+    let currency = |sym: &str| {
+        quote(sym)
+            .and_then(|q| q.currency.clone())
+            .or_else(|| pf::symbol_currency(sym).map(str::to_string))
+    };
+    let terms = country.long_term_months().is_some();
+    let mut r = TaxReport {
+        sales: Vec::new(),
+        holdings: Vec::new(),
+        realized: tax::Buckets::default(),
+        unrealized: tax::Buckets::default(),
+        unpriced: Vec::new(),
+        other_currency: Vec::new(),
+    };
+
+    for s in portfolio
+        .realized
+        .iter()
+        .filter(|s| date(&s.sell_date).is_some_and(|d| d >= year_start && d <= year_end))
+    {
+        let Some(scale) = currency(&s.symbol).and_then(|cur| country.currency_scale(&cur)) else {
+            r.other_currency.push(s.symbol.clone());
+            continue;
+        };
+        let long = match (date(&s.buy_date), date(&s.sell_date)) {
+            (Some(b), Some(d)) => country.is_long_term(b, d),
+            _ => false,
+        };
+        let gain = s.gain() * scale;
+        r.realized.add(gain, long);
+        r.sales.push(TaxSaleRow {
+            symbol: s.symbol.clone(),
+            qty: s.qty,
+            bought: s.buy_date.clone(),
+            bought_estimated: s.buy_date_estimated,
+            sold: s.sell_date.clone(),
+            gain: round(gain, 2),
+            term: terms.then_some(if long { "long" } else { "short" }),
+        });
+    }
+
+    for h in &portfolio.holdings {
+        let Some(scale) = currency(&h.symbol).and_then(|cur| country.currency_scale(&cur)) else {
+            r.other_currency.push(h.symbol.clone());
+            continue;
+        };
+        // A missing price must not count as a 100% capital loss.
+        let Some(price) = quote(&h.symbol).and_then(|q| q.regular_market_price) else {
+            r.unpriced.push(h.symbol.clone());
+            continue;
+        };
+        let (mut st, mut lt) = (0.0, 0.0);
+        for l in &h.lots {
+            let gain = l.qty * (price - l.price) * scale;
+            let long = date(&l.date).is_some_and(|d| country.is_long_term(d, today));
+            r.unrealized.add(gain, long);
+            if long {
+                lt += gain;
+            } else {
+                st += gain;
+            }
+        }
+        r.holdings.push(TaxHoldingRow {
+            symbol: h.symbol.clone(),
+            cost: round(h.cost_basis() * scale, 2),
+            value: round(h.shares * price * scale, 2),
+            short_term_gain: round(st, 2),
+            long_term_gain: round(lt, 2),
+            estimated_dates: h.has_estimated_dates(),
+        });
+    }
+    r.other_currency.sort();
+    r.other_currency.dedup();
+    r
+}
+
+/// An estimate as `tax --json` prints it.
+fn estimate_json(country: Country, b: tax::Buckets) -> serde_json::Value {
+    let e = tax::estimate(country, b);
+    serde_json::json!({
+        "short_term_gains": round(b.st_gain, 2),
+        "short_term_losses": round(b.st_loss, 2),
+        "long_term_gains": round(b.lt_gain, 2),
+        "long_term_losses": round(b.lt_loss, 2),
+        "taxable_short_term": round(e.st_taxable, 2),
+        "taxable_long_term": round(e.lt_taxable, 2),
+        "exemption_used": round(e.exemption_used, 2),
+        "short_term_tax": round(e.st_tax, 2),
+        "long_term_tax": round(e.lt_tax, 2),
+        "total_tax": round(e.total(), 2),
+        "loss_carried_forward": round(e.st_carry + e.lt_carry, 2),
+    })
+}
+
 /// Capital-gains estimate for the current tax year: gains realized by
 /// `portfolio sell` (or a tradebook import) this year, plus what selling
 /// everything today would add. Every lot uses its own purchase date.
-pub async fn cmd_tax(country: &str, _market: Market) -> Result<()> {
+pub async fn cmd_tax(country: &str, _market: Market, fmt: Format) -> Result<()> {
     let Some(country) = Country::parse(country) else {
         bail!("Unsupported country '{}'. Use in, us, or uk", country);
     };
     let portfolio = Portfolio::load()?;
     let today = chrono::Local::now().date_naive();
     let (year_start, year_end) = country.tax_year(today);
-    let in_year = |d: &str| {
-        chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+    let any_sale_this_year = portfolio.realized.iter().any(|s| {
+        chrono::NaiveDate::parse_from_str(&s.sell_date, "%Y-%m-%d")
             .is_ok_and(|d| d >= year_start && d <= year_end)
-    };
-    let year_sales: Vec<&pf::Sale> = portfolio
-        .realized
-        .iter()
-        .filter(|s| in_year(&s.sell_date))
-        .collect();
-    if portfolio.holdings.is_empty() && year_sales.is_empty() {
+    });
+    if portfolio.holdings.is_empty() && !any_sale_this_year && fmt.is_table() {
         println!(
             "\n  {}",
             "Portfolio is empty and no sales are recorded this tax year.".dimmed()
@@ -1127,17 +1513,38 @@ pub async fn cmd_tax(country: &str, _market: Market) -> Result<()> {
             .collect();
         YahooClient::new().await?.get_quote(&symbols).await?
     };
-    let quote = |sym: &str| quotes.iter().find(|q| q.symbol.as_deref() == Some(sym));
-    let currency = |sym: &str| {
-        quote(sym)
-            .and_then(|q| q.currency.clone())
-            .or_else(|| pf::symbol_currency(sym).map(str::to_string))
-    };
+    let report = tax_report(country, &portfolio, &quotes, today);
+    let realized = report.realized;
+    let unrealized = report.unrealized;
+    match fmt {
+        Format::Json => {
+            let exemption_left = (country == Country::India).then(|| {
+                round(
+                    country.exemption() - tax::estimate(country, realized).exemption_used,
+                    2,
+                )
+            });
+            return output::print_json(&serde_json::json!({
+                "country": country.name(),
+                "tax_year": country.tax_year_label(today),
+                "currency": country.tax_currency(),
+                "sales": report.sales,
+                "holdings": report.holdings,
+                "realized": estimate_json(country, realized),
+                "if_sold_today": estimate_json(country, realized.plus(unrealized)),
+                "ltcg_exemption_left": exemption_left,
+                "unpriced": report.unpriced,
+                "other_currency": report.other_currency,
+            }));
+        }
+        Format::Csv => return output::print_csv(&report.holdings),
+        Format::Table => {}
+    }
+
     let c = country.currency_symbol();
     let terms = country.long_term_months().is_some();
-    let date = |d: &str| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
-    let mut other_currency: Vec<String> = Vec::new();
-    let mut estimated = false;
+    let estimated = report.sales.iter().any(|s| s.bought_estimated)
+        || report.holdings.iter().any(|h| h.estimated_dates);
 
     print_header(&portfolio_title(&format!(
         "Tax Estimate — {} ({})",
@@ -1146,21 +1553,12 @@ pub async fn cmd_tax(country: &str, _market: Market) -> Result<()> {
     )));
 
     // ── Realized this tax year ──
-    let mut realized = tax::Buckets::default();
     print_section(&format!(
         "Realized — sales {} to {}",
         year_start.format("%d %b %Y"),
         year_end.format("%d %b %Y")
     ));
-    // Sales in this country's currency; others are named at the end.
-    let mut taxed_sales = Vec::new();
-    for s in &year_sales {
-        match currency(&s.symbol).and_then(|cur| country.currency_scale(&cur)) {
-            Some(scale) => taxed_sales.push((*s, scale)),
-            None => other_currency.push(s.symbol.clone()),
-        }
-    }
-    if taxed_sales.is_empty() {
+    if report.sales.is_empty() {
         println!(
             "  {}",
             "No sales recorded this tax year. Record one with `stockwise portfolio sell`.".dimmed()
@@ -1175,39 +1573,24 @@ pub async fn cmd_tax(country: &str, _market: Market) -> Result<()> {
             "Gain".bold(),
             if terms { "Term" } else { "" }.bold(),
         );
-        for &(s, scale) in &taxed_sales {
-            let long = match (date(&s.buy_date), date(&s.sell_date)) {
-                (Some(b), Some(d)) => country.is_long_term(b, d),
-                _ => false,
-            };
-            let gain = s.gain() * scale;
-            realized.add(gain, long);
-            estimated |= s.buy_date_estimated;
+        for s in &report.sales {
             println!(
                 "  {:<14} {:>9.2} {:<12} {:<12} {:>12} {:>5}",
                 s.symbol.cyan(),
                 s.qty,
-                format!(
-                    "{}{}",
-                    s.buy_date,
-                    if s.buy_date_estimated { "*" } else { "" }
-                ),
-                s.sell_date,
-                signed_tax_money(c, gain),
-                if !terms {
-                    ""
-                } else if long {
-                    "LT"
-                } else {
-                    "ST"
+                format!("{}{}", s.bought, if s.bought_estimated { "*" } else { "" }),
+                s.sold,
+                signed_tax_money(c, s.gain),
+                match s.term {
+                    Some("long") => "LT",
+                    Some(_) => "ST",
+                    None => "",
                 },
             );
         }
     }
 
     // ── Unrealized: every open lot at today's price ──
-    let mut unrealized = tax::Buckets::default();
-    let mut unpriced = Vec::new();
     if !portfolio.holdings.is_empty() {
         print_section("Unrealized — if you sold everything today");
         if terms {
@@ -1228,51 +1611,27 @@ pub async fn cmd_tax(country: &str, _market: Market) -> Result<()> {
                 "Gain".bold(),
             );
         }
-        for h in &portfolio.holdings {
-            let Some(scale) = currency(&h.symbol).and_then(|cur| country.currency_scale(&cur))
-            else {
-                other_currency.push(h.symbol.clone());
-                continue;
-            };
-            // A missing price must not count as a 100% capital loss.
-            let Some(price) = quote(&h.symbol).and_then(|q| q.regular_market_price) else {
-                unpriced.push(h.symbol.clone());
-                continue;
-            };
-            let (mut st, mut lt) = (0.0, 0.0);
-            for l in &h.lots {
-                let gain = l.qty * (price - l.price) * scale;
-                let long = date(&l.date).is_some_and(|d| country.is_long_term(d, today));
-                unrealized.add(gain, long);
-                if long {
-                    lt += gain;
-                } else {
-                    st += gain;
-                }
-            }
+        for h in &report.holdings {
             let mut label = h.symbol.clone();
-            if h.has_estimated_dates() {
+            if h.estimated_dates {
                 label.push('*');
-                estimated = true;
             }
-            let cost = h.cost_basis() * scale;
-            let value = h.shares * price * scale;
             if terms {
                 println!(
                     "  {:<14} {:>12} {:>12} {:>12} {:>12}",
                     label.cyan(),
-                    money(c, cost),
-                    money(c, value),
-                    signed_tax_money(c, st),
-                    signed_tax_money(c, lt),
+                    money(c, h.cost),
+                    money(c, h.value),
+                    signed_tax_money(c, h.short_term_gain),
+                    signed_tax_money(c, h.long_term_gain),
                 );
             } else {
                 println!(
                     "  {:<14} {:>12} {:>12} {:>12}",
                     label.cyan(),
-                    money(c, cost),
-                    money(c, value),
-                    signed_tax_money(c, st + lt),
+                    money(c, h.cost),
+                    money(c, h.value),
+                    signed_tax_money(c, h.short_term_gain + h.long_term_gain),
                 );
             }
         }
@@ -1303,8 +1662,8 @@ pub async fn cmd_tax(country: &str, _market: Market) -> Result<()> {
     }
 
     println!();
-    other_currency.sort();
-    other_currency.dedup();
+    let other_currency = &report.other_currency;
+    let unpriced = &report.unpriced;
     if !other_currency.is_empty() {
         println!(
             "  {} Not included (not in {}): {}. Other countries' shares follow other rules — in India, \

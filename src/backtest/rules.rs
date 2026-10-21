@@ -372,23 +372,14 @@ fn is_identifier(s: &str) -> bool {
 
 // ── Loading ──
 
-/// Where `-s NAME` looks for your own strategies: `$STOCKWISE_HOME/strategies`
-/// when STOCKWISE_HOME is set, else `$XDG_CONFIG_HOME/stockwise/strategies`,
-/// else `~/.config/stockwise/strategies`.
+/// Where `-s NAME` looks for your own strategies: `strategies/` next to the
+/// config file (`stockwise config path`), or `$STOCKWISE_HOME/strategies`
+/// when STOCKWISE_HOME is set, so a scratch home stays self-contained.
 pub fn strategies_dir() -> Option<PathBuf> {
-    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
-    if let Some(home) = env("STOCKWISE_HOME") {
+    if let Some(home) = std::env::var_os("STOCKWISE_HOME").filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(home).join("strategies"));
     }
-    if let Some(xdg) = env("XDG_CONFIG_HOME") {
-        return Some(PathBuf::from(xdg).join("stockwise").join("strategies"));
-    }
-    Some(
-        dirs::home_dir()?
-            .join(".config")
-            .join("stockwise")
-            .join("strategies"),
-    )
+    Some(crate::config::path()?.parent()?.join("strategies"))
 }
 
 /// Canonical names of the built-in strategies.

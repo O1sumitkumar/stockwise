@@ -10,7 +10,7 @@ use crate::tax;
 // ── Valuation ──
 
 /// The market's own currency, used for totals when holdings are mixed.
-pub(super) fn market_currency(market: Market) -> &'static str {
+pub(crate) fn market_currency(market: Market) -> &'static str {
     match market {
         Market::In => "INR",
         Market::Us | Market::Crypto | Market::Fx => "USD",
@@ -19,7 +19,7 @@ pub(super) fn market_currency(market: Market) -> &'static str {
 
 /// Live prices for a set of holdings plus the exchange rates to total them
 /// in one base currency, so INR and USD amounts are never added raw.
-pub(super) struct Valuation {
+pub(crate) struct Valuation {
     pub quotes: Vec<Quote>,
     pub fx: Fx,
 }
@@ -27,7 +27,7 @@ pub(super) struct Valuation {
 /// Cost and value in the base currency, leaving out holdings without a live
 /// price or an exchange rate (named here instead of being valued at 0).
 #[derive(Default)]
-pub(super) struct Totals {
+pub(crate) struct Totals {
     pub cost: f64,
     pub value: f64,
     pub unpriced: Vec<String>,
@@ -149,8 +149,8 @@ fn fx_pair(currency: &str, base: &str) -> (String, bool) {
 /// Price `symbols` and fetch the exchange rates to total them. The base
 /// currency is `base` if given; otherwise the holdings' own currency when
 /// they all share one, or the market's currency when they are mixed.
-pub(super) async fn value_holdings(
-    client: &YahooClient,
+pub(crate) async fn value_holdings(
+    src: &impl views::DataSource,
     symbols: &[String],
     market: Market,
     base: Option<&str>,
@@ -159,30 +159,44 @@ pub(super) async fn value_holdings(
     let quotes = if refs.is_empty() {
         Vec::new()
     } else {
-        client.get_quote(&refs).await?
+        src.quotes(&refs).await?
     };
-    let mut v = Valuation {
-        quotes,
-        fx: Fx::new(market_currency(market)),
-    };
-    let mut currencies: Vec<String> = symbols.iter().filter_map(|s| v.currency(s)).collect();
-    currencies.sort();
-    currencies.dedup();
-    let base = match base {
-        Some(b) => b.to_uppercase(),
-        None if currencies.len() == 1 => currencies[0].clone(),
-        None => market_currency(market).to_string(),
-    };
-    v.fx = Fx::new(&base);
-    v.add_rates(client, &currencies).await;
+    let mut v = Valuation::new(quotes, symbols, market, base);
+    v.add_rates(src, &v.currencies(symbols)).await;
     Ok(v)
 }
 
 impl Valuation {
+    /// Value `symbols` at `quotes` (which may hold other symbols too). Totals
+    /// go in `base`, else the holdings' one currency, else the market's.
+    /// Call [`Valuation::add_rates`] before totalling mixed currencies.
+    pub fn new(quotes: Vec<Quote>, symbols: &[String], market: Market, base: Option<&str>) -> Self {
+        let mut v = Valuation {
+            quotes,
+            fx: Fx::new(market_currency(market)),
+        };
+        let currencies = v.currencies(symbols);
+        let base = match base {
+            Some(b) => b.to_uppercase(),
+            None if currencies.len() == 1 => currencies[0].clone(),
+            None => market_currency(market).to_string(),
+        };
+        v.fx = Fx::new(&base);
+        v
+    }
+
+    /// The distinct currencies `symbols` are priced in.
+    pub fn currencies(&self, symbols: &[String]) -> Vec<String> {
+        let mut currencies: Vec<String> = symbols.iter().filter_map(|s| self.currency(s)).collect();
+        currencies.sort();
+        currencies.dedup();
+        currencies
+    }
+
     /// Fetch exchange rates into the base for `currencies` not yet known.
     /// A failed lookup is not fatal: amounts in that currency are left out
     /// of totals and named, instead of being added in the wrong currency.
-    pub async fn add_rates(&mut self, client: &YahooClient, currencies: &[String]) {
+    pub async fn add_rates(&mut self, src: &impl views::DataSource, currencies: &[String]) {
         let base = self.fx.base.clone();
         let mut missing: Vec<String> = currencies
             .iter()
@@ -202,7 +216,7 @@ impl Valuation {
             })
             .collect();
         let refs: Vec<&str> = pairs.iter().map(|p| p.1.as_str()).collect();
-        let fx_quotes = client.get_quote(&refs).await.unwrap_or_default();
+        let fx_quotes = src.quotes(&refs).await.unwrap_or_default();
         for (cur, sym, invert) in &pairs {
             if let Some(px) = fx_quotes
                 .iter()
@@ -400,7 +414,156 @@ pub(super) const ESTIMATED_DATE_HINT: &str = "* purchase date unknown (upgraded 
 
 // ── Portfolio ──
 
-pub async fn cmd_portfolio_show(market: Market, base: Option<&str>) -> Result<()> {
+// ── `portfolio --json/--csv`, `/api/portfolio` and the TUI ──
+
+/// One holding as `portfolio --json/--csv` prints it, in the holding's own
+/// currency. Price-derived fields are null when there is no live price.
+#[derive(Debug, Serialize)]
+pub(crate) struct HoldingRow {
+    pub(crate) symbol: String,
+    pub(crate) shares: f64,
+    pub(crate) avg_cost: f64,
+    pub(crate) cost_basis: f64,
+    pub(crate) price: Option<f64>,
+    pub(crate) value: Option<f64>,
+    pub(crate) pnl: Option<f64>,
+    pub(crate) pnl_percent: Option<f64>,
+    /// Share of the portfolio's value, compared in the base currency.
+    pub(crate) weight_percent: Option<f64>,
+    /// Money-weighted annual return of the holding's buys, sales and dividends.
+    pub(crate) xirr_percent: Option<f64>,
+    pub(crate) currency: Option<String>,
+}
+
+impl CsvRow for HoldingRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "symbol",
+        "shares",
+        "avg_cost",
+        "cost_basis",
+        "price",
+        "value",
+        "pnl",
+        "pnl_percent",
+        "weight_percent",
+        "xirr_percent",
+        "currency",
+    ];
+}
+
+/// Totals over the priced holdings, converted to the base currency.
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct PortfolioTotals {
+    pub(crate) cost_basis: f64,
+    pub(crate) value: f64,
+    pub(crate) pnl: f64,
+    pub(crate) pnl_percent: f64,
+    pub(crate) currency: Option<String>,
+}
+
+/// `portfolio --json`: every holding, totals in one currency, and the
+/// holdings left out of the totals — without a live price (`unpriced`) or
+/// without an exchange rate (`unconverted`). Never valued at 0.
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct PortfolioReport {
+    pub(crate) holdings: Vec<HoldingRow>,
+    pub(crate) totals: PortfolioTotals,
+    pub(crate) unpriced: Vec<String>,
+    pub(crate) unconverted: Vec<String>,
+}
+
+fn pct_of(part: f64, whole: f64) -> f64 {
+    if whole > 0.0 {
+        part / whole * 100.0
+    } else {
+        0.0
+    }
+}
+
+pub(crate) fn portfolio_report(
+    portfolio: &Portfolio,
+    val: &Valuation,
+    today: chrono::NaiveDate,
+) -> PortfolioReport {
+    let totals = val.totals(portfolio);
+    let holdings = portfolio
+        .holdings
+        .iter()
+        .map(|h| {
+            let price = val.price(&h.symbol);
+            let cost = h.cost_basis();
+            let value = price.map(|p| h.shares * p);
+            HoldingRow {
+                symbol: h.symbol.clone(),
+                shares: h.shares,
+                avg_cost: h.avg_cost,
+                cost_basis: round(cost, 2),
+                price,
+                value: round_opt(value, 2),
+                pnl: value.map(|v| round(v - cost, 2)),
+                pnl_percent: value.map(|v| round(pct_of(v - cost, cost), 2)),
+                weight_percent: value
+                    .and_then(|v| val.to_base(&h.symbol, v))
+                    .map(|v| round(pct_of(v, totals.value), 2)),
+                xirr_percent: value
+                    .and_then(|v| pf::xirr(&portfolio.cash_flows(&h.symbol), v, today))
+                    .map(|r| round(r * 100.0, 2)),
+                currency: val.currency(&h.symbol),
+            }
+        })
+        .collect();
+    PortfolioReport {
+        holdings,
+        totals: PortfolioTotals {
+            cost_basis: round(totals.cost, 2),
+            value: round(totals.value, 2),
+            pnl: round(totals.value - totals.cost, 2),
+            pnl_percent: round(totals.pnl_pct(), 2),
+            currency: Some(val.base().to_string()),
+        },
+        unpriced: totals.unpriced,
+        unconverted: totals.unconverted,
+    }
+}
+
+/// Value the active portfolio for `portfolio --json/--csv` and the HTTP API.
+/// An empty portfolio needs no network.
+pub(crate) async fn load_portfolio_report(
+    src: &impl views::DataSource,
+    market: Market,
+    base: Option<&str>,
+) -> Result<PortfolioReport> {
+    let portfolio = src.portfolio().map_err(|e| e.context(views::LocalData))?;
+    let symbols: Vec<String> = portfolio
+        .holdings
+        .iter()
+        .map(|h| h.symbol.clone())
+        .collect();
+    let val = value_holdings(src, &symbols, market, base).await?;
+    Ok(portfolio_report(
+        &portfolio,
+        &val,
+        chrono::Local::now().date_naive(),
+    ))
+}
+
+pub async fn cmd_portfolio_show(market: Market, base: Option<&str>, fmt: Format) -> Result<()> {
+    if !fmt.is_table() {
+        let portfolio = Portfolio::load()?;
+        let report = if portfolio.holdings.is_empty() {
+            portfolio_report(
+                &portfolio,
+                &Valuation::new(Vec::new(), &[], market, base),
+                chrono::Local::now().date_naive(),
+            )
+        } else {
+            load_portfolio_report(&YahooClient::new().await?, market, base).await?
+        };
+        return match fmt {
+            Format::Csv => output::print_csv(&report.holdings),
+            _ => output::print_json(&report),
+        };
+    }
     let portfolio = Portfolio::load()?;
     if portfolio.holdings.is_empty() {
         println!("\n  {}", t(Msg::PortfolioEmpty).dimmed());

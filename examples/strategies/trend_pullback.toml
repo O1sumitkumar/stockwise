@@ -1,5 +1,6 @@
 # Example: buy dips in an uptrend, with a stop and a target.
-# Copy to ~/.config/stockwise/strategies/ and run `stockwise backtest TCS -s trend_pullback`,
+# Copy to the `strategies/` folder next to your config file (`stockwise backtest strategies`
+# prints it) and run `stockwise backtest TCS -s trend_pullback`,
 # or run it in place with `-s file:examples/strategies/trend_pullback.toml`.
 name = "trend_pullback"
 description = "Above the 200-day average, buy RSI dips; 8% stop, 15% target"
