@@ -31,6 +31,8 @@
               ./Cargo.toml
               ./Cargo.lock
               ./src
+              # Built-in backtest strategies, embedded with include_str!.
+              ./examples/strategies
             ];
           };
           cargoLock.lockFile = ./Cargo.lock;
