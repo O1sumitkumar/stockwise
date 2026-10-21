@@ -15,7 +15,8 @@ src/
     funds.rs         mf search, nav, history, sip, screen, overlap
     fno.rs           options chain, pcr, maxpain
     markets.rs       movers, sectors, news, sentiment, screen, picks, earnings, rotation, matrix, surprise, heatmap, sectorcmp, ipo
-    strategies.rs    backtest, sip, whatif, intraday, longterm, report
+    backtests.rs     backtest (single, portfolio, walkforward, strategies)
+    strategies.rs    sip, whatif, intraday, longterm, report
     portfolio.rs     portfolio (show, add, sell, lots, actions, list) and valuation in a base currency
     holdings.rs      watch, alert, import, export, wealth, rebalance, harvest, tax, divcal, pcorr
     imports.rs       Groww / Upstox CSV and CAS (casparser JSON/CSV) import parsers
@@ -48,7 +49,13 @@ src/
   daemon.rs          Worker state: positions, risk manager, daemon_state.json, shutdown, retry
   notify.rs          Notifications: Telegram, Slack, Discord, SMTP email, desktop
   technical.rs       Indicators and statistics (SMA, EMA, RSI, MACD, BB, ATR, VWAP, OBV, VaR, Sharpe, XIRR, ...)
-  backtest.rs        Backtesting engine (6 strategies, equity curves)
+  backtest/          Backtesting engine (see docs/backtesting.md)
+    mod.rs           Daily bars from Yahoo charts
+    rules.rs         TOML strategy rules: parser, validation, signals; built-ins from examples/strategies/
+    indicators.rs    Whole-series indicators matching technical.rs
+    costs.rs         Indian delivery/intraday and US cost models, slippage
+    engine.rs        Simulator (single symbol or portfolio, fills, stops, rebalancing) and metrics
+    walkforward.rs   Rolling train/test optimisation and the overfitting verdict
   intraday.rs        Intraday bot (9 strategies, regime detection, Kelly sizing)
   longterm.rs        Long-term bot (6-pillar scoring, Monte Carlo, DRIP)
   simulator.rs       Paper-trading sessions and confidence rating

@@ -1,0 +1,7 @@
+# VWAP crossover — the built-in `vwap` strategy.
+# VWAP here accumulates from the first bar of the backtest (daily bars have no
+# session to reset on). No parameters, so walk-forward has nothing to tune.
+name = "vwap"
+description = "Close crosses VWAP"
+entry = "close crosses_above vwap"
+exit = "close crosses_below vwap"

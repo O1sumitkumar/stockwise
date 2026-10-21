@@ -1,298 +1,7 @@
-//! Strategy tools: backtests, SIP and what-if calculators, intraday ideas, long-term picks, and AI reports.
+//! Strategy tools: SIP and what-if calculators, intraday ideas, long-term picks, and AI reports.
+//! Backtests live in `backtests.rs`.
 
 use super::*;
-
-/// One closed trade in `backtest --json/--csv`, oldest first. Dates are the
-/// bar dates (UTC) of the entry and exit closes.
-#[derive(Debug, Serialize)]
-pub(crate) struct TradeRow {
-    pub(crate) number: usize,
-    pub(crate) entry_date: Option<String>,
-    pub(crate) exit_date: Option<String>,
-    pub(crate) entry_price: f64,
-    pub(crate) exit_price: f64,
-    pub(crate) pnl_percent: f64,
-}
-
-impl CsvRow for TradeRow {
-    const COLUMNS: &'static [&'static str] = &[
-        "number",
-        "entry_date",
-        "exit_date",
-        "entry_price",
-        "exit_price",
-        "pnl_percent",
-    ];
-}
-
-/// Trades with dates looked up in `close_times` (one timestamp per close).
-pub(crate) fn trade_rows(result: &backtest::BacktestResult, close_times: &[i64]) -> Vec<TradeRow> {
-    let date = |i: usize| {
-        close_times
-            .get(i)
-            .and_then(|&ts| chrono::DateTime::from_timestamp(ts, 0))
-            .map(|d| d.format("%Y-%m-%d").to_string())
-    };
-    result
-        .trades
-        .iter()
-        .enumerate()
-        .map(|(i, t)| TradeRow {
-            number: i + 1,
-            entry_date: date(t.entry_idx),
-            exit_date: date(t.exit_idx),
-            entry_price: t.entry_price,
-            exit_price: t.exit_price,
-            pnl_percent: round(t.pnl_pct, 2),
-        })
-        .collect()
-}
-
-/// `backtest --json`: summary statistics, every trade, and the equity curve
-/// (starting at 100). Percentages are rounded to 2 decimals.
-pub(crate) fn backtest_json(
-    symbol: &str,
-    currency: Option<&str>,
-    strategy: &str,
-    period: &str,
-    bars: usize,
-    result: &backtest::BacktestResult,
-    trades: &[TradeRow],
-) -> serde_json::Value {
-    serde_json::json!({
-        "symbol": symbol,
-        "currency": currency,
-        "strategy": strategy,
-        "period": period,
-        "interval": "1d",
-        "bars": bars,
-        "total_return_percent": round(result.total_return, 2),
-        "buy_hold_return_percent": round(result.buy_hold_return, 2),
-        "alpha_percent": round(result.total_return - result.buy_hold_return, 2),
-        "trade_count": result.trades.len(),
-        "win_rate_percent": round(result.win_rate, 2),
-        "avg_win_percent": round(result.avg_win, 2),
-        "avg_loss_percent": round(result.avg_loss, 2),
-        "max_drawdown_percent": round(result.max_drawdown, 2),
-        "sharpe": round_opt(result.sharpe, 3),
-        "trades": trades,
-        "equity_curve": result.equity_curve.iter().map(|v| round(*v, 4)).collect::<Vec<_>>(),
-    })
-}
-
-pub async fn cmd_backtest(
-    symbol: &str,
-    strategy: &str,
-    period: &str,
-    market: Market,
-    fmt: Format,
-) -> Result<()> {
-    let resolved = market::resolve_symbol(symbol, market);
-    let client = YahooClient::new().await?;
-    let chart = client.get_chart(&resolved, period, "1d").await?;
-    let cur = chart.meta.as_ref().and_then(|m| m.currency.as_deref());
-
-    let closes: Vec<f64> = chart
-        .indicators
-        .quote
-        .first()
-        .and_then(|q| q.close.as_ref())
-        .map(|c| c.iter().filter_map(|v| *v).collect())
-        .unwrap_or_default();
-    let highs: Vec<f64> = chart
-        .indicators
-        .quote
-        .first()
-        .and_then(|q| q.high.as_ref())
-        .map(|c| c.iter().filter_map(|v| *v).collect())
-        .unwrap_or_default();
-    let lows: Vec<f64> = chart
-        .indicators
-        .quote
-        .first()
-        .and_then(|q| q.low.as_ref())
-        .map(|c| c.iter().filter_map(|v| *v).collect())
-        .unwrap_or_default();
-    let volumes: Vec<u64> = chart
-        .indicators
-        .quote
-        .first()
-        .and_then(|q| q.volume.as_ref())
-        .map(|c| c.iter().filter_map(|v| *v).collect())
-        .unwrap_or_default();
-
-    if closes.len() < 50 {
-        bail!(
-            "Not enough price data to backtest {} ({} bars) — try a longer period, e.g. -p 5y",
-            resolved,
-            closes.len()
-        );
-    }
-
-    let result = backtest::run_backtest(strategy, &closes, &highs, &lows, &volumes);
-    let result = match result {
-        Some(r) => r,
-        None => bail!(
-            "Unknown strategy '{}'. Use rsi, macd, sma, bb, vwap, or mr",
-            strategy
-        ),
-    };
-
-    if !fmt.is_table() {
-        // Timestamp of each non-null close, so trade indexes map to dates.
-        let close_times: Vec<i64> = chart
-            .timestamp
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .zip(
-                chart
-                    .indicators
-                    .quote
-                    .first()
-                    .and_then(|q| q.close.as_deref())
-                    .unwrap_or_default(),
-            )
-            .filter_map(|(&ts, c)| c.map(|_| ts))
-            .collect();
-        let trades = trade_rows(&result, &close_times);
-        if fmt == Format::Csv {
-            return output::print_csv(&trades);
-        }
-        return output::print_json(&backtest_json(
-            &resolved,
-            cur,
-            strategy,
-            period,
-            closes.len(),
-            &result,
-            &trades,
-        ));
-    }
-
-    print_header(&format!(
-        "Backtest: {} — {} strategy ({})",
-        resolved,
-        strategy.to_uppercase(),
-        period
-    ));
-    println!();
-
-    // Equity curve chart
-    for line in charts::line_chart(
-        &result.equity_curve,
-        55,
-        8,
-        if result.total_return >= 0.0 {
-            "green"
-        } else {
-            "red"
-        },
-        "Equity Curve (starting at 100)",
-    ) {
-        println!("{}", line);
-    }
-
-    print_section("Performance");
-    let ret_str = if result.total_return >= 0.0 {
-        format!("+{:.2}%", result.total_return).green().to_string()
-    } else {
-        format!("{:.2}%", result.total_return).red().to_string()
-    };
-    let bh_str = if result.buy_hold_return >= 0.0 {
-        format!("+{:.2}%", result.buy_hold_return)
-            .green()
-            .to_string()
-    } else {
-        format!("{:.2}%", result.buy_hold_return).red().to_string()
-    };
-    print_kv("Strategy Return", &ret_str);
-    print_kv("Buy & Hold Return", &bh_str);
-    let alpha = result.total_return - result.buy_hold_return;
-    let alpha_str = if alpha >= 0.0 {
-        format!("+{:.2}%", alpha).green().bold().to_string()
-    } else {
-        format!("{:.2}%", alpha).red().to_string()
-    };
-    print_kv("Alpha (vs B&H)", &alpha_str);
-
-    print_section("Trade Statistics");
-    print_kv("Total Trades", &result.trades.len().to_string());
-    print_kv("Win Rate", &format!("{:.1}%", result.win_rate));
-    print_kv(
-        "Avg Win",
-        &format!("+{:.2}%", result.avg_win).green().to_string(),
-    );
-    print_kv(
-        "Avg Loss",
-        &format!("{:.2}%", result.avg_loss).red().to_string(),
-    );
-    print_kv(
-        "Max Drawdown",
-        &format!("-{:.2}%", result.max_drawdown).red().to_string(),
-    );
-    if let Some(s) = result.sharpe {
-        print_kv("Sharpe Ratio", &format!("{:.3}", s));
-    }
-
-    // Last 10 trades
-    if !result.trades.is_empty() {
-        print_section("Recent Trades");
-        let csym = market::currency_symbol(cur);
-        println!(
-            "  {:<6} {:>10} {:>10} {:>10}",
-            "Trade".bold(),
-            "Entry".bold(),
-            "Exit".bold(),
-            "P&L".bold()
-        );
-        println!("  {}", "─".repeat(40).dimmed());
-        for (i, t) in result.trades.iter().rev().take(10).enumerate() {
-            let pnl = if t.pnl_pct >= 0.0 {
-                format!("+{:.2}%", t.pnl_pct).green().to_string()
-            } else {
-                format!("{:.2}%", t.pnl_pct).red().to_string()
-            };
-            println!(
-                "  {:<6} {:>10} {:>10} {:>10}",
-                format!("#{}", result.trades.len() - i),
-                format!("{}{:.2}", csym, t.entry_price),
-                format!("{}{:.2}", csym, t.exit_price),
-                pnl
-            );
-        }
-    }
-    // AI backtest interpretation
-    let mut ai = crate::ai::AiClient::connect().await;
-    if ai.auto_available().await {
-        let data = format!(
-            "Strategy: {}, Period: {}, Return: {:.2}%, Buy&Hold: {:.2}%, Win rate: {:.0}%, Trades: {}, Max DD: {:.1}%, Sharpe: {}",
-            strategy,
-            period,
-            result.total_return,
-            result.buy_hold_return,
-            result.win_rate,
-            result.trades.len(),
-            result.max_drawdown,
-            result.sharpe.map_or("N/A".into(), |s| format!("{:.2}", s))
-        );
-        print_section(&format!("AI Interpretation ({})", ai.provider().name()));
-        if let Ok(interp) = ai.interpret_backtest(&data).await {
-            for line in interp.lines() {
-                println!("  {}", line);
-            }
-        }
-    }
-
-    println!(
-        "\n  {}",
-        "Backtests use historical data. Past results ≠ future performance."
-            .dimmed()
-            .italic()
-    );
-    println!();
-    Ok(())
-}
 
 // ── SIP/DCA Simulator ──
 
@@ -565,9 +274,19 @@ pub async fn cmd_whatif(
     Ok(())
 }
 
-pub async fn cmd_intraday(amount: f64, target_pct: f64, market: Market) -> Result<()> {
+pub async fn cmd_intraday(
+    amount: f64,
+    target_pct: f64,
+    strategy: Option<&str>,
+    market: Market,
+) -> Result<()> {
     // The bot plans around exchange sessions (entries, square-off times).
     market.require_stocks("intraday")?;
+    // Load the optional rule first so a bad file fails before any scanning.
+    let rule = match strategy {
+        Some(s) => Some(backtest::rules::load(s)?.compile()?),
+        None => None,
+    };
     let target_profit = amount * (target_pct / 100.0);
     let csym = market.currency_symbol();
     let market_name = market.label();
@@ -611,11 +330,15 @@ pub async fn cmd_intraday(amount: f64, target_pct: f64, market: Market) -> Resul
     }
 
     // Scan stocks
+    let extra = rule
+        .as_ref()
+        .map_or(String::new(), |r| format!(" + rule `{}`", r.name));
     println!(
-        "\n  {} Scanning stocks with 9 strategies...\n",
-        "⟳".yellow()
+        "\n  {} Scanning stocks with 9 strategies{}...\n",
+        "⟳".yellow(),
+        extra
     );
-    let signals = intraday::scan_intraday(&client, market).await?;
+    let signals = intraday::scan_intraday_with(&client, market, rule.as_ref()).await?;
     let plans = intraday::generate_trade_plans(&signals, amount, target_pct, 1.0);
 
     // Market regime summary
@@ -1206,5 +929,3 @@ pub async fn cmd_report(what: &str, market: Market) -> Result<()> {
     println!();
     Ok(())
 }
-
-// ── Backtest ──

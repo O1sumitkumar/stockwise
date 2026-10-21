@@ -2,6 +2,7 @@
 //! lists here are the documented shapes in docs/commands.md: a failing test
 //! means the docs (and anyone's scripts) need to change too.
 
+use super::backtests::{BacktestOpts, single_json};
 use super::fundamentals::{CompareRow, dividend_json};
 use super::holdings::{alert_check_rows, tax_report, watch_rows};
 use super::markets::{MoverRow, mover_rows};
@@ -9,7 +10,6 @@ use super::overview::QuoteRow;
 use super::portfolio::{Valuation, portfolio_report};
 use super::risk::{correlation_csv, correlation_matrix, return_row, risk_json};
 use super::sim::sim_history_json;
-use super::strategies::{backtest_json, trade_rows};
 use super::technicals::technical_json;
 use super::*;
 use crate::api::Quote;
@@ -356,37 +356,102 @@ fn dividend_json_without_a_dividend_has_no_projections() {
 }
 
 #[test]
-fn backtest_trades_get_dates_from_their_bars() {
-    let result = backtest::BacktestResult {
-        strategy: "rsi".into(),
-        trades: vec![backtest::Trade {
-            entry_idx: 1,
-            exit_idx: 2,
-            entry_price: 100.0,
-            exit_price: 110.0,
-            pnl_pct: 10.0,
-        }],
-        total_return: 10.0,
-        win_rate: 100.0,
-        avg_win: 10.0,
-        avg_loss: 0.0,
-        max_drawdown: 0.0,
-        sharpe: None,
-        buy_hold_return: 5.0,
-        equity_curve: vec![100.0, 110.0],
-    };
-    // 2024-01-01, 2024-01-02, 2024-01-03 00:00 UTC
-    let times = [1704067200, 1704153600, 1704240000];
-    let trades = trade_rows(&result, &times);
-    assert_eq!(trades[0].entry_date.as_deref(), Some("2024-01-02"));
-    assert_eq!(trades[0].exit_date.as_deref(), Some("2024-01-03"));
-    assert_columns(&trades[0]);
+fn backtest_json_and_trade_rows() {
+    use crate::backtest::costs::{CostModel, CostPreset};
+    use crate::backtest::engine::{self, Fill, SimConfig};
+    use crate::backtest::{Bars, rules};
 
-    let v = backtest_json("X", None, "rsi", "2y", 3, &result, &trades);
-    assert_eq!(v["alpha_percent"], 5.0);
-    assert_eq!(v["trade_count"], 1);
-    assert!(v["sharpe"].is_null());
-    assert_eq!(v["trades"][0]["number"], 1);
+    let closes: Vec<f64> = (0..120)
+        .map(|i| 100.0 + (i as f64 * 0.2).sin() * 10.0)
+        .collect();
+    let bars = Bars::from_closes(&closes);
+    let def = rules::load("rsi").unwrap();
+    let signals = def.compile().unwrap().signals(&bars);
+    let costs = CostModel::in_delivery();
+    let cfg = SimConfig::single(100_000.0, Fill::NextOpen, costs.clone());
+    let asset = engine::Asset {
+        symbol: "X.NS",
+        bars: &bars,
+        signals: &signals,
+    };
+    let net = engine::simulate(std::slice::from_ref(&asset), &cfg);
+    let gross = engine::simulate(
+        &[asset],
+        &SimConfig {
+            costs: CostModel::none(),
+            ..cfg
+        },
+    )
+    .metrics();
+    assert!(!net.trades.is_empty());
+    assert_columns(&net.trades[0]);
+
+    let opts = BacktestOpts {
+        strategy: "rsi".into(),
+        params: vec![],
+        costs: CostPreset::Auto,
+        brokerage: None,
+        slippage_bps: None,
+        fill: Fill::NextOpen,
+        capital: 100_000.0,
+        fmt: Format::Json,
+    };
+    let v = single_json(
+        "X.NS",
+        Some("INR"),
+        "2y",
+        &bars,
+        &def,
+        &opts,
+        &costs,
+        &net,
+        &gross,
+        5.0,
+    )
+    .unwrap();
+    assert_eq!(
+        keys(&v),
+        [
+            "symbol",
+            "currency",
+            "strategy",
+            "period",
+            "interval",
+            "bars",
+            "start",
+            "end",
+            "fill",
+            "capital",
+            "start_value",
+            "end_value",
+            "total_return_percent",
+            "cagr_percent",
+            "max_drawdown_percent",
+            "sharpe",
+            "sortino",
+            "exposure_percent",
+            "trade_count",
+            "win_rate_percent",
+            "avg_win_percent",
+            "avg_loss_percent",
+            "profit_factor",
+            "costs_paid",
+            "gross_return_percent",
+            "buy_hold_return_percent",
+            "alpha_percent",
+            "skipped_entries",
+            "costs",
+            "cost_model",
+            "rules",
+            "trades",
+            "equity"
+        ]
+    );
+    assert_eq!(v["strategy"], "rsi");
+    assert_eq!(v["fill"], "next-open");
+    assert_eq!(v["trade_count"], net.trades.len());
+    assert_eq!(v["trades"][0]["exit_reason"], "signal");
+    assert_eq!(v["equity"][0]["date"], "2024-01-01");
 }
 
 #[test]

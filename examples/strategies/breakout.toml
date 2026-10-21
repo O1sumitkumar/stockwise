@@ -1,0 +1,16 @@
+# Example: a Donchian channel breakout (the "turtle" entry).
+# highest(n) / lowest(n) are the highest high / lowest low of the previous n
+# bars, so the current bar can break out of them.
+name = "breakout"
+description = "Buy a close above the 55-day high, sell below the 20-day low"
+entry = "close > highest($entry_days)"
+exit = "close < lowest($exit_days)"
+stop_loss_pct = 10
+
+[params]
+entry_days = 55
+exit_days = 20
+
+[grid]
+entry_days = [20, 55]
+exit_days = [10, 20]

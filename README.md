@@ -33,7 +33,7 @@ account, no browser tabs.
 stockwise quote RELIANCE TCS            # Indian stocks are the default
 stockwise quote AAPL NVDA -m us         # US stocks
 stockwise deep HDFCBANK                 # everything about one stock
-stockwise backtest INFY -s macd         # test a strategy on 2 years of data
+stockwise backtest INFY -s macd         # test a strategy, after STT and brokerage
 stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR)
 ```
 
@@ -49,6 +49,8 @@ stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR
   macOS, Linux and Windows. `stockwise doctor` checks everything.
 - **60 commands, one muscle memory.** Fundamentals, technicals, risk, screeners,
   sector rotation, backtests, SIP/what-if calculators, alerts, tax estimates.
+- **Backtests that count costs.** STT, brokerage, stamp duty and slippage;
+  next-day fills; portfolios and walk-forward; strategies as small TOML files.
 - **Scriptable.** `--json` on 21 data commands and `--csv` on their tables, a
   config file for your defaults, real exit codes, shell completions, and a
   read-only JSON API with Prometheus metrics (`stockwise serve`).
@@ -117,7 +119,7 @@ Homebrew, AUR and Nix install the man pages and completions for you.
 
 <p align="center">
   <img src="assets/markets.svg" alt="stockwise markets: Indian and US indices with daily change" width="49%">
-  <img src="assets/backtest.svg" alt="stockwise backtest TCS -s macd: equity curve and trade statistics" width="49%">
+  <img src="assets/backtest.svg" alt="stockwise backtest TCS -s macd: equity curve after costs, net vs gross return, trade statistics" width="49%">
 </p>
 
 | | Commands |
@@ -162,6 +164,19 @@ stockwise options maxpain BANKNIFTY        # or: options pcr, options chain AAPL
 
 NAVs come from AMFI, option chains from NSE (India) or Yahoo (US). See
 [docs/commands.md](docs/commands.md#funds--fo) for what has data and what doesn't.
+
+### Backtest a strategy
+
+```bash
+stockwise backtest INFY -s macd                    # net of Indian delivery costs, next-open fills
+stockwise backtest portfolio TCS INFY HDFCBANK -s sma --rebalance monthly
+stockwise backtest walkforward RELIANCE -s rsi --train 1y --test 3mo   # is it overfit?
+stockwise backtest TCS -s file:my_rules.toml       # your own TOML rules
+```
+
+Strategies are TOML files of entry and exit rules over RSI, MACD, moving
+averages, Bollinger Bands, ATR and VWAP — see
+[docs/backtesting.md](docs/backtesting.md).
 
 ### Watch it live
 

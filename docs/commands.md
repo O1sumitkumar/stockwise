@@ -160,10 +160,13 @@ MF periods (`-p`) are `<n>mo`, `<n>y` or `max`, e.g. `6mo`, `3y`, `10y`. Expirie
 
 | Command | Description |
 |---------|-------------|
-| `backtest <SYMBOL> [-s STRATEGY] [-p] [--json\|--csv]` | `rsi` (default), `macd`, `sma`, `bb`, `vwap`, `mr`. Equity curve, alpha, per-trade Sharpe, drawdown. Default `2y`. No commissions or slippage are modelled |
+| `backtest <SYMBOL> [-s STRATEGY] [-P NAME=VALUE] [-p] [--json\|--csv]` | Backtest one stock after costs: net and gross return, buy & hold, CAGR, drawdown, Sharpe/Sortino, exposure, trades. Fills at the next bar's open. Strategies: `rsi` (default), `macd`, `sma`, `bb`, `vwap`, `mr`, or your own TOML file. Default `2y` |
+| `backtest portfolio <SYMBOLS...> [-s] [--weights equal\|inverse-vol\|0.5,0.3,...] [--rebalance none\|monthly\|quarterly] [--json\|--csv]` | One strategy across several stocks sharing the capital; combined equity curve and per-symbol contribution |
+| `backtest walkforward <SYMBOL> [-s] [--train 1y] [--test 3mo] [--json\|--csv]` (`wf`) | Tunes the strategy's `[grid]` on rolling train windows and reports only the unseen test windows, with an overfitting verdict. Default `5y` |
+| `backtest strategies [FILES...] [--json]` | List built-in and your own strategies, or check strategy files (exit 1 on errors) |
 | `sip <SYMBOL> <AMOUNT> [-p] [--json]` | Monthly SIP/DCA simulation with value-vs-invested chart and XIRR. Default `5y` |
 | `whatif <SYMBOL> <AMOUNT> <YYYY-MM-DD> [--json]` | What a lump sum on a past date is worth today |
-| `intraday <CAPITAL> <TARGET%>` (`bot`) | 9-strategy intraday ideas with Kelly sizing and dual targets. Signals only |
+| `intraday <CAPITAL> <TARGET%> [-s STRATEGY]` (`bot`) | 9-strategy intraday ideas with Kelly sizing and dual targets. `-s` adds a strategy file's rules as a tenth signal. Signals only |
 | `longterm [MONTHLY_BUDGET]` | 6-pillar scoring, Monte Carlo, SIP allocation |
 | `daemon intraday [CAPITAL]` | Paper-trading loop on the NSE clock (IST, holidays included; `-m us` uses NYSE hours in ET): scan, enter at the open, trail stops every 60s, book half at T1, square off 15 minutes before the close, settle into `sim` history. Survives network blips, resumes the day after a restart, and squares off on Ctrl+C. **Never sends broker orders** |
 | `daemon longterm` | Post-market scan: scores, portfolio check, alerts, tax-harvest ideas |
@@ -172,6 +175,22 @@ MF periods (`-p`) are `<n>mo`, `<n>y` or `max`, e.g. `6mo`, `3y`, `10y`. Expirie
 | `sim settle [--now]` | Settle open sessions from that day's 5-minute bars: stop or target first, else exit at the 15:15 bar. Today's session waits for the close unless `--now` |
 | `sim reset [--yes]` | Delete simulator history after confirmation (a timestamped backup is kept) |
 | `report <intraday\|longterm\|portfolio\|SYMBOL>` | AI report via local Ollama |
+
+Every `backtest` form also takes:
+
+| Option | Default | |
+|--------|---------|---|
+| `-s, --strategy` | `rsi` | A built-in, a file in your strategies folder, or `file:PATH.toml` |
+| `-P, --param NAME=VALUE` | | Override a strategy parameter (repeatable) |
+| `--costs` | `auto` | `auto`, `in-delivery`, `in-intraday`, `us`, `crypto`, `fx`, `none`. `auto` = crypto/FX models for coins and pairs, India delivery for INR stocks, US otherwise |
+| `--brokerage` | preset | Per order: `20` (flat), `0.03%`, or `20,0.03%` (whichever is lower) |
+| `--slippage-bps` | `5` | Slippage per fill, in basis points |
+| `--fill` | `next-open` | `next-open` or `close` (fills at the signal bar's close — look-ahead) |
+| `--capital` | `100000` | Starting capital in the stock's currency |
+| `--json` / `--csv` | | Print the whole result as JSON, or the trades as CSV |
+
+Costs, fills, the metrics, walk-forward and the strategy file format are in
+[backtesting.md](backtesting.md).
 
 ## Portfolio
 
@@ -363,7 +382,7 @@ stockwise options chain NIFTY -n 2 --json | jq '.rows[] | {strike, delta: .call.
 | `sectors` | `[{sector, symbol, price, change_percent, currency}]`, best first | sector |
 | `screen` | `[{symbol, name, price, change_percent, pe, market_cap, dividend_yield, currency}]` | match |
 | `dividends` | `{symbol, currency, price, pays_dividend, dividend_yield_percent, annual_dividend_per_share, income: [{invested, shares, annual_income, monthly_income}], drip: [{year, shares, growth_percent}]}` | — |
-| `backtest` | `{symbol, currency, strategy, period, interval, bars, total_return_percent, buy_hold_return_percent, alpha_percent, trade_count, win_rate_percent, avg_win_percent, avg_loss_percent, max_drawdown_percent, sharpe, trades: [trade], equity_curve: [..]}`, trade = `{number, entry_date, exit_date, entry_price, exit_price, pnl_percent}` | trade |
+| `backtest` | `{symbol, currency, strategy, period, interval, bars, start, end, fill, capital, start_value, end_value, total_return_percent, cagr_percent, max_drawdown_percent, sharpe, sortino, exposure_percent, trade_count, win_rate_percent, avg_win_percent, avg_loss_percent, profit_factor, costs_paid, gross_return_percent, buy_hold_return_percent, alpha_percent, skipped_entries, costs, cost_model, rules, trades: [trade], equity: [{date, value}]}` — returns are after costs except `gross_return_percent`; `portfolio` and `walkforward` shapes are in [backtesting.md](backtesting.md#json-output). trade = `{symbol, entry_date, exit_date, qty, entry_price, exit_price, gross_pnl, costs, net_pnl, pnl_percent, bars_held, exit_reason}` | trade (every form) |
 | `sip` | `{symbol, currency, period, interval, monthly_amount, months, total_invested, final_value, profit, total_return_percent, xirr_percent, total_units, avg_cost, current_price}` | — |
 | `whatif` | `{symbol, currency, amount, date, buy_date, buy_price, shares, invested, current_price, value, pnl, pnl_percent, cagr_percent, days, years}` — `buy_date` is the trading day closest to `date` | — |
 | `portfolio` | `{holdings: [holding], totals: {cost_basis, value, pnl, pnl_percent, currency}, unpriced: [symbol], unconverted: [symbol]}`, holding = `{symbol, shares, avg_cost, cost_basis, price, value, pnl, pnl_percent, weight_percent, xirr_percent, currency}` — a holding's money values are in its own currency; `totals` and `weight_percent` are in the base currency (`--base`); `unconverted` holdings had no exchange rate | holding |
