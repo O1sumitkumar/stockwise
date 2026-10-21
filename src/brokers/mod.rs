@@ -10,6 +10,10 @@
 //! `yes` / `--yes`, `--dry-run`). Nothing else calls [`Broker::place_order`]
 //! or [`Broker::gtt_create`].
 
+// `#[async_trait]` marks the boxed futures it generates `#[must_use]`, which
+// newer clippy reports as `double_must_use` on every trait method.
+#![allow(clippy::double_must_use)]
+
 pub mod angel;
 mod app;
 pub mod dhan;
