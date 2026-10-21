@@ -1,0 +1,8 @@
+[
+  {"segment": "NSE_EQ", "name": "JOCIL LIMITED", "exchange": "NSE", "isin": "INE839G01010", "instrument_type": "EQ", "instrument_key": "NSE_EQ|INE839G01010", "lot_size": 1, "freeze_quantity": 100000.0, "exchange_token": "16927", "tick_size": 5.0, "trading_symbol": "JOCIL", "short_name": "JOCIL", "security_type": "NORMAL", "cas_eligible": true},
+  {"segment": "NSE_EQ", "name": "RELIANCE INDUSTRIES LTD", "exchange": "NSE", "isin": "INE002A01018", "instrument_type": "EQ", "instrument_key": "NSE_EQ|INE002A01018", "lot_size": 1, "freeze_quantity": 100000.0, "exchange_token": "2885", "tick_size": 10.0, "trading_symbol": "RELIANCE", "short_name": "Reliance Industries", "security_type": "NORMAL"},
+  {"segment": "NSE_EQ", "name": "RELIANCE INFRASTRUCTURE LTD", "exchange": "NSE", "isin": "INE036A01016", "instrument_type": "EQ", "instrument_key": "NSE_EQ|INE036A01016", "lot_size": 1, "exchange_token": "553", "tick_size": 5.0, "trading_symbol": "RELINFRA", "short_name": "Reliance Infra", "security_type": "NORMAL"},
+  {"segment": "NSE_EQ", "name": "SUZLON ENERGY LTD", "exchange": "NSE", "isin": "INE040H01021", "instrument_type": "BE", "instrument_key": "NSE_EQ|INE040H01021", "lot_size": 1, "exchange_token": "12018", "tick_size": 5.0, "trading_symbol": "SUZLONBE", "short_name": "Suzlon", "security_type": "NORMAL"},
+  {"segment": "NSE_INDEX", "name": "Nifty 50", "exchange": "NSE", "instrument_type": "INDEX", "instrument_key": "NSE_INDEX|Nifty 50", "exchange_token": "26000", "trading_symbol": "Nifty 50"},
+  {"segment": "NSE_FO", "name": "RELIANCE", "exchange": "NSE", "instrument_type": "FUT", "instrument_key": "NSE_FO|52023", "lot_size": 250, "exchange_token": "52023", "trading_symbol": "RELIANCE FUT 30 OCT 26", "underlying_symbol": "RELIANCE"}
+]

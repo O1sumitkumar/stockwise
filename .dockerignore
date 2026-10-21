@@ -1,0 +1,6 @@
+# The image only needs the crate sources; keep the build context small.
+*
+!Cargo.toml
+!Cargo.lock
+!src/
+!examples/

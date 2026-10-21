@@ -1,0 +1,42 @@
+{
+  "status": "success",
+  "data": {
+    "net": [
+      {
+        "tradingsymbol": "SBIN",
+        "exchange": "NSE",
+        "instrument_token": 779521,
+        "product": "MIS",
+        "quantity": -5,
+        "overnight_quantity": 0,
+        "multiplier": 1,
+        "average_price": 790.1,
+        "close_price": 0,
+        "last_price": 788.5,
+        "value": 3950.5,
+        "pnl": 8,
+        "m2m": 8,
+        "unrealised": 8,
+        "realised": 0,
+        "buy_quantity": 0,
+        "buy_price": 0,
+        "buy_value": 0,
+        "sell_quantity": 5,
+        "sell_price": 790.1,
+        "sell_value": 3950.5
+      }
+    ],
+    "day": [
+      {
+        "tradingsymbol": "SBIN",
+        "exchange": "NSE",
+        "instrument_token": 779521,
+        "product": "MIS",
+        "quantity": -5,
+        "average_price": 790.1,
+        "last_price": 788.5,
+        "pnl": 8
+      }
+    ]
+  }
+}

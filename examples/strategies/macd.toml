@@ -1,0 +1,15 @@
+# MACD crossover — the built-in `macd` strategy.
+# Buy when the MACD histogram turns positive, sell when it turns negative.
+name = "macd"
+description = "MACD(12, 26, 9) histogram crosses zero"
+entry = "macd_hist($fast, $slow, $signal) crosses_above 0"
+exit = "macd_hist($fast, $slow, $signal) crosses_below 0"
+
+[params]
+fast = 12
+slow = 26
+signal = 9
+
+[grid]
+fast = [8, 12]
+slow = [21, 26, 34]

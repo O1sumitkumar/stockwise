@@ -23,28 +23,68 @@ Requires Rust **1.88+** (edition 2024 + let-chains). Optional at runtime: a loca
 [Ollama](https://ollama.com) server for AI features and Redis for caching — both
 degrade gracefully when absent.
 
+Try your build without touching your real portfolio by pointing StockWise at a
+scratch data directory:
+
+```bash
+export STOCKWISE_HOME=$(mktemp -d)
+cargo run -- doctor
+cargo run -- quote RELIANCE TCS
+cargo run -- portfolio add TCS 10 3500 && cargo run -- portfolio
+```
+
+## Finding your way around
+
+[docs/architecture.md](docs/architecture.md) maps the source tree. In short:
+`src/main.rs` defines the CLI, `src/commands/` holds one file per command area
+(`overview`, `technicals`, `markets`, `holdings`, `trade`, ...), and the
+analysis engines (`technical.rs`, `backtest.rs`, `intraday.rs`, `longterm.rs`)
+are pure functions with unit tests.
+
 ## Before you open a PR
 
-Run the same checks CI does — all three must pass:
+Run the same checks CI does — all of them must pass:
 
 ```bash
 cargo fmt --all            # format
 cargo clippy --all-targets -- -D warnings   # lint (must be clean)
+cargo clippy --all-targets --no-default-features -- -D warnings   # minimal build (no tui/serve)
 cargo test                 # all tests green
 ```
 
 - Keep PRs focused; one logical change per PR.
-- Add tests for new behavior. We have 213 and would like more.
+- Add tests for new behavior — CLI parsing tests live in `src/main.rs`, pure logic tests next to the code.
 - Update `docs/`, `README.md`, and `CHANGELOG.md` (`[Unreleased]`) when behavior
   changes.
-- New commands: wire them into `commands.rs`, document them in
-  `docs/commands.md`, and add to the README command table.
+- New commands: add the variant to `Commands` and to the `GROUPS` help table in
+  `src/main.rs` (a test checks every command is grouped), write `cmd_<name>` in
+  the matching `src/commands/*.rs` file, and document it in `docs/commands.md`.
+- Errors: return `anyhow` errors (`bail!`) instead of printing and returning
+  `Ok(())`, so scripts see a non-zero exit code. Empty states (nothing in the
+  portfolio yet) are not errors.
+- Anything that can place a live order or GTT must go through `place_live_order`
+  in `src/commands/trade.rs` — never call `Broker::place_order` or
+  `Broker::gtt_create` directly.
+
+## Good first contributions
+
+- `--json` / `--csv` output for another command (`analyze`, `peers`, `news`,
+  `picks`, ...) — build rows once and render them with `src/output.rs`; see
+  `cmd_portfolio_show` or `cmd_risk` for the pattern, and add the shape to
+  `docs/commands.md`.
+- More symbols in the India/US universes in `src/market.rs`, or a refresh when
+  a ticker changes.
+- Unit tests for an indicator in `src/technical.rs` against a known reference.
+- Docs: a worked example for a command you use.
 
 ## Adding a data source or broker
 
 Network access goes through `src/api.rs` (rate limiting, retry, caching). Broker
-integrations live alongside `src/angel.rs`. Keep secrets in config/keyring, never
-in source. See the [ROADMAP](ROADMAP.md) for the brokers we'd love help with.
+integrations implement the `Broker` trait in `src/brokers/` — see `zerodha.rs`
+for a compact example. Keep secrets in `secrets::Secret` fields (stored in the OS
+keyring via `src/brokers/secrets.rs`), never in source, logs or error messages.
+Test against `brokers::mock::MockServer` with fixtures from the broker's docs, and
+label anything not yet run against a live account "experimental".
 
 ## Commit messages
 

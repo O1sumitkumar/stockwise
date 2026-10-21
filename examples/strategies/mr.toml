@@ -1,0 +1,15 @@
+# Mean reversion — the built-in `mr` strategy (alias mean_reversion).
+# Buy when the close is more than band_pct below its moving average, sell when
+# it is more than band_pct above.
+name = "mr"
+description = "Close 3% below SMA(20) buys, 3% above sells"
+entry = "close < sma($period) * (1 - $band_pct / 100)"
+exit = "close > sma($period) * (1 + $band_pct / 100)"
+
+[params]
+period = 20
+band_pct = 3
+
+[grid]
+period = [10, 20, 30]
+band_pct = [2, 3, 5]

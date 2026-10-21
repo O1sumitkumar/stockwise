@@ -10,11 +10,13 @@ financial, investment, trading, legal, or tax advice.**
 - All data is sourced from third-party providers (e.g. Yahoo Finance) on an
   "as available" basis. It may be delayed, inaccurate, incomplete, or wrong.
   Do not rely on it for real decisions without independent verification.
-- **Live trading places real orders with real money.** The `trade` commands and
-  the `daemon` workers can buy and sell securities through your connected broker
-  (e.g. Angel One) without further confirmation. You are solely responsible for
-  every order placed, for the configuration of risk controls, and for any
-  financial loss. Test with paper trading (`sim`) first.
+- **Live trading places real orders with real money.** The `trade buy`, `sell`
+  and `limit` commands send orders to your connected broker (e.g. Angel One)
+  after showing a preview and asking you to confirm — or immediately when you
+  pass `--yes`. The `daemon` workers paper-trade only and do not send orders.
+  You are solely responsible for every order placed, for the configuration of
+  risk controls, and for any financial loss. Test with paper trading (`sim`)
+  and `trade ... --dry-run` first.
 - Backtests and simulations describe the past or a hypothetical. **Past
   performance does not guarantee future results.** Simulated results have
   inherent limitations and do not represent actual trading.

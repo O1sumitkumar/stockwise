@@ -1,0 +1,45 @@
+{
+  "status": true,
+  "message": "SUCCESS",
+  "errorcode": "",
+  "data": [
+    {
+      "tradingsymbol": "TCS-EQ",
+      "exchange": "NSE",
+      "isin": "INE467B01029",
+      "t1quantity": 0,
+      "realisedquantity": 10,
+      "quantity": 10,
+      "authorisedquantity": 0,
+      "product": "DELIVERY",
+      "collateralquantity": null,
+      "collateraltype": null,
+      "haircut": 0,
+      "averageprice": 3450.5,
+      "ltp": 3600.25,
+      "symboltoken": "11536",
+      "close": 3590.0,
+      "profitandloss": 1497,
+      "pnlpercentage": 4.34
+    },
+    {
+      "tradingsymbol": "SBIN-EQ",
+      "exchange": "NSE",
+      "isin": "INE062A01020",
+      "t1quantity": 0,
+      "realisedquantity": 5,
+      "quantity": 5,
+      "authorisedquantity": 0,
+      "product": "DELIVERY",
+      "collateralquantity": null,
+      "collateraltype": null,
+      "haircut": 0,
+      "averageprice": 780,
+      "ltp": 0,
+      "symboltoken": "3045",
+      "close": 0,
+      "profitandloss": 0,
+      "pnlpercentage": 0
+    }
+  ]
+}

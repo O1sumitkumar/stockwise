@@ -1,6 +1,5 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -15,30 +14,18 @@ pub struct WealthHistory {
     pub snapshots: Vec<Snapshot>,
 }
 
-fn wealth_path() -> Result<PathBuf> {
-    let dir = dirs::data_local_dir()
-        .context("Cannot determine local data directory")?
-        .join("stockwise");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir.join("wealth_history.json"))
-}
-
 impl WealthHistory {
+    /// History of the active portfolio (each named portfolio has its own).
     pub fn load() -> Result<Self> {
-        let path = wealth_path()?;
-        if !path.exists() {
-            return Ok(WealthHistory::default());
-        }
-        let data = std::fs::read_to_string(&path)?;
-        let history: WealthHistory = serde_json::from_str(&data)?;
-        Ok(history)
+        crate::store::load(&crate::portfolio::scoped_file("wealth_history.json"))
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = wealth_path()?;
-        let data = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, data)?;
-        Ok(())
+        crate::store::save(
+            &crate::portfolio::scoped_file("wealth_history.json"),
+            self,
+            false,
+        )
     }
 
     pub fn add_snapshot(&mut self, value: f64, cost: f64, holdings: usize) {

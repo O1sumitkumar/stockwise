@@ -51,6 +51,8 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets -- -D warnings
+      - name: clippy (minimal build, no tui/server)
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
 
   msrv:
     name: msrv (1.88)
@@ -60,3 +62,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-targets
+
+  installer:
+    name: install.sh (shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck install.sh packaging/render.sh

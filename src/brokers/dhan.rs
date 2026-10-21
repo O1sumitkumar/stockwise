@@ -1,0 +1,643 @@
+//! Dhan API v2 — **experimental, untested against a live account.**
+//!
+//! Built from dhanhq.co/docs/v2 and its OpenAPI file: a pasted access token
+//! (generated on web.dhan.co, valid 24 hours), holdings, positions, the
+//! order book, orders (MARKET, LIMIT, STOP_LOSS, STOP_LOSS_MARKET; CNC),
+//! exact instrument lookup in the NSE_EQ scrip master, and single Forever
+//! Orders (Dhan's GTT).
+
+use super::app::{self, Needs};
+use super::http::{self, unknown_state};
+use super::secrets::Secret;
+use super::{
+    Broker, BrokerKind, Gtt, GttRequest, Holding, Instrument, Order, OrderAck, OrderKind,
+    OrderRequest, Position,
+};
+use anyhow::{Context, Result, bail};
+use async_trait::async_trait;
+use serde_json::{Value, json};
+
+pub const CONFIG_FILE: &str = "dhan_config.json";
+pub const SECRET_KEYS: &[&str] = app::SECRET_KEYS;
+const KIND: BrokerKind = BrokerKind::Dhan;
+const LABEL: &str = "Dhan";
+const NEEDS: Needs = Needs {
+    api_secret: false,
+    redirect_uri: false,
+};
+const API: &str = "https://api.dhan.co/v2";
+/// Segment-wise scrip master (redirects to a CSV download).
+const INSTRUMENTS: &str = "https://api.dhan.co/v2/instrument/NSE_EQ";
+
+pub const SETUP: &[&str] = &[
+    "On web.dhan.co open My Profile → Access DhanHQ APIs and generate an access token (valid 24 hours)",
+    "Dhan only accepts orders from the static IP set on that page; reads work from anywhere",
+    "Put your Dhan client id as api_key in the file `trade config --broker dhan` creates",
+    "Paste each new token with `trade login --broker dhan` (stored in the OS keyring when available)",
+];
+
+pub fn status(migrate: bool) -> Result<super::ConfigStatus> {
+    app::status(KIND, NEEDS, migrate)
+}
+
+pub fn write_template() -> Result<()> {
+    app::save(
+        KIND,
+        &app::template(NEEDS, ""),
+        &super::secrets::Storage::File,
+    )
+}
+
+/// Paste a token generated on web.dhan.co; it is checked against the
+/// account's profile before it is saved.
+pub async fn login() -> Result<()> {
+    let (config, storage) = app::for_login(KIND, NEEDS)?;
+    println!();
+    println!("  Generate an access token on web.dhan.co → My Profile → Access DhanHQ APIs.");
+    let token = Secret::new(http::prompt_secret(
+        "  Paste the access token (input hidden): ",
+    )?);
+    if !token.is_real() {
+        bail!("No token pasted");
+    }
+    let client = DhanClient::with_urls(config.api_key.clone(), token.clone(), API, INSTRUMENTS)?;
+    let who = client.profile_client_id().await?;
+    if who.as_deref().is_some_and(|id| id != config.api_key) {
+        bail!(
+            "That token belongs to Dhan client {}, but {} is configured for {}",
+            who.unwrap_or_default(),
+            CONFIG_FILE,
+            config.api_key
+        );
+    }
+    app::save_session(KIND, config, &storage, token, who)
+}
+
+pub struct DhanClient {
+    http: reqwest::Client,
+    client_id: String,
+    token: Secret,
+    api: String,
+    instruments: String,
+}
+
+/// `{errorType, errorCode, errorMessage}` → one line.
+fn error_message(v: &Value, text: &str) -> String {
+    let msg = http::text(v.get("errorMessage"));
+    let code = http::text(v.get("errorCode"));
+    match (msg, code) {
+        (Some(m), Some(c)) => format!("{m} ({c})"),
+        (Some(m), None) => m,
+        (None, Some(c)) => c,
+        (None, None) => http::excerpt(text),
+    }
+}
+
+fn is_auth_error(v: &Value) -> bool {
+    http::text(v.get("errorCode")).as_deref() == Some("DH-901")
+}
+
+/// The exact NSE cash-equity (`EQ` series) row for `symbol` in the scrip
+/// master, by column name. Accepts the detailed / segment-wise layout
+/// (symbol in `UNDERLYING_SYMBOL`) and the compact one (`SEM_*`).
+fn pick_equity(csv: &str, symbol: &str) -> Result<Instrument> {
+    let mut lines = csv.lines();
+    let header: Vec<String> = http::csv_fields(lines.next().unwrap_or_default())
+        .into_iter()
+        .map(|h| h.trim().to_string())
+        .collect();
+    let find = |names: &[&str]| {
+        names
+            .iter()
+            .find_map(|n| header.iter().position(|h| h == n))
+    };
+    let need = |names: &[&str]| {
+        find(names).with_context(|| format!("Dhan scrip master has no {} column", names[0]))
+    };
+    let exch = need(&["EXCH_ID", "SEM_EXM_EXCH_ID"])?;
+    let seg = need(&["SEGMENT", "SEM_SEGMENT"])?;
+    let id = need(&["SECURITY_ID", "SEM_SMST_SECURITY_ID"])?;
+    let inst = need(&["INSTRUMENT", "SEM_INSTRUMENT_NAME"])?;
+    let sym = need(&["UNDERLYING_SYMBOL", "SEM_TRADING_SYMBOL"])?;
+    let series = need(&["SERIES", "SEM_SERIES"])?;
+
+    let mut hits = lines.map(http::csv_fields).filter(|f| {
+        let get = |i: usize| f.get(i).map(|s| s.trim()).unwrap_or("");
+        get(exch) == "NSE"
+            && get(seg) == "E"
+            && get(inst) == "EQUITY"
+            && get(series) == "EQ"
+            && get(sym) == symbol
+    });
+    let Some(hit) = hits.next() else {
+        bail!(
+            "No exact NSE equity match for {symbol} in the Dhan scrip master. Check the symbol with `stockwise search`."
+        );
+    };
+    if hits.next().is_some() {
+        bail!("Several Dhan instruments match {symbol} on NSE; refusing to guess.");
+    }
+    Ok(Instrument {
+        symbol: symbol.to_string(),
+        tradingsymbol: symbol.to_string(),
+        token: hit[id].trim().to_string(),
+        exchange: "NSE".into(),
+    })
+}
+
+fn order_type(kind: &OrderKind) -> &'static str {
+    match kind {
+        OrderKind::Market => "MARKET",
+        OrderKind::Limit { .. } => "LIMIT",
+        OrderKind::StopLimit { .. } => "STOP_LOSS",
+        OrderKind::StopMarket { .. } => "STOP_LOSS_MARKET",
+    }
+}
+
+fn order_body(client_id: &str, o: &OrderRequest) -> Value {
+    json!({
+        "dhanClientId": client_id,
+        "correlationId": "stockwise",
+        "transactionType": o.side.as_str(),
+        "exchangeSegment": "NSE_EQ",
+        "productType": "CNC",
+        "orderType": order_type(&o.kind),
+        "validity": "DAY",
+        "securityId": o.instrument.token,
+        "quantity": o.qty,
+        "disclosedQuantity": 0,
+        "price": o.kind.price().unwrap_or(0.0),
+        "triggerPrice": o.kind.trigger().unwrap_or(0.0),
+        "afterMarketOrder": false,
+    })
+}
+
+fn gtt_body(client_id: &str, g: &GttRequest) -> Value {
+    json!({
+        "dhanClientId": client_id,
+        "correlationId": "stockwise",
+        "orderFlag": "SINGLE",
+        "transactionType": g.side.as_str(),
+        "exchangeSegment": "NSE_EQ",
+        "productType": "CNC",
+        "orderType": "LIMIT",
+        "validity": "DAY",
+        "securityId": g.instrument.token,
+        "quantity": g.qty,
+        "disclosedQuantity": 0,
+        "price": g.limit,
+        "triggerPrice": g.trigger,
+    })
+}
+
+fn holding(h: &Value) -> Option<Holding> {
+    let sym = http::text(h.get("tradingSymbol"))?;
+    Some(Holding {
+        symbol: super::strip_series(&sym).to_string(),
+        exchange: http::text(h.get("exchange")).filter(|e| e != "ALL"),
+        isin: http::text(h.get("isin")),
+        qty: http::num(h.get("totalQty")).unwrap_or(0.0),
+        avg_price: http::price(h.get("avgCostPrice")),
+        ltp: http::price(h.get("lastTradedPrice")),
+        pnl: None,
+    })
+}
+
+fn position(p: &Value) -> Option<Position> {
+    let pnl = match (
+        http::num(p.get("realizedProfit")),
+        http::num(p.get("unrealizedProfit")),
+    ) {
+        (None, None) => None,
+        (r, u) => Some(r.unwrap_or(0.0) + u.unwrap_or(0.0)),
+    };
+    Some(Position {
+        symbol: http::text(p.get("tradingSymbol"))?,
+        exchange: http::text(p.get("exchangeSegment")),
+        product: http::text(p.get("productType")),
+        qty: http::num(p.get("netQty")).unwrap_or(0.0),
+        avg_price: http::price(p.get("costPrice")).or_else(|| http::price(p.get("buyAvg"))),
+        ltp: None,
+        pnl,
+    })
+}
+
+fn order(o: &Value) -> Option<Order> {
+    Some(Order {
+        id: http::text(o.get("orderId"))?,
+        symbol: http::text(o.get("tradingSymbol"))
+            .or_else(|| http::text(o.get("securityId")))
+            .unwrap_or_default(),
+        side: http::text(o.get("transactionType")),
+        order_type: http::text(o.get("orderType")),
+        qty: http::num(o.get("quantity")),
+        price: http::price(o.get("price")),
+        trigger: http::price(o.get("triggerPrice")),
+        status: http::text(o.get("orderStatus")),
+        message: http::text(o.get("omsErrorDescription")),
+    })
+}
+
+fn gtt(g: &Value) -> Option<Gtt> {
+    Some(Gtt {
+        id: http::text(g.get("orderId"))?,
+        symbol: http::text(g.get("tradingSymbol")).unwrap_or_default(),
+        side: http::text(g.get("transactionType")),
+        qty: http::num(g.get("quantity")),
+        trigger: http::price(g.get("triggerPrice")),
+        limit: http::price(g.get("price")),
+        status: http::text(g.get("orderStatus")),
+    })
+}
+
+impl DhanClient {
+    /// Use the token saved by `trade login --broker dhan`.
+    pub fn connect() -> Result<Self> {
+        let config = app::session(KIND, NEEDS)?;
+        Self::with_urls(config.api_key, config.access_token, API, INSTRUMENTS)
+    }
+
+    fn with_urls(client_id: String, token: Secret, api: &str, instruments: &str) -> Result<Self> {
+        Ok(Self {
+            http: http::client()?,
+            client_id,
+            token,
+            api: api.into(),
+            instruments: instruments.into(),
+        })
+    }
+
+    fn auth(&self, req: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder> {
+        let mut v = reqwest::header::HeaderValue::from_str(self.token.expose())
+            .context("The saved Dhan token has invalid characters; log in again")?;
+        v.set_sensitive(true);
+        Ok(req
+            .header("access-token", v)
+            .header("client-id", &self.client_id)
+            .header("Accept", "application/json"))
+    }
+
+    async fn get(&self, path: &str, what: &str) -> Result<Value> {
+        let resp = self
+            .auth(self.http.get(format!("{}{}", self.api, path)))?
+            .send()
+            .await
+            .with_context(|| format!("Could not reach Dhan for the {what}"))?;
+        let (status, text) = http::body(resp).await?;
+        http::check_session(status, LABEL, KIND.id())?;
+        let v: Value = http::parse(status, &text, LABEL, what)?;
+        if is_auth_error(&v) {
+            http::check_session(401, LABEL, KIND.id())?;
+        }
+        if status >= 400 || v.get("errorCode").is_some() {
+            bail!("Dhan {what} failed: {}", error_message(&v, &text));
+        }
+        Ok(v)
+    }
+
+    async fn list(&self, path: &str, what: &str) -> Result<Vec<Value>> {
+        Ok(match self.get(path, what).await? {
+            Value::Array(a) => a,
+            Value::Null => vec![],
+            other => bail!(
+                "Unexpected Dhan {what} response: {}",
+                http::excerpt(&other.to_string())
+            ),
+        })
+    }
+
+    async fn profile_client_id(&self) -> Result<Option<String>> {
+        let v = self.get("/profile", "token check").await?;
+        Ok(http::text(v.get("dhanClientId")))
+    }
+
+    /// Send an order-changing request; transport and parse failures leave
+    /// the state unknown and say so.
+    async fn send_order(&self, req: reqwest::RequestBuilder, what: &str) -> Result<Value> {
+        let resp = self
+            .auth(req)?
+            .send()
+            .await
+            .with_context(|| format!("Could not reach Dhan. {}", unknown_state(LABEL)))?;
+        let (status, text) = http::body(resp)
+            .await
+            .with_context(|| unknown_state(LABEL))?;
+        http::check_session(status, LABEL, KIND.id())?;
+        let v: Value = serde_json::from_str(&text).with_context(|| {
+            format!(
+                "Unreadable Dhan response (HTTP {status}). {}",
+                unknown_state(LABEL)
+            )
+        })?;
+        if is_auth_error(&v) {
+            http::check_session(401, LABEL, KIND.id())?;
+        }
+        if status >= 500 {
+            bail!(
+                "Dhan error (HTTP {status}): {}. {}",
+                error_message(&v, &text),
+                unknown_state(LABEL)
+            );
+        }
+        if status >= 400 || v.get("errorCode").is_some() {
+            bail!("Dhan rejected the {what}: {}", error_message(&v, &text));
+        }
+        if http::text(v.get("orderStatus")).as_deref() == Some("REJECTED") {
+            bail!(
+                "Dhan rejected the {what} (id {}). See `stockwise trade orders --broker dhan` for the reason.",
+                http::text(v.get("orderId")).unwrap_or_default()
+            );
+        }
+        Ok(v)
+    }
+}
+
+#[async_trait]
+impl Broker for DhanClient {
+    fn kind(&self) -> BrokerKind {
+        KIND
+    }
+
+    async fn holdings(&self) -> Result<Vec<Holding>> {
+        Ok(self
+            .list("/holdings", "holdings")
+            .await?
+            .iter()
+            .filter_map(holding)
+            .collect())
+    }
+
+    async fn positions(&self) -> Result<Vec<Position>> {
+        Ok(self
+            .list("/positions", "positions")
+            .await?
+            .iter()
+            .filter_map(position)
+            .collect())
+    }
+
+    async fn orders(&self) -> Result<Vec<Order>> {
+        Ok(self
+            .list("/orders", "order book")
+            .await?
+            .iter()
+            .filter_map(order)
+            .collect())
+    }
+
+    async fn resolve_instrument(&self, symbol: &str, exchange: &str) -> Result<Instrument> {
+        if exchange != "NSE" {
+            bail!("Dhan orders support NSE only");
+        }
+        let resp = self
+            .http
+            .get(&self.instruments)
+            .send()
+            .await
+            .context("Could not download the Dhan scrip master")?;
+        if !resp.status().is_success() {
+            bail!("Dhan scrip master: HTTP {}", resp.status());
+        }
+        let raw = http::maybe_gunzip(&resp.bytes().await?)?;
+        pick_equity(&String::from_utf8_lossy(&raw), symbol)
+    }
+
+    async fn place_order(&self, o: &OrderRequest) -> Result<OrderAck> {
+        let req = self
+            .http
+            .post(format!("{}/orders", self.api))
+            .json(&order_body(&self.client_id, o));
+        let v = self.send_order(req, "order").await?;
+        Ok(OrderAck {
+            order_id: http::text(v.get("orderId")),
+        })
+    }
+
+    fn supports_gtt(&self) -> bool {
+        true
+    }
+
+    async fn gtt_create(&self, g: &GttRequest) -> Result<String> {
+        let req = self
+            .http
+            .post(format!("{}/forever/orders", self.api))
+            .json(&gtt_body(&self.client_id, g));
+        let v = self.send_order(req, "Forever Order").await?;
+        http::text(v.get("orderId")).context(
+            "Dhan accepted the Forever Order but returned no id — check `stockwise trade gtt list --broker dhan`",
+        )
+    }
+
+    async fn gtt_list(&self) -> Result<Vec<Gtt>> {
+        Ok(self
+            .list("/forever/orders", "Forever Order list")
+            .await?
+            .iter()
+            .filter_map(gtt)
+            .collect())
+    }
+
+    async fn gtt_cancel(&self, id: &str) -> Result<()> {
+        if !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+            bail!("Unexpected Dhan order id {id:?}");
+        }
+        let req = self
+            .http
+            .delete(format!("{}/forever/orders/{}", self.api, id));
+        self.send_order(req, "Forever Order cancel").await?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::brokers::Side;
+    use crate::brokers::mock::{MockServer, Route};
+
+    async fn client(routes: Vec<Route>) -> (MockServer, DhanClient) {
+        let server = MockServer::start(routes).await;
+        let url = server.url();
+        let c = DhanClient::with_urls(
+            "1000000003".into(),
+            Secret::new("dhan-jwt"),
+            &url,
+            &format!("{url}/instrument/NSE_EQ"),
+        )
+        .unwrap();
+        (server, c)
+    }
+
+    fn hdfc() -> Instrument {
+        Instrument {
+            symbol: "HDFCBANK".into(),
+            tradingsymbol: "HDFCBANK".into(),
+            token: "1333".into(),
+            exchange: "NSE".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn holdings_send_the_access_token_header() {
+        let (server, c) = client(vec![Route::json(
+            "GET",
+            "/holdings",
+            include_str!("fixtures/dhan_holdings.json"),
+        )])
+        .await;
+        let h = c.holdings().await.unwrap();
+        let req = server.last("GET", "/holdings");
+        assert_eq!(req.header("access-token"), Some("dhan-jwt"));
+        assert_eq!(h[0].symbol, "HDFC");
+        assert_eq!(h[0].qty, 1000.0);
+        assert_eq!(h[0].avg_price, Some(2655.0));
+        assert_eq!(h[0].exchange, None);
+        assert_eq!(h[1].ltp, Some(3560.0));
+    }
+
+    #[tokio::test]
+    async fn positions_and_orders_parse() {
+        let (_s, c) = client(vec![
+            Route::json(
+                "GET",
+                "/positions",
+                include_str!("fixtures/dhan_positions.json"),
+            ),
+            Route::json("GET", "/orders", include_str!("fixtures/dhan_orders.json")),
+        ])
+        .await;
+        let p = c.positions().await.unwrap();
+        assert_eq!((p[0].symbol.as_str(), p[0].qty), ("TCS", 40.0));
+        assert_eq!(p[0].pnl, Some(6122.0));
+        let o = c.orders().await.unwrap();
+        assert_eq!(o[0].id, "112111182198");
+        assert_eq!(o[0].status.as_deref(), Some("PENDING"));
+        // Empty trading symbol falls back to the security id.
+        assert_eq!(o[0].symbol, "11536");
+    }
+
+    #[tokio::test]
+    async fn dh_901_means_log_in_again() {
+        let (_s, c) = client(vec![
+            Route::json(
+                "GET",
+                "/holdings",
+                r#"{"errorType":"Invalid_Authentication","errorCode":"DH-901","errorMessage":"Client ID or user generated access token is invalid or expired."}"#,
+            )
+            .status(400),
+        ])
+        .await;
+        let err = c.holdings().await.unwrap_err().to_string();
+        assert!(err.contains("trade login --broker dhan"), "{err}");
+    }
+
+    #[test]
+    fn scrip_master_lookup_is_exact_in_both_layouts() {
+        let detailed = include_str!("fixtures/dhan_scrip_master.csv");
+        assert_eq!(pick_equity(detailed, "HDFCBANK").unwrap(), hdfc());
+        assert_eq!(pick_equity(detailed, "RELIANCE").unwrap().token, "2885");
+        assert!(pick_equity(detailed, "HDFC").is_err());
+        // A BE-series row and a state-loan row with the same symbol never match.
+        assert!(pick_equity(detailed, "ZEEL").is_err());
+        assert!(pick_equity(detailed, "656MH32").is_err());
+
+        let compact = "SEM_EXM_EXCH_ID,SEM_SEGMENT,SEM_SMST_SECURITY_ID,SEM_INSTRUMENT_NAME,SEM_EXPIRY_CODE,SEM_TRADING_SYMBOL,SEM_LOT_UNITS,SEM_CUSTOM_SYMBOL,SEM_EXPIRY_DATE,SEM_STRIKE_PRICE,SEM_OPTION_TYPE,SEM_TICK_SIZE,SEM_EXPIRY_FLAG,SEM_EXCH_INSTRUMENT_TYPE,SEM_SERIES,SM_SYMBOL_NAME\n\
+NSE,E,1333,EQUITY,0,HDFCBANK,1.0,HDFC Bank,,,,5.0000,NA,ES,EQ,HDFC BANK LTD\n\
+BSE,E,500180,EQUITY,0,HDFCBANK,1.0,HDFC Bank,,,,5.0000,NA,ES,A,HDFC BANK LTD\n";
+        assert_eq!(pick_equity(compact, "HDFCBANK").unwrap().token, "1333");
+    }
+
+    #[tokio::test]
+    async fn stop_loss_market_order_body() {
+        let (server, c) = client(vec![Route::json(
+            "POST",
+            "/orders",
+            r#"{"orderId":"112111182198","orderStatus":"PENDING"}"#,
+        )])
+        .await;
+        let ack = c
+            .place_order(&OrderRequest {
+                instrument: hdfc(),
+                side: Side::Sell,
+                qty: 10,
+                kind: OrderKind::StopMarket { trigger: 1500.0 },
+            })
+            .await
+            .unwrap();
+        assert_eq!(ack.order_id.as_deref(), Some("112111182198"));
+        let body = server.last("POST", "/orders").json();
+        assert_eq!(body["orderType"], "STOP_LOSS_MARKET");
+        assert_eq!(body["triggerPrice"], 1500.0);
+        assert_eq!(body["price"], 0.0);
+        assert_eq!(body["productType"], "CNC");
+        assert_eq!(body["securityId"], "1333");
+        assert_eq!(body["dhanClientId"], "1000000003");
+        assert_eq!(body["quantity"], 10);
+    }
+
+    #[tokio::test]
+    async fn rejected_status_is_an_error() {
+        let (_s, c) = client(vec![Route::json(
+            "POST",
+            "/orders",
+            r#"{"orderId":"9","orderStatus":"REJECTED"}"#,
+        )])
+        .await;
+        let err = c
+            .place_order(&OrderRequest {
+                instrument: hdfc(),
+                side: Side::Buy,
+                qty: 1,
+                kind: OrderKind::Limit { price: 1600.0 },
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("rejected"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn forever_order_create_list_cancel() {
+        let (server, c) = client(vec![
+            Route::json(
+                "POST",
+                "/forever/orders",
+                r#"{"orderId":"5132208051112","orderStatus":"PENDING"}"#,
+            ),
+            Route::json(
+                "GET",
+                "/forever/orders",
+                include_str!("fixtures/dhan_forever_list.json"),
+            ),
+            Route::json(
+                "DELETE",
+                "/forever/orders/1132208051115",
+                r#"{"orderId":"1132208051115","orderStatus":"CANCELLED"}"#,
+            ),
+        ])
+        .await;
+        let id = c
+            .gtt_create(&GttRequest {
+                instrument: hdfc(),
+                side: Side::Buy,
+                qty: 10,
+                trigger: 1427.0,
+                limit: 1428.0,
+                last_price: 1500.0,
+            })
+            .await
+            .unwrap();
+        assert_eq!(id, "5132208051112");
+        let body = server.last("POST", "/forever/orders").json();
+        assert_eq!(body["orderFlag"], "SINGLE");
+        assert_eq!(body["orderType"], "LIMIT");
+        assert_eq!(body["price"], 1428.0);
+        assert_eq!(body["triggerPrice"], 1427.0);
+
+        let list = c.gtt_list().await.unwrap();
+        assert_eq!(list[0].id, "1132208051115");
+        assert_eq!(list[0].status.as_deref(), Some("CONFIRM"));
+        c.gtt_cancel("1132208051115").await.unwrap();
+        assert_eq!(server.count("DELETE", "/forever/orders/1132208051115"), 1);
+    }
+}

@@ -1,0 +1,14 @@
+Name,JOHN DOE,,,,,,
+Unique Client Code,1234567890,,,,,,
+,,,,,,,
+Holdings statement as on 20-10-2026,,,,,,,
+,,,,,,,
+Summary,,,,,,,
+Invested Value,"2,41,004.00",,,,,,
+Closing Value,"2,61,760.00",,,,,,
+Unrealised P&L,"20,756.00",,,,,,
+,,,,,,,
+Stock Name,ISIN,Quantity,Average buy price,Buy value,Closing price,Closing value,Unrealised P&L
+ASIAN PAINTS LIMITED,INE021A01026,100,2410.04,"2,41,004.00",2617.6,"2,61,760.00","20,756.00"
+NA,NA,0,0,0,0,0,0
+NIPPON INDIA ETF NIFTY BEES,INF204KB14I2,10,250.5,2505,270,2700,195

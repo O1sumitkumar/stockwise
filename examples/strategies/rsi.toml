@@ -1,0 +1,16 @@
+# RSI reversal — the built-in `rsi` strategy.
+# Buy when RSI says the stock is oversold, sell when it is overbought.
+name = "rsi"
+description = "RSI(14) mean reversion: buy below 30, sell above 70"
+entry = "rsi($period) < $oversold"
+exit = "rsi($period) > $overbought"
+
+[params]
+period = 14
+oversold = 30
+overbought = 70
+
+# `backtest walkforward` tries every combination of these.
+[grid]
+oversold = [25, 30, 35]
+overbought = [65, 70, 75]
