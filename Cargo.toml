@@ -1,10 +1,10 @@
 [package]
 name = "stockwise"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["iamsaquib8 <saquibulhassan6@gmail.com>"]
-description = "Autonomous stock market CLI — quotes, analysis, backtesting, SIP, intraday signals, tax, and wealth tracking across US and Indian markets."
+description = "Stock market toolkit for your terminal — NSE/BSE and US stocks, mutual funds, F&O, crypto and FX: quotes, charts, screeners, backtests, SIP/XIRR, paper trading, portfolio and tax."
 documentation = "https://github.com/iamsaquib8/stockwise/tree/master/docs"
 homepage = "https://github.com/iamsaquib8/stockwise"
 repository = "https://github.com/iamsaquib8/stockwise"

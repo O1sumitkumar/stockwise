@@ -8,7 +8,24 @@ demand.
 
 Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 
-## ✅ Recently shipped
+## ✅ Shipped
+
+**0.4** — the whole 0.3 roadmap
+- Markets: crypto and FX (`-m crypto`, `-m fx`), mutual funds via AMFI (`mf search/nav/history/sip/screen`),
+  fund/ETF overlap, F&O option chains with greeks, IV, PCR and max pain (NSE + US)
+- Portfolio: lots with purchase dates, FIFO sales, XIRR, splits/bonuses/dividends, named
+  portfolios, INR/USD totals, Indian LTCG/STCG with set-off rules
+- Brokers: Zerodha, Upstox, Dhan, Fyers (**experimental** — untested against live accounts)
+  next to Angel One; stop-loss and GTT orders; OS keyring; Groww, Upstox and CAS imports
+- Bots & alerts: resilient paper daemon (Ctrl+C square-off, saved state), IST/US exchange clock
+  with holidays, `sim settle` from intraday bars, `alert watch`, Telegram/Slack/Discord/email/desktop
+- Backtesting: Indian/US cost models, next-bar fills, portfolio and walk-forward backtests,
+  TOML strategy files usable by the intraday bot
+- Interfaces: `stockwise tui` dashboard, `stockwise serve` JSON API + Prometheus metrics
+- Scripting: `--json` / `--csv` across commands, `config.toml`, man pages
+- Data & AI: Alpha Vantage / Massive (Polygon) / Twelve Data providers, opt-in OpenAI /
+  Anthropic / Gemini, Hindi (`--lang hi`, partial)
+- Distribution: Docker image, Nix flake, Homebrew/Scoop/winget/AUR manifests
 
 **0.3** — usability and safety
 - `doctor`, shell completions, grouped help, `--json` on core commands
@@ -22,75 +39,33 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - Daemon workers, paper-trading simulator, Angel One live trading
 - Broker import (Kite, INDmoney, CSV), Redis cache, braille charts
 
-## 🛠️ Now — distribution, scripting & correctness (0.3.x)
+## 🛠️ Now — finish what 0.4 started (0.4.x)
 
-**Install anywhere**
-- 🛠️ Homebrew tap — `brew install iamsaquib8/tap/stockwise` (formula and release automation
-  ready; waiting for the tap repository)
-- 🛠️ Scoop / winget manifests for Windows; AUR package for Arch (manifests rendered on every
-  release; Scoop installs from the release URL, winget and AUR submissions pending)
-- ✅ Man page (`stockwise.1`) generated from the CLI definition
+- 🛠️ Homebrew tap, Scoop bucket, winget and AUR — manifests are generated on every release;
+  publishing them needs the tap repository and package submissions
+- 🛠️ Hindi for every command (today: help groups, `quote`, `markets`, `dashboard`,
+  `portfolio`, `search`, `doctor`)
+- 📋 Broker integrations verified against live accounts — community testers wanted for
+  Zerodha, Upstox, Dhan and Fyers before the "experimental" label comes off
+- 📋 BSE options in `options chain`
+- 📋 Expense ratios for Indian mutual funds (AMFI TER disclosures) in `mf screen`
 
-**Scripting**
-- ✅ `--json` on more commands (`portfolio`, `technical`, `risk`, `backtest`, `screen`)
-- ✅ Config file (`~/.config/stockwise/config.toml`) for market, model, and defaults
-- ✅ `--csv` output for tables, for spreadsheets
+## 📋 Next — planning and reporting (0.5)
 
-**Correctness**
-- ✅ Daemon resilience — survive network blips, square off on Ctrl+C, IST clock + exchange holidays
-- ✅ Lot-level holdings with purchase dates, for accurate LTCG/STCG after imports
-- ✅ Portfolio XIRR (money-weighted return) from lots
-- ✅ `sim settle` from intraday bars (did the stop or target hit first?) instead of the closing price
-- ✅ Intraday plans capped at total capital across positions
+- 📋 Tax export: capital-gains schedule (ITR Schedule CG–ready CSV) from realized lots
+- 📋 Benchmark comparison and attribution — portfolio vs NIFTY 50 / S&P 500, by holding and sector
+- 📋 Goal planner — SIP needed for a target corpus, retirement and education calculators
+- 📋 Technical alerts — RSI, moving-average crosses and breakouts, not only price levels
+- 📋 Results and corporate-announcement calendar for holdings (NSE/BSE filings)
+- 📋 More Indian languages: Marathi, Tamil, Bengali
 
-## 📋 Next — India depth, brokers & alerts (0.4)
+## 💡 Later — exploring (0.6+)
 
-**Brokers & data in**
-- ✅ Native brokers: Zerodha Kite, Upstox, Dhan, Fyers — `trade --broker`, holdings,
-  positions, orders, all through the same preview → confirm flow as Angel One
-  (**experimental** — untested against a live account; read-only until you opt in)
-- ✅ CAS import (CAMS / KFintech, NSDL / CDSL) for stocks + mutual funds, via casparser
-  JSON/CSV (the PDF itself is not read)
-- ✅ Groww and Upstox CSV import
-- ✅ Corporate actions — splits, bonuses, dividends adjust cost basis (`portfolio actions --apply`)
-
-**Mutual funds & India specifics**
-- ✅ Mutual funds via AMFI NAVs — `mf search`, `mf nav`, `mf history`, `mf sip` with XIRR
-- ✅ NSE holiday calendar and an IST market clock for every time-aware command
-- ✅ GTT / stop-loss orders (SL, SL-M, single-leg GTT) with the same safety flow
-  (experimental)
-
-**Portfolio & alerts**
-- ✅ Named portfolios (`--portfolio long-term`)
-- ✅ Secure credential storage via the OS keyring (no plaintext broker secrets), with an
-  owner-only file fallback on headless systems
-- ✅ `alert watch` — a lightweight loop that checks alerts during market hours
-- ✅ Notifications — Telegram, Slack, Discord, email, and desktop, for alerts and daemon events
-
-**AI**
-- ✅ Optional cloud AI providers (OpenAI, Anthropic, Gemini) alongside Ollama, strictly opt-in —
-  `STOCKWISE_AI_PROVIDER`, see [docs/ai.md](docs/ai.md)
-
-## 💡 Later — depth (0.5+)
-
-- ✅ Interactive TUI dashboard (ratatui) — live quotes, positions, P&L, alerts (`stockwise tui`)
-- ✅ Portfolio-level and walk-forward backtesting with Indian costs (STT, brokerage, slippage)
-- ✅ Pluggable strategy system for `backtest` and the intraday bot (TOML rules; WASM not planned for now)
-- ✅ F&O: option chains, greeks, IV, PCR, max pain — NSE index options and F&O stocks, US
-  options via Yahoo (`options chain`, `options pcr`, `options maxpain`); BSE options not yet
-- ✅ Crypto and forex as first-class markets — `-m crypto` (`--quote-currency inr` for `BTC-INR`),
-  `-m fx`, `markets --crypto --fx`
-- ✅ Mutual-fund / ETF screening and overlap analysis — `mf screen` ranks Indian schemes by
-  category and returns (no expense-ratio data in AMFI's feed); `mf overlap` covers funds with
-  Yahoo holdings data (mainly US ETFs/funds, top 10 holdings)
-- ✅ Mixed-currency portfolios with INR/USD conversion
-- ✅ Data-provider abstraction beyond Yahoo — Alpha Vantage, Massive (Polygon), Twelve Data via
-  `STOCKWISE_DATA_PROVIDER`, see [docs/data-providers.md](docs/data-providers.md)
-- 💡 Official NSE feeds as a data provider
-- ✅ Web/REST mode for remote dashboards; Prometheus metrics for the daemon (`stockwise serve`)
-- ✅ Docker image and Nix flake
-- 🛠️ Hindi localization (partial) — `--lang hi`: help groups, `quote`, `markets`, `dashboard`,
-  `portfolio`, `search`, `doctor`; other commands next
+- 💡 Official NSE / BSE data feeds as a data provider
+- 💡 Broker-side GTT and order-status sync into the portfolio
+- 💡 A small web dashboard served by `stockwise serve`
+- 💡 WASM strategy plugins (TOML strategies cover most cases today)
+- 💡 Options strategy builder — payoff charts for spreads and straddles from the live chain
 
 ## Non-goals
 

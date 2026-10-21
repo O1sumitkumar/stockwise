@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-21
+
+Everything on the 0.3 roadmap: new markets and asset classes, a lot-based
+portfolio with Indian tax rules, more brokers, a backtesting engine, a
+terminal dashboard and a local API, packaging for every platform, and
+Hindi. Command-line forms from 0.3 keep working.
+
 ### Added
 - `stockwise tui` — a full-screen, read-only live dashboard: indices,
   watchlist, portfolio P&L, triggered alerts and a chart of the selected
@@ -39,32 +46,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--no-ai` turns the AI section off when `STOCKWISE_AI` or the config file
   turn it on.
 - `doctor` reports the config file and whether it parsed.
-
-### Changed
-- `backtest` with too little history is an error (exit 1) instead of a
-  message with exit 0.
-- `movers` leaves out stocks without a change today instead of ranking them
-  at 0%; `correlate` shows N/A instead of 0 when two series can't be compared.
-- `watch` lists symbols that have no live quote (as N/A) instead of hiding
-  them; `dividends` errors when there is no live price instead of dividing by
-  zero.
-- An invalid config file stops every command except `config`, `doctor` and
-  `completions`, with an error naming the file and the key.
-- `quote`, `history` and `markets` gather their data through a shared layer
-  (`src/views.rs`) that the TUI and the server also use, so `--json` and the
-  HTTP API return the same shapes.
-- `portfolio --json/--csv` and `tax --json/--csv` follow the lot-based
-  portfolio: holdings carry `xirr_percent`, totals are in the base currency
-  (`--base`), and holdings without an exchange rate are listed in
-  `unconverted`. `tax --json` reports this tax year's sales, each open
-  holding's short- and long-term gain, and the estimate with and without
-  selling everything today.
-- The config file also covers `lang`, `quote_currency`, `portfolio`,
-  `ai_provider`, `data_provider` and a `[notify]` table for notification
-  channels (API keys stay in environment variables). `config show` and
-  `doctor` warn when the file holds secrets and other users can read it.
-
-### Added
 - **More brokers (experimental — untested against a live account):** Zerodha
   Kite Connect, Upstox, Dhan and Fyers via `trade --broker <name>` (or
   `STOCKWISE_BROKER`): holdings (synced into `portfolio`), positions, order
@@ -109,7 +90,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `backtest --json` shape changed with the new engine (see
   docs/backtesting.md).
 - Docs: [docs/backtesting.md](docs/backtesting.md).
-
 - `stockwise man` prints the `stockwise.1` man page; `stockwise man --dir DIR`
   writes it plus one `stockwise-<command>.1` page per command. The pages are
   generated from the CLI definition and ship in every release archive under
@@ -140,15 +120,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `options maxpain`. Indian symbols use NSE's option chain (index options and
   F&O stocks), US symbols (`-m us`) use Yahoo Finance. Black-Scholes greeks
   with an implied-volatility solver, valued at the data timestamp.
-
-### Changed
-- `options` is now a command group. `stockwise options SYMBOL` still shows
-  expected moves, also available as `options moves SYMBOL`. `mf` and
-  `options` are listed under a new "Funds & F&O" help group.
-
-### Fixed
-- `options` (expected moves) treated a missing price as 0; it now reports an
-  error.
+- `stockwise alert watch [--interval 60] [--once]` — checks alerts while
+  each alert's market is open and announces every trigger once (re-arms when
+  the price moves back, at most once a day; remembered across restarts).
+- Notifications for `alert watch` and the intraday daemon: Telegram, Slack
+  and Discord webhooks, email over SMTP (rustls), and desktop pop-ups with
+  the `desktop-notify` build feature. Configured with `STOCKWISE_*`
+  environment variables; `stockwise notify` shows them and `stockwise notify
+  test` sends a test message. Secrets are never printed or sent anywhere but
+  their own endpoint.
+- Exchange clock: IST for NSE and US Eastern (with daylight saving) for
+  NYSE, with the NSE 2026 and NYSE 2026–2028 holiday calendars and NYSE
+  early closes.
+- `sim settle --now` settles today's session before the close.
 - **Crypto and forex markets.** `-m crypto` resolves bare coins (`BTC` →
   `BTC-USD`; `--quote-currency inr` / `STOCKWISE_QUOTE_CURRENCY` for `BTC-INR`)
   and `-m fx` resolves pairs (`USDINR`, `usd/inr` → `USDINR=X`). Prices show
@@ -175,56 +159,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `markets`, `dashboard`, `portfolio`, `search`, `doctor` and common errors.
   Lakh/crore amounts read `₹16.27 लाख करोड़`. `--json` output is unchanged.
 - `doctor` shows the active language and where it came from.
-
-### Changed
-- `quote`, `markets` and `dashboard` show `N/A` for a missing price or range
-  instead of `0.00`.
-- AI section titles name the provider (`AI Analysis (Ollama)`) instead of
-  always saying Ollama.
-- EUR, GBP and JPY amounts show `€`, `£` and `¥` instead of `$`.
-- `stockwise alert watch [--interval 60] [--once]` — checks alerts while
-  each alert's market is open and announces every trigger once (re-arms when
-  the price moves back, at most once a day; remembered across restarts).
-- Notifications for `alert watch` and the intraday daemon: Telegram, Slack
-  and Discord webhooks, email over SMTP (rustls), and desktop pop-ups with
-  the `desktop-notify` build feature. Configured with `STOCKWISE_*`
-  environment variables; `stockwise notify` shows them and `stockwise notify
-  test` sends a test message. Secrets are never printed or sent anywhere but
-  their own endpoint.
-- Exchange clock: IST for NSE and US Eastern (with daylight saving) for
-  NYSE, with the NSE 2026 and NYSE 2026–2028 holiday calendars and NYSE
-  early closes.
-- `sim settle --now` settles today's session before the close.
-
-### Changed
-- `sim settle` replays each session's own 5-minute bars (falling back to
-  hourly, then daily bars for old sessions): the stop or target that was hit
-  first decides each trade, otherwise it exits at the 15:15 bar. It used to
-  settle every session, from any date, at today's price. Today's session is
-  refused until the market closes.
-- `sim start` refuses to open a session when the market is closed for the
-  day (weekend, holiday, or after the close).
-- `daemon intraday` follows the exchange clock instead of the machine's time
-  zone, skips exchange holidays, and with `-m us` trades NYSE hours.
-- Intraday plans (`intraday`, `sim start`, the daemon) never need more than
-  the capital in total, and the daemon's 30% per-position limit is applied.
-
-### Fixed
-- `daemon intraday` exited on the first network error, losing the day's
-  paper positions. Errors are now logged and retried with backoff; the state
-  is saved to `daemon_state.json` (`daemon_state_us.json` for `-m us`) every
-  tick and resumed after a restart.
-- Ctrl+C in `daemon intraday` now squares off at the last prices, records
-  the day in the simulator history and exits 0, as the banner promised.
-- Positions closed at the second target were not counted by the 3% daily
-  loss kill switch; the kill switch also no longer re-fires every tick.
-- The daemon kept waiting forever after a day with no qualified trades.
-- Daemon P&L right after a first-target partial booking counted the booked
-  half at the current price instead of the target price.
-- Intraday plans could put a long's stop above the entry (support above the
-  price) or a short's below it; such levels are now ignored.
-- The daemon monitors positions from the moment it enters them, not only
-  from 15 minutes after the open, and ignores zero quotes.
 - **Lot-level holdings.** Every purchase is a lot with its own quantity, price,
   date and source. `portfolio add ... --date YYYY-MM-DD` records the real
   purchase date; `portfolio lots SYMBOL` shows a holding's lots, sales and
@@ -249,6 +183,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from elsewhere is only rebuilt with `import --replace`.
 
 ### Changed
+- `backtest` with too little history is an error (exit 1) instead of a
+  message with exit 0.
+- `movers` leaves out stocks without a change today instead of ranking them
+  at 0%; `correlate` shows N/A instead of 0 when two series can't be compared.
+- `watch` lists symbols that have no live quote (as N/A) instead of hiding
+  them; `dividends` errors when there is no live price instead of dividing by
+  zero.
+- An invalid config file stops every command except `config`, `doctor` and
+  `completions`, with an error naming the file and the key.
+- `quote`, `history` and `markets` gather their data through a shared layer
+  (`src/views.rs`) that the TUI and the server also use, so `--json` and the
+  HTTP API return the same shapes.
+- `portfolio --json/--csv` and `tax --json/--csv` follow the lot-based
+  portfolio: holdings carry `xirr_percent`, totals are in the base currency
+  (`--base`), and holdings without an exchange rate are listed in
+  `unconverted`. `tax --json` reports this tax year's sales, each open
+  holding's short- and long-term gain, and the estimate with and without
+  selling everything today.
+- The config file also covers `lang`, `quote_currency`, `portfolio`,
+  `ai_provider`, `data_provider` and a `[notify]` table for notification
+  channels (API keys stay in environment variables). `config show` and
+  `doctor` warn when the file holds secrets and other users can read it.
+- `options` is now a command group. `stockwise options SYMBOL` still shows
+  expected moves, also available as `options moves SYMBOL`. `mf` and
+  `options` are listed under a new "Funds & F&O" help group.
+- `quote`, `markets` and `dashboard` show `N/A` for a missing price or range
+  instead of `0.00`.
+- AI section titles name the provider (`AI Analysis (Ollama)`) instead of
+  always saying Ollama.
+- EUR, GBP and JPY amounts show `€`, `£` and `¥` instead of `$`.
+- `sim settle` replays each session's own 5-minute bars (falling back to
+  hourly, then daily bars for old sessions): the stop or target that was hit
+  first decides each trade, otherwise it exits at the 15:15 bar. It used to
+  settle every session, from any date, at today's price. Today's session is
+  refused until the market closes.
+- `sim start` refuses to open a session when the market is closed for the
+  day (weekend, holiday, or after the close).
+- `daemon intraday` follows the exchange clock instead of the machine's time
+  zone, skips exchange holidays, and with `-m us` trades NYSE hours.
+- Intraday plans (`intraday`, `sim start`, the daemon) never need more than
+  the capital in total, and the daemon's 30% per-position limit is applied.
 - `tax in|us|uk` classifies each lot by its own purchase date, shows realized
   gains (sales this tax year) separately from unrealized ones, and applies the
   set-off rules: in India a short-term loss offsets STCG then LTCG, a long-term
@@ -269,15 +244,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a split or bonus isn't applied to your lots yet, and point to
   `portfolio actions --apply`.
 - `wealth` snapshots are always in the market's currency.
-
-### Fixed
-- Tax holding periods used the day a holding was added to StockWise, and adding
-  shares kept the first purchase's date for all of them.
-- Portfolio totals added INR and USD amounts together.
-- `portfolio sell`, `lots`, `remove` and `actions` find a holding saved as typed
-  (e.g. `AAPL` while the market is India).
-
-### Changed
 - Every order type and broker goes through one safety flow
   (`place_live_order`): exact instrument, price checks, preview,
   `max_order_value`, `--dry-run`, typed `yes` / `--yes`. Angel One MARKET and
@@ -286,6 +252,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/angel-one.md` is now `docs/brokers.md`.
 
 ### Fixed
+- `options` (expected moves) treated a missing price as 0; it now reports an
+  error.
+- `daemon intraday` exited on the first network error, losing the day's
+  paper positions. Errors are now logged and retried with backoff; the state
+  is saved to `daemon_state.json` (`daemon_state_us.json` for `-m us`) every
+  tick and resumed after a restart.
+- Ctrl+C in `daemon intraday` now squares off at the last prices, records
+  the day in the simulator history and exits 0, as the banner promised.
+- Positions closed at the second target were not counted by the 3% daily
+  loss kill switch; the kill switch also no longer re-fires every tick.
+- The daemon kept waiting forever after a day with no qualified trades.
+- Daemon P&L right after a first-target partial booking counted the booked
+  half at the current price instead of the target price.
+- Intraday plans could put a long's stop above the entry (support above the
+  price) or a short's below it; such levels are now ignored.
+- The daemon monitors positions from the moment it enters them, not only
+  from 15 minutes after the open, and ignores zero quotes.
+- Tax holding periods used the day a holding was added to StockWise, and adding
+  shares kept the first purchase's date for all of them.
+- Portfolio totals added INR and USD amounts together.
+- `portfolio sell`, `lots`, `remove` and `actions` find a holding saved as typed
+  (e.g. `AAPL` while the market is India).
 - Angel One P&L and position quantities read the documented fields
   (`profitandloss`, `netqty`); they showed 0 before.
 - **Backtests fill at the next bar's open** instead of the signal bar's close,
@@ -419,7 +407,8 @@ Initial development. Not published. Highlights that landed during this phase:
 - Multi-timeframe and braille terminal charts; `-p/--period` flag on chart commands.
 - `deep` command — full report on a single stock in one shot.
 
-[Unreleased]: https://github.com/iamsaquib8/stockwise/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/iamsaquib8/stockwise/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/iamsaquib8/stockwise/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/iamsaquib8/stockwise/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/iamsaquib8/stockwise/releases/tag/v0.2.0
 [0.1.0]: https://github.com/iamsaquib8/stockwise/commits/master

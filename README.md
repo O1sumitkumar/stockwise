@@ -43,12 +43,14 @@ stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR
 ## Why StockWise
 
 - **India-first, US too.** `TCS` means `TCS.NS`; rupee formatting in lakhs and
-  crores; NIFTY/SENSEX sectors; Indian tax years and LTCG/STCG; imports from
-  Zerodha Kite and INDmoney. Add `-m us` (or `STOCKWISE_MARKET=us`) for US stocks.
+  crores; NIFTY/SENSEX sectors; mutual funds from AMFI; NSE option chains;
+  Indian tax years with LTCG/STCG set-off; imports from Kite, Groww, INDmoney,
+  Upstox and CAS statements. `-m us`, `-m crypto` or `-m fx` for other markets.
 - **Zero setup.** Public market data, no API key or sign-up. One binary for
   macOS, Linux and Windows. `stockwise doctor` checks everything.
-- **60 commands, one muscle memory.** Fundamentals, technicals, risk, screeners,
-  sector rotation, backtests, SIP/what-if calculators, alerts, tax estimates.
+- **65+ commands, one muscle memory.** Fundamentals, technicals, risk, screeners,
+  sector rotation, mutual funds, options greeks, backtests, SIP/what-if
+  calculators, alerts, tax estimates — in English or Hindi (`--lang hi`).
 - **Backtests that count costs.** STT, brokerage, stamp duty and slippage;
   next-day fills; portfolios and walk-forward; strategies as small TOML files.
 - **Scriptable.** `--json` on 21 data commands and `--csv` on their tables, a
@@ -57,10 +59,12 @@ stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR
 - **Live dashboard.** `stockwise tui` keeps indices, watchlist, portfolio P&L,
   alerts and a chart on one refreshing screen.
 - **Practice before money.** A paper-trading simulator and an intraday paper
-  daemon with risk controls. Optional live orders via Angel One, behind a
-  preview and a typed confirmation.
-- **Private by design.** Your portfolio stays in local files. Optional AI runs
-  on your own machine through [Ollama](https://ollama.com).
+  daemon with risk controls and notifications. Optional live orders via Angel
+  One (Zerodha, Upstox, Dhan and Fyers experimental), always behind a preview
+  and a typed confirmation.
+- **Private by design.** Your portfolio stays in local files; broker secrets in
+  your OS keyring. Optional AI runs on your own machine through
+  [Ollama](https://ollama.com), with cloud models strictly opt-in.
 
 ## Install
 
@@ -339,7 +343,7 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 
 ## Roadmap & contributing
 
-Next up: Hindi for every command, official NSE data, and live-tested broker integrations — see the
+Next up: Hindi for every command, live-tested broker integrations, tax exports and goal planning — see the
 [ROADMAP](ROADMAP.md). Ideas and bug reports are
 welcome in [Discussions](https://github.com/iamsaquib8/stockwise/discussions) and
 [Issues](https://github.com/iamsaquib8/stockwise/issues); start with
