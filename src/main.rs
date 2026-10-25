@@ -3323,6 +3323,61 @@ mod tests {
         assert!(Cli::try_parse_from(["stockwise", "history", "TCS", "-p", "6mo"]).is_ok());
     }
 
+    /// Split a shell command line the way a user would type it: honour
+    /// double quotes and stop at a pipe or redirect.
+    fn shell_words(line: &str) -> Vec<String> {
+        let (mut words, mut cur, mut quoted, mut has) = (Vec::new(), String::new(), false, false);
+        for ch in line.chars() {
+            match ch {
+                '"' => {
+                    quoted = !quoted;
+                    has = true;
+                }
+                '|' | '>' if !quoted => break,
+                c if c.is_whitespace() && !quoted => {
+                    if has {
+                        words.push(std::mem::take(&mut cur));
+                        has = false;
+                    }
+                }
+                c => {
+                    cur.push(c);
+                    has = true;
+                }
+            }
+        }
+        if has {
+            words.push(cur);
+        }
+        words
+    }
+
+    #[test]
+    fn cheatsheet_commands_parse() {
+        // Read at run time: docs/ is not in the crates.io package.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/cheatsheet.md");
+        let Ok(sheet) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let mut checked = 0;
+        for span in sheet.split('`').skip(1).step_by(2) {
+            // Skip prose placeholders such as `stockwise <command> --help`.
+            if !span.starts_with("stockwise ") || span.contains('<') {
+                continue;
+            }
+            let span = span.replace("\\|", "|");
+            let args = shell_words(&span);
+            if let Err(e) = Cli::try_parse_from(&args) {
+                panic!("docs/cheatsheet.md: `{span}` does not parse:\n{e}");
+            }
+            checked += 1;
+        }
+        assert!(
+            checked > 40,
+            "only {checked} commands found in the cheatsheet"
+        );
+    }
+
     #[test]
     fn legacy_positional_forms_still_parse() {
         for args in [
