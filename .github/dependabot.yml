@@ -16,6 +16,11 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    ignore:
+      # Its refs are Rust toolchain versions (`@1.97` = our MSRV, `@stable`),
+      # not action releases; Dependabot would "upgrade" @1.97 to a Rust
+      # version that doesn't exist yet.
+      - dependency-name: dtolnay/rust-toolchain
   - package-ecosystem: docker
     directory: /
     schedule:

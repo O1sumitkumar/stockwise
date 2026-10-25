@@ -60,8 +60,8 @@ pub async fn connect_redis() -> Option<redis::aio::MultiplexedConnection> {
     }
     let client = redis::Client::open(url).ok()?;
     let config = redis::AsyncConnectionConfig::new()
-        .set_connection_timeout(Duration::from_millis(300))
-        .set_response_timeout(Duration::from_millis(500));
+        .set_connection_timeout(Some(Duration::from_millis(300)))
+        .set_response_timeout(Some(Duration::from_millis(500)));
     client
         .get_multiplexed_async_connection_with_config(&config)
         .await
