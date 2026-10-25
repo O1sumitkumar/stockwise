@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-25
+
+Planning, reporting and more markets: tax exports, benchmarks and goal
+planning, technical alerts and a results calendar, NSE/BSE data, more
+exchanges and commodities, a web dashboard, a simulator you can play,
+broker sync with a read-only self-test, and WASM strategy plugins. The
+minimum Rust version is now 1.97. Command-line forms from 0.4 keep working.
+
 ### Added
 - `stockwise tax export [in|us] [--fy 2025-26] [--out FILE] [--json]` — the
   capital-gains schedule of a tax year's realized sales. India: one row per
@@ -29,18 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   corpus for today's monthly expenses and the SIP that builds it, and an
   education cost grown by inflation. Amounts in Indian units (`50k`, `25L`,
   `1cr`), results in lakhs and crores; `--json`. New **Planning** help group.
-
-### Changed
-- Minimum supported Rust version is now **1.97** (was 1.88). StockWise
-  supports the latest stable Rust and the two releases before it. Prebuilt
-  binaries, Docker and Nix are unaffected.
-- `alert list --json/--csv` adds `period` and `description`; `alert check
-  --json/--csv` adds `period`, `description`, `value`, `reference` and the
-  status `no_data` (new CSV columns come after the old ones). Existing
-  `alerts.json` files load unchanged. Quotes carry Yahoo's
-  `regularMarketTime`.
-
-### Added
 - `stockwise trade selftest [--broker NAME] [--redact-amounts] [--json]` — a
   strictly read-only check of a broker integration against your own account:
   login / session, profile, holdings, positions, order book, trade book, GTT
@@ -633,7 +629,8 @@ Initial development. Not published. Highlights that landed during this phase:
 - Multi-timeframe and braille terminal charts; `-p/--period` flag on chart commands.
 - `deep` command — full report on a single stock in one shot.
 
-[Unreleased]: https://github.com/iamsaquib8/stockwise/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/iamsaquib8/stockwise/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/iamsaquib8/stockwise/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/iamsaquib8/stockwise/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/iamsaquib8/stockwise/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/iamsaquib8/stockwise/releases/tag/v0.2.0

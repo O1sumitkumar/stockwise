@@ -10,6 +10,17 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 
 ## ✅ Shipped
 
+**0.5** — planning, reporting and more markets
+- Planning: capital-gains export (`tax export in|us`), portfolio vs benchmark with attribution,
+  goal planner (`goal sip|retire|education`)
+- Alerts: RSI, moving-average crosses, breakouts, day-change and volume spikes; results calendar
+- Markets: UK, Germany, Japan, Hong Kong, Singapore, Canada, Australia from one table; gold and
+  silver (spot ₹/10 g, ETFs, SGBs, COMEX); G-sec yields and a YTM calculator; NSE/BSE data provider
+- Funds & options: AMFI expense ratios, BSE options, options strategy builder with payoff charts
+- Simulator: historical replay with the future hidden, challenges, risk-adjusted scores, badges
+- Brokers: read-only `trade selftest` + tester kit, `trade sync` of fills and GTT status
+- Web dashboard in `stockwise serve`; experimental WASM strategy plugins; MSRV 1.97
+
 **0.4** — the whole 0.3 roadmap
 - Markets: crypto and FX (`-m crypto`, `-m fx`), mutual funds via AMFI (`mf search/nav/history/sip/screen`),
   fund/ETF overlap, F&O option chains with greeks, IV, PCR and max pain (NSE + US)
@@ -39,64 +50,33 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - Daemon workers, paper-trading simulator, Angel One live trading
 - Broker import (Kite, INDmoney, CSV), Redis cache, braille charts
 
-## 🛠️ Now — finish what 0.4 started (0.4.x)
+## 🛠️ Now — finish what 0.5 started (0.5.x)
 
 - 🛠️ Homebrew tap, Scoop bucket, winget and AUR — manifests are generated on every release;
   publishing them needs the tap repository and package submissions
-- 🛠️ Hindi for every command (today: help groups, `quote`, `markets`, `dashboard`,
-  `portfolio`, `search`, `doctor`)
-- 🛠️ Broker integrations verified against live accounts — community testers wanted for
-  Zerodha, Upstox, Dhan and Fyers before the "experimental" label comes off
-  - ✅ Testing kit: `stockwise trade selftest` (read-only, redacted report), a broker test
-    report issue template, and the [verification criteria](docs/brokers.md#help-verify-a-broker)
-  - 🛠️ Reports from real accounts (3 per broker plus one small live order a tester places
-    themselves)
-- 📋 BSE options in `options chain`
-- ✅ BSE options in `options chain`, `pcr` and `maxpain` — SENSEX, BANKEX, SENSEX50 and `.BO`
-  stocks via BSE's public API; BSE sometimes refuses scripted requests (StockWise then says so)
-- ✅ Expense ratios for Indian mutual funds (AMFI TER disclosures) in `mf screen`, `mf nav` and
-  `mf history`, with `--sort ter` and `--max-ter`
+- 📋 Hindi for every command (today: help groups, `quote`, `markets`, `dashboard`,
+  `portfolio`, `search`, `doctor`) and more Indian languages: Marathi, Tamil, Bengali
+- 🛠️ Broker integrations verified against live accounts — the read-only `trade selftest` and the
+  [verification criteria](docs/brokers.md#help-verify-a-broker) are ready; we need 3 reports per
+  broker plus one small live order a tester places themselves
+- 📋 Check the NSE/BSE parsers against live responses and add SENSEX from BSE (the endpoints are
+  unofficial; licensed exchange feeds stay out of scope)
+- 📋 MCX gold/silver futures (no free public feed yet) and live prices for individual G-secs
+  and T-bills (no documented public source yet)
 
-## 📋 Next — planning and reporting (0.5)
+## 📋 Next — your money, end to end (0.6)
 
-- 🛠️ NSE / BSE data straight from the exchanges' websites (`STOCKWISE_DATA_PROVIDER=nse|bse|exchange`):
-  quotes with circuit limits and delivery %, intraday and daily bars, search, and NIFTY index members
-  for `--universe`. Shipped; still to do: check the parsers against live NSE/BSE responses (the
-  test fixtures are modelled on the endpoints' known shapes) and add SENSEX from BSE. The
-  endpoints are unofficial — licensed exchange feeds remain out of scope
-- ✅ Tax export: capital-gains schedule (ITR Schedule CG–ready CSV) from realized lots
-  (`tax export in`, Form 8949 with `tax export us`)
-- ✅ Benchmark comparison and attribution — portfolio vs NIFTY 50 / S&P 500, by holding and sector
-  (`portfolio benchmark`)
-- ✅ Goal planner — SIP needed for a target corpus, retirement and education calculators (`goal`)
-- ✅ Technical alerts — RSI, SMA/EMA crosses, N-day breakouts, day-change and volume-spike
-  alerts next to price levels, plus `results-in N` before a results date
-- ✅ Results and corporate calendar for holdings (`stockwise calendar`) — Yahoo earnings and
-  dividend dates for US and Indian stocks; NSE board meetings and corporate actions (filed
-  results dates, splits, bonus) for Indian stocks. BSE filings and advance US splits are not covered
-- 📋 More Indian languages: Marathi, Tamil, Bengali
-- 🛠️ Commodities: gold and silver — spot in ₹/10 g, gold/silver ETFs, Sovereign Gold Bonds and
-  COMEX futures (`commodity`, `-m commodity`); still missing: MCX futures (no free public feed),
-  and SGB prices only show when NSE accepts StockWise's session
-- ✅ Global exchanges from one market table — UK, Germany, Japan, Hong Kong, Singapore, Canada,
-  Australia (`-m uk|de|jp|hk|sg|ca|au`, `markets --global`)
-- 🛠️ Indian government bonds and T-bills (G-secs) — benchmark yields, India 10Y in `markets`, the
-  outstanding list and a YTM calculator (`bonds`); still missing: live prices of individual G-secs
-  and T-bills (no documented public source)
-- ✅ Simulator challenges — historical replay ("trade the 2020 crash" with the future hidden),
-  goal-based challenges, risk-adjusted scores, badges and streaks, a shareable result card
-  (`sim replay`, `sim challenge`, `sim profile`, `sim card`)
+- 📋 Rebalance to your own target allocation (today `rebalance` is equal-weight only)
+- 📋 Dividend and interest income tracking, with TDS, across stocks, funds and bonds
+- 📋 NPS, PPF and EPF balances alongside the portfolio for a full net-worth view
+- 📋 Scheduled digests — a daily or weekly portfolio summary over Telegram, Slack or email
+- 📋 Installable web dashboard (PWA) for phones, still read-only and local-first
 
-## 💡 Later — exploring (0.6+)
+## 💡 Later — exploring (0.7+)
 
-- ✅ Broker-side GTT and order-status sync into the portfolio — `trade sync` (fills → lots and
-  FIFO sales, idempotent) and GTT status changes in `trade gtt list` (experimental on non-Angel
-  brokers)
-- ✅ A small web dashboard served by `stockwise serve` (`serve --open`)
-- ✅ WASM strategy plugins (**experimental**; `--features wasm-plugins`, `backtest -s wasm:PATH`)
-- ✅ Options strategy builder — `options payoff`: legs or presets (spreads, straddle, strangle,
-  iron condor, butterfly, covered call) priced from the live chain, payoff chart, breakevens,
-  probability of profit, net greeks
+- 💡 Simulator scenarios contributed by the community (TOML), with a scenario gallery
+- 💡 Options strategy backtests on historical chains
+- 💡 Tax-loss harvesting suggestions that respect the set-off rules and wash-sale periods
 
 ## Non-goals
 

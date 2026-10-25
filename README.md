@@ -50,7 +50,7 @@ stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR
   (`-m uk`, `de`, `jp`, `hk`, `sg`, `ca`, `au`) for other markets.
 - **Zero setup.** Public market data, no API key or sign-up. One binary for
   macOS, Linux and Windows. `stockwise doctor` checks everything.
-- **65+ commands, one muscle memory.** Fundamentals, technicals, risk, screeners,
+- **75+ commands, one muscle memory.** Fundamentals, technicals, risk, screeners,
   sector rotation, mutual funds, options greeks, backtests, SIP/what-if
   calculators, goal planning, alerts, tax estimates and ITR-ready capital-gains
   exports — in English or Hindi (`--lang hi`).
@@ -422,7 +422,7 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 
 ## Roadmap & contributing
 
-Next up: Hindi for every command and live-tested broker integrations — see the
+Next up: Hindi and more Indian languages, live-tested brokers, custom rebalancing and income tracking — see the
 [ROADMAP](ROADMAP.md). Ideas and bug reports are
 welcome in [Discussions](https://github.com/iamsaquib8/stockwise/discussions) and
 [Issues](https://github.com/iamsaquib8/stockwise/issues); start with
