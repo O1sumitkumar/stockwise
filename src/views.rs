@@ -185,6 +185,54 @@ pub fn section_spec(kind: Market) -> SectionSpec {
             title: t(Msg::SectionFx),
             items: owned(market::FX_MAJORS),
         },
+        Market::Commodity => SectionSpec {
+            region: "Commodities",
+            title: t(Msg::SectionCommodities),
+            items: owned(market::COMMODITY_UNIVERSE),
+        },
+        Market::Global(x) => {
+            let info = x.info();
+            SectionSpec {
+                region: info.country,
+                title: t(info.title),
+                items: owned(info.indices),
+            }
+        }
+    }
+}
+
+/// `markets --global`: each exchange's main index, India and the US first.
+pub fn global_section_spec() -> SectionSpec {
+    use crate::i18n::{Msg, t};
+    let mut items = vec![
+        ("^NSEI".to_string(), "India — NIFTY 50".to_string()),
+        ("^GSPC".to_string(), "US — S&P 500".to_string()),
+    ];
+    items.extend(market::Exchange::ALL.iter().map(|x| {
+        let info = x.info();
+        let (symbol, name) = info.benchmark();
+        (
+            symbol.to_string(),
+            format!("{} — {}", info.code.to_uppercase(), name),
+        )
+    }));
+    SectionSpec {
+        region: "Global",
+        title: t(Msg::SectionGlobal),
+        items,
+    }
+}
+
+/// The market a `markets --global` row's index belongs to, for its
+/// open/closed column.
+pub fn benchmark_market(symbol: &str) -> Option<Market> {
+    match symbol {
+        "^NSEI" => Some(Market::In),
+        "^GSPC" => Some(Market::Us),
+        _ => market::Exchange::ALL
+            .into_iter()
+            .find(|x| x.info().benchmark().0.eq_ignore_ascii_case(symbol))
+            .map(Market::Global),
     }
 }
 
@@ -194,8 +242,9 @@ pub fn section_order(market: Market, crypto: bool, fx: bool) -> Vec<Market> {
     let mut order = match market {
         Market::Us => vec![Market::Us, Market::In],
         Market::In => vec![Market::In, Market::Us],
-        Market::Crypto => vec![Market::Crypto, Market::In, Market::Us],
-        Market::Fx => vec![Market::Fx, Market::In, Market::Us],
+        Market::Crypto | Market::Fx | Market::Commodity | Market::Global(_) => {
+            vec![market, Market::In, Market::Us]
+        }
     };
     for (wanted, kind) in [(crypto, Market::Crypto), (fx, Market::Fx)] {
         if wanted && !order.contains(&kind) {
@@ -245,12 +294,14 @@ pub async fn market_sections(
     market: Market,
     crypto: bool,
     fx: bool,
+    global: bool,
 ) -> Result<Vec<MarketSection>> {
     let mut out = Vec::new();
-    for spec in section_order(market, crypto, fx)
+    let specs = section_order(market, crypto, fx)
         .into_iter()
         .map(section_spec)
-    {
+        .chain(global.then(global_section_spec));
+    for spec in specs {
         let symbols: Vec<&str> = spec.items.iter().map(|(sym, _)| sym.as_str()).collect();
         let quotes = src.quotes(&symbols).await?;
         out.push(MarketSection {
@@ -268,8 +319,9 @@ pub async fn markets(
     market: Market,
     crypto: bool,
     fx: bool,
+    global: bool,
 ) -> Result<Vec<IndexRow>> {
-    Ok(market_sections(src, market, crypto, fx)
+    Ok(market_sections(src, market, crypto, fx, global)
         .await?
         .into_iter()
         .flat_map(|s| s.rows)
@@ -762,7 +814,14 @@ mod tests {
 
     #[test]
     fn markets_json_shape_is_pinned() {
-        let rows = block(markets(&Fixture::default(), Market::In, false, false)).unwrap();
+        let rows = block(markets(
+            &Fixture::default(),
+            Market::In,
+            false,
+            false,
+            false,
+        ))
+        .unwrap();
         let first = serde_json::to_string(&rows[0]).unwrap();
         assert_eq!(
             first,

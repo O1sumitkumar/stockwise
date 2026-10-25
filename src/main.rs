@@ -175,6 +175,9 @@ enum Commands {
         /// Add major currency pairs (USD/INR, EUR/USD, ...)
         #[arg(long)]
         fx: bool,
+        /// Add each exchange's main index (FTSE 100, DAX, Nikkei, ...) with its session
+        #[arg(long)]
+        global: bool,
     },
 
     /// Markets + portfolio + watchlist + alerts on one screen
@@ -1703,9 +1706,12 @@ async fn main() {
     let result = match cli.command {
         Commands::Quote { symbols, out } => commands::cmd_quote(&symbols, m, out.into()).await,
         Commands::Deep { symbol, period } => commands::cmd_deep(&symbol, &period, m).await,
-        Commands::Markets { out, crypto, fx } => {
-            commands::cmd_markets(m, out.into(), crypto, fx).await
-        }
+        Commands::Markets {
+            out,
+            crypto,
+            fx,
+            global,
+        } => commands::cmd_markets(m, out.into(), crypto, fx, global).await,
         Commands::Dashboard => commands::cmd_dashboard(m).await,
         Commands::Search { query, out } => commands::cmd_search(&query, out.into()).await,
         Commands::Doctor => commands::cmd_doctor(m, sources).await,
@@ -2166,6 +2172,32 @@ mod tests {
             assert!(dir.join(page).is_file(), "{page} was not written");
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn global_and_commodity_markets_parse() {
+        use market::Exchange;
+        for (flag, want) in [
+            ("uk", Market::Global(Exchange::Uk)),
+            ("UK", Market::Global(Exchange::Uk)),
+            ("lse", Market::Global(Exchange::Uk)),
+            ("de", Market::Global(Exchange::De)),
+            ("jp", Market::Global(Exchange::Jp)),
+            ("hk", Market::Global(Exchange::Hk)),
+            ("sg", Market::Global(Exchange::Sg)),
+            ("ca", Market::Global(Exchange::Ca)),
+            ("au", Market::Global(Exchange::Au)),
+            ("commodity", Market::Commodity),
+        ] {
+            let cli = Cli::try_parse_from(["stockwise", "quote", "X", "-m", flag]).unwrap();
+            assert_eq!(cli.market, want, "-m {flag}");
+        }
+        assert!(Cli::try_parse_from(["stockwise", "quote", "X", "-m", "mars"]).is_err());
+        let cli = Cli::try_parse_from(["stockwise", "markets", "--global"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Markets { global: true, .. }
+        ));
     }
 
     #[test]

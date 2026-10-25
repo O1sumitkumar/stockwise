@@ -99,10 +99,10 @@ pub enum Route {
 }
 
 /// Indian market → NSE (`RELIANCE`, `RELIANCE.NS`, `^NSEI` → `NIFTY`);
-/// US market or a non-NSE suffix → Yahoo.
+/// the US market, a global exchange or a non-NSE suffix → Yahoo.
 pub fn route(symbol: &str, market: Market) -> Route {
     let upper = symbol.trim().to_uppercase();
-    if market == Market::Us {
+    if matches!(market, Market::Us | Market::Global(_)) {
         return Route::Yahoo(market::resolve_symbol(&upper, market));
     }
     let nse = match upper.as_str() {

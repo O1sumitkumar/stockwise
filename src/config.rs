@@ -318,12 +318,10 @@ impl Config {
 /// The clap spelling (`in` / `us`) of a market name from the file.
 pub fn market_value(s: &str) -> Result<&'static str> {
     match crate::market::Market::from_str(s, true) {
-        Ok(crate::market::Market::In) => Ok("in"),
-        Ok(crate::market::Market::Us) => Ok("us"),
-        Ok(crate::market::Market::Crypto) => Ok("crypto"),
-        Ok(crate::market::Market::Fx) => Ok("fx"),
+        Ok(market) => Ok(market.code()),
         Err(_) => bail!(
-            "`market` = \"{}\" is not a market; use \"in\", \"us\", \"crypto\" or \"fx\"",
+            "`market` = \"{}\" is not a market; use \"in\", \"us\", \"crypto\", \"fx\", \"commodity\" \
+             or a global exchange (\"uk\", \"de\", \"jp\", \"hk\", \"sg\", \"ca\", \"au\")",
             s
         ),
     }
@@ -575,8 +573,12 @@ mod tests {
 
     #[test]
     fn bad_market_is_named() {
-        let e = err("market = \"uk\"");
-        assert!(e.contains("`market`") && e.contains("uk"), "{e}");
+        let e = err("market = \"mars\"");
+        assert!(e.contains("`market`") && e.contains("mars"), "{e}");
+        // Global exchanges and commodities are markets too.
+        assert_eq!(market_value("UK").unwrap(), "uk");
+        assert_eq!(market_value("japan").unwrap(), "jp");
+        assert_eq!(market_value("commodity").unwrap(), "commodity");
     }
 
     #[test]

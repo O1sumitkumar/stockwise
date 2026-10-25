@@ -9,6 +9,8 @@ fn market_title(market: Market) -> &'static str {
         Market::Us => Msg::MarketUs,
         Market::Crypto => Msg::MarketCrypto,
         Market::Fx => Msg::MarketFx,
+        Market::Commodity => Msg::MarketCommodity,
+        Market::Global(x) => x.info().title,
     })
 }
 
@@ -238,9 +240,15 @@ fn row_change(r: &views::IndexRow) -> String {
     )
 }
 
-pub async fn cmd_markets(market: Market, fmt: Format, crypto: bool, fx: bool) -> Result<()> {
+pub async fn cmd_markets(
+    market: Market,
+    fmt: Format,
+    crypto: bool,
+    fx: bool,
+    global: bool,
+) -> Result<()> {
     let client = YahooClient::new().await?;
-    let sections = views::market_sections(&client, market, crypto, fx).await?;
+    let sections = views::market_sections(&client, market, crypto, fx, global).await?;
 
     if !fmt.is_table() {
         let rows: Vec<views::IndexRow> = sections.into_iter().flat_map(|s| s.rows).collect();
@@ -250,20 +258,75 @@ pub async fn cmd_markets(market: Market, fmt: Format, crypto: bool, fx: bool) ->
         };
     }
 
+    let now = chrono::Utc::now();
     for section in &sections {
         print_header(section.title);
+        let width = if section.region == "Global" { 26 } else { 16 };
         for r in &section.rows {
             let cur = r.currency.as_deref();
+            // `--global` rows say whether that exchange is trading now.
+            let session = views::benchmark_market(&r.symbol)
+                .filter(|_| section.region == "Global")
+                .map(|m| format!("  {}", session_label(m, now)))
+                .unwrap_or_default();
             println!(
-                "  {} {}  {}",
-                pad_end(&r.name, 16).bold(),
+                "  {} {}  {}{}",
+                pad_end(&r.name, width).bold(),
                 price_or_na(r.price, cur, &r.symbol).bold(),
-                row_change(r)
+                row_change(r),
+                session
             );
+        }
+        for warning in coverage_notes(section, now) {
+            println!("  {} {}", "!".yellow(), warning.dimmed());
         }
     }
     println!();
     Ok(())
+}
+
+/// "open · 14:05 JST" or "closed (lunch break) · 12:10 HKT" for an exchange.
+fn session_label(market: Market, now: chrono::DateTime<chrono::Utc>) -> String {
+    let local = crate::clock::local(market, now).format("%H:%M");
+    let tz = crate::clock::tz_label(market);
+    if crate::clock::is_open(market, now) {
+        format!("{} · {} {}", "open".green(), local, tz)
+    } else {
+        format!(
+            "{} · {} {}",
+            format!("closed ({})", crate::clock::closed_reason(market, now)).dimmed(),
+            local,
+            tz
+        )
+    }
+}
+
+/// Holiday-table coverage warnings for the exchanges a `markets --global`
+/// section shows (once per exchange).
+fn coverage_notes(
+    section: &views::MarketSection,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<String> {
+    if section.region != "Global" {
+        return Vec::new();
+    }
+    let missing: Vec<&str> = section
+        .rows
+        .iter()
+        .filter_map(|r| views::benchmark_market(&r.symbol))
+        .filter(|m| {
+            let year = chrono::Datelike::year(&crate::clock::session_date(*m, now));
+            crate::clock::calendar_coverage(*m, year) == crate::clock::CalendarCoverage::Missing
+        })
+        .map(crate::clock::exchange)
+        .collect();
+    if missing.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "No holiday list bundled for {} — open/closed assumes every weekday trades.",
+        missing.join(", ")
+    )]
 }
 
 // ── Watchlist ──
@@ -276,9 +339,10 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
 
     print_header(&tf(Msg::DashboardTitle, &[&market_title(market)]));
     print_section(t(match market {
-        Market::In | Market::Us => Msg::MarketIndices,
+        Market::In | Market::Us | Market::Global(_) => Msg::MarketIndices,
         Market::Crypto => Msg::TopCoins,
         Market::Fx => Msg::MajorPairs,
+        Market::Commodity => Msg::SectionCommodities,
     }));
     for q in &idx_quotes {
         // Match by symbol: Yahoo may reorder or drop symbols.
@@ -530,15 +594,14 @@ pub async fn cmd_doctor(market: Market, sources: crate::config::CliSources) -> R
         crate::config::Source::Default => t(Msg::DoctorMarketDefault),
     };
     let market_name = match market {
-        Market::In => "in (India, NSE)",
-        Market::Us => "us",
-        Market::Crypto => "crypto",
-        Market::Fx => "fx",
-    };
-    let market_name = if market == Market::Crypto {
-        format!("{} (vs {})", market_name, market::quote_currency())
-    } else {
-        market_name.to_string()
+        Market::In => "in (India, NSE)".to_string(),
+        Market::Crypto => format!("crypto (vs {})", market::quote_currency()),
+        Market::Commodity => "commodity (COMEX gold/silver, NSE ETFs and SGBs)".to_string(),
+        Market::Global(x) => {
+            let info = x.info();
+            format!("{} ({}, {})", info.code, info.country, info.exchange_name)
+        }
+        Market::Us | Market::Fx => market.code().to_string(),
     };
     print_kv(
         t(Msg::DoctorMarket),

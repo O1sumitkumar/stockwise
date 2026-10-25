@@ -197,10 +197,20 @@ messages! {
     MarketUs => "US", "अमेरिका";
     MarketCrypto => "Crypto", "क्रिप्टो";
     MarketFx => "FX", "विदेशी मुद्रा";
+    MarketCommodity => "Commodities", "कमोडिटी";
+    MarketUk => "UK", "ब्रिटेन";
+    MarketDe => "Germany", "जर्मनी";
+    MarketJp => "Japan", "जापान";
+    MarketHk => "Hong Kong", "हांगकांग";
+    MarketSg => "Singapore", "सिंगापुर";
+    MarketCa => "Canada", "कनाडा";
+    MarketAu => "Australia", "ऑस्ट्रेलिया";
     SectionIndianMarkets => "Indian Markets", "भारतीय बाज़ार";
     SectionUsMarkets => "US Markets", "अमेरिकी बाज़ार";
     SectionCrypto => "Crypto (24/7)", "क्रिप्टो (24/7)";
     SectionFx => "Currencies (FX)", "मुद्राएँ (FX)";
+    SectionGlobal => "Global Markets", "वैश्विक बाज़ार";
+    SectionCommodities => "Gold & Silver", "सोना और चाँदी";
     SessionCrypto => "Trades 24/7 — change is since 00:00 UTC", "24/7 ट्रेडिंग — बदलाव 00:00 UTC से";
     SessionFxOpen => "FX trades 24 hours, Monday to Friday", "विदेशी मुद्रा बाज़ार सोमवार से शुक्रवार, 24 घंटे खुला";
     SessionFxWeekend => "FX market closed for the weekend — showing Friday's close", "सप्ताहांत पर विदेशी मुद्रा बाज़ार बंद — शुक्रवार का बंद भाव";
@@ -226,6 +236,8 @@ messages! {
     HintNotFoundUs => " (use `stockwise search <name>` to find a ticker; Indian stocks need `-m in` or a .NS suffix)", " (टिकर खोजने के लिए `stockwise search <नाम>` चलाएँ; भारतीय शेयरों के लिए `-m in` या .NS जोड़ें)";
     HintNotFoundCrypto => " (use the coin's ticker, e.g. BTC or ETH, or a full pair like BTC-INR)", " (कॉइन का टिकर लिखें, जैसे BTC या ETH, या पूरा जोड़ा जैसे BTC-INR)";
     HintNotFoundFx => " (use a currency pair such as USDINR or EURUSD)", " (मुद्रा जोड़ा लिखें, जैसे USDINR या EURUSD)";
+    HintNotFoundCommodity => " (use GOLD or SILVER, an NSE ETF such as GOLDBEES, or a futures symbol like GC=F)", " (GOLD या SILVER, NSE ETF जैसे GOLDBEES, या फ़्यूचर्स सिंबल जैसे GC=F लिखें)";
+    HintNotFoundGlobal => " (bare tickers get this exchange's suffix, e.g. -m uk VOD → VOD.L; use `stockwise search <name>` to find a ticker)", " (बिना सफ़िक्स वाले टिकर को इस एक्सचेंज का सफ़िक्स मिलता है, जैसे -m uk VOD → VOD.L; टिकर खोजने के लिए `stockwise search <नाम>` चलाएँ)";
 
     // ── Search ──
     SearchTitle => "Search: {0}", "खोज: {0}";

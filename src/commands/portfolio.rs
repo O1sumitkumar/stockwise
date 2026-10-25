@@ -12,8 +12,9 @@ use crate::tax;
 /// The market's own currency, used for totals when holdings are mixed.
 pub(crate) fn market_currency(market: Market) -> &'static str {
     match market {
-        Market::In => "INR",
+        Market::In | Market::Commodity => "INR",
         Market::Us | Market::Crypto | Market::Fx => "USD",
+        Market::Global(x) => x.info().currency,
     }
 }
 

@@ -1,21 +1,448 @@
+use crate::clock::{HolidayTable, Session, TzRule};
 use crate::i18n::{Msg, t};
+use crate::tax;
 use clap::ValueEnum;
+use clap::builder::PossibleValue;
 use std::sync::OnceLock;
 
-#[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Market {
     /// US stock market (NYSE/NASDAQ)
-    #[value(alias = "US")]
     Us,
     /// Indian stock market (NSE/BSE)
-    #[value(alias = "IN", alias = "india")]
     In,
     /// Crypto, trades 24/7: BTC → BTC-USD (BTC-INR with --quote-currency inr)
-    #[value(alias = "CRYPTO")]
     Crypto,
     /// Currency pairs, 24x5: USDINR → USDINR=X
-    #[value(alias = "FX", alias = "forex")]
     Fx,
+    /// Gold and silver: COMEX futures (GOLD → GC=F), Indian gold/silver
+    /// ETFs and Sovereign Gold Bonds (bare tickers → NSE)
+    Commodity,
+    /// A stock exchange from the global market table (`-m uk`, `-m jp`, ...)
+    Global(Exchange),
+}
+
+/// Every `-m` value, in `--help` order.
+const ALL_MARKETS: [Market; 12] = [
+    Market::Us,
+    Market::In,
+    Market::Crypto,
+    Market::Fx,
+    Market::Commodity,
+    Market::Global(Exchange::Uk),
+    Market::Global(Exchange::De),
+    Market::Global(Exchange::Jp),
+    Market::Global(Exchange::Hk),
+    Market::Global(Exchange::Sg),
+    Market::Global(Exchange::Ca),
+    Market::Global(Exchange::Au),
+];
+
+// Written by hand (not derived) because the global exchanges come from the
+// market table: `-m uk` is `Market::Global(Exchange::Uk)`.
+impl ValueEnum for Market {
+    fn value_variants<'a>() -> &'a [Self] {
+        &ALL_MARKETS
+    }
+
+    fn to_possible_value(&self) -> Option<PossibleValue> {
+        Some(match self {
+            Market::Us => PossibleValue::new("us").help("US stock market (NYSE/NASDAQ)"),
+            Market::In => PossibleValue::new("in")
+                .alias("india")
+                .help("Indian stock market (NSE/BSE)"),
+            Market::Crypto => PossibleValue::new("crypto")
+                .help("Crypto, trades 24/7: BTC → BTC-USD (BTC-INR with --quote-currency inr)"),
+            Market::Fx => PossibleValue::new("fx")
+                .alias("forex")
+                .help("Currency pairs, 24x5: USDINR → USDINR=X"),
+            Market::Commodity => PossibleValue::new("commodity")
+                .aliases(["commodities", "gold"])
+                .help("Gold and silver: GOLD → GC=F (COMEX); ETFs and SGBs → NSE"),
+            Market::Global(x) => {
+                let info = x.info();
+                PossibleValue::new(info.code)
+                    .aliases(info.aliases.iter().copied())
+                    .help(info.help)
+            }
+        })
+    }
+}
+
+/// A stock exchange outside India and the US. Everything StockWise knows
+/// about it lives in its [`MarketInfo`] row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Exchange {
+    Uk,
+    De,
+    Jp,
+    Hk,
+    Sg,
+    Ca,
+    Au,
+}
+
+impl Exchange {
+    pub const ALL: [Exchange; 7] = [
+        Exchange::Uk,
+        Exchange::De,
+        Exchange::Jp,
+        Exchange::Hk,
+        Exchange::Sg,
+        Exchange::Ca,
+        Exchange::Au,
+    ];
+
+    /// This exchange's row in [`GLOBAL_MARKETS`].
+    pub fn info(self) -> &'static MarketInfo {
+        &GLOBAL_MARKETS[self as usize]
+    }
+}
+
+/// One row of the market table: symbols, currency, benchmark and sector
+/// lists, session hours and the holiday calendar of a stock exchange.
+pub struct MarketInfo {
+    /// The `-m` value (`uk`) and, upper-cased, the id saved in data files.
+    pub code: &'static str,
+    /// Other `-m` spellings (`gb`, `lse`, `london`).
+    pub aliases: &'static [&'static str],
+    /// One line for `--help`.
+    pub help: &'static str,
+    /// English country name; the stable key in JSON (`United Kingdom`).
+    pub country: &'static str,
+    /// Short localized name for titles.
+    pub title: Msg,
+    /// `London Stock Exchange`.
+    pub exchange_name: &'static str,
+    /// `LSE`.
+    pub short: &'static str,
+    /// Yahoo Finance suffix bare tickers get (`VOD` → `VOD.L`).
+    pub suffix: &'static str,
+    /// Numeric tickers are zero-padded to this many digits (HKEX: `5` →
+    /// `0005.HK`); 0 leaves them alone.
+    pub pad_digits: usize,
+    /// ISO code of the market's currency.
+    pub currency: &'static str,
+    /// The unit Yahoo quotes shares in, when it is a minor unit of
+    /// `currency` (London: `GBp`, pence).
+    pub quote_unit: Option<&'static str>,
+    /// Benchmark indices; the first is the market's main index.
+    pub indices: &'static [(&'static str, &'static str)],
+    /// Sector indices or ETFs, where Yahoo carries a usable set.
+    pub sectors: &'static [(&'static str, &'static str)],
+    /// Large caps scanned by movers, screeners and the bots.
+    pub universe: &'static [&'static str],
+    /// Time zone and regular trading hours.
+    pub session: Session,
+    /// Trading holidays and half days (see `clock.rs`).
+    pub holidays: HolidayTable,
+    /// Capital-gains rules `stockwise tax` can apply, if any.
+    pub tax: Option<tax::Country>,
+}
+
+impl MarketInfo {
+    /// The Yahoo symbol for a bare ticker on this exchange.
+    pub fn yahoo_symbol(&self, ticker: &str) -> String {
+        let ticker = ticker.trim().to_ascii_uppercase();
+        let ticker = if self.pad_digits > 0 && ticker.chars().all(|c| c.is_ascii_digit()) {
+            format!("{:0>width$}", ticker, width = self.pad_digits)
+        } else {
+            ticker
+        };
+        format!("{}{}", ticker, self.suffix)
+    }
+
+    /// The market's main index (`^FTSE`, "FTSE 100").
+    pub fn benchmark(&self) -> (&'static str, &'static str) {
+        self.indices[0]
+    }
+}
+
+/// The global market table, in [`Exchange`] order. Symbols were checked
+/// against Yahoo Finance; holiday tables live in `clock.rs`.
+pub static GLOBAL_MARKETS: [MarketInfo; 7] = [
+    MarketInfo {
+        code: "uk",
+        aliases: &["gb", "lse", "london"],
+        help: "London Stock Exchange: VOD → VOD.L (prices in pence, GBp)",
+        country: "United Kingdom",
+        title: Msg::MarketUk,
+        exchange_name: "London Stock Exchange",
+        short: "LSE",
+        suffix: ".L",
+        pad_digits: 0,
+        currency: "GBP",
+        quote_unit: Some("GBp"),
+        indices: &[
+            ("^FTSE", "FTSE 100"),
+            ("^FTMC", "FTSE 250"),
+            ("^FTAS", "FTSE All-Share"),
+        ],
+        sectors: &[],
+        universe: &[
+            "SHEL.L", "AZN.L", "HSBA.L", "ULVR.L", "BP.L", "RIO.L", "GSK.L", "REL.L", "DGE.L",
+            "BATS.L", "LSEG.L", "VOD.L", "BARC.L", "LLOY.L", "NG.L",
+        ],
+        session: Session {
+            tz: TzRule::Eu(0),
+            tz_label: "London",
+            open: (8, 0),
+            close: (16, 30),
+            lunch: None,
+            half_day_close: Some((12, 30)),
+        },
+        holidays: crate::clock::LSE,
+        tax: Some(tax::Country::Uk),
+    },
+    MarketInfo {
+        code: "de",
+        aliases: &["germany", "xetra", "frankfurt"],
+        help: "Deutsche Börse Xetra: SAP → SAP.DE (EUR)",
+        country: "Germany",
+        title: Msg::MarketDe,
+        exchange_name: "Deutsche Börse Xetra",
+        short: "Xetra",
+        suffix: ".DE",
+        pad_digits: 0,
+        currency: "EUR",
+        quote_unit: None,
+        indices: &[
+            ("^GDAXI", "DAX"),
+            ("^MDAXI", "MDAX"),
+            ("^SDAXI", "SDAX"),
+            ("^TECDAX", "TecDAX"),
+        ],
+        sectors: &[],
+        universe: &[
+            "SAP.DE", "SIE.DE", "ALV.DE", "DTE.DE", "MBG.DE", "BMW.DE", "BAS.DE", "MUV2.DE",
+            "IFX.DE", "ADS.DE", "DBK.DE", "VOW3.DE", "AIR.DE", "RHM.DE", "DHL.DE",
+        ],
+        session: Session {
+            tz: TzRule::Eu(1),
+            tz_label: "Frankfurt",
+            open: (9, 0),
+            close: (17, 30),
+            lunch: None,
+            half_day_close: None,
+        },
+        holidays: crate::clock::XETRA,
+        tax: None,
+    },
+    MarketInfo {
+        code: "jp",
+        aliases: &["japan", "tse", "tokyo"],
+        help: "Tokyo Stock Exchange: 7203 → 7203.T (JPY)",
+        country: "Japan",
+        title: Msg::MarketJp,
+        exchange_name: "Tokyo Stock Exchange",
+        short: "TSE",
+        suffix: ".T",
+        pad_digits: 0,
+        currency: "JPY",
+        quote_unit: None,
+        indices: &[("^N225", "Nikkei 225"), ("1306.T", "TOPIX (1306 ETF)")],
+        // NEXT FUNDS TOPIX-17 sector ETFs.
+        sectors: &[
+            ("1617.T", "Foods"),
+            ("1618.T", "Energy"),
+            ("1619.T", "Construction"),
+            ("1620.T", "Materials & Chem."),
+            ("1621.T", "Pharma"),
+            ("1622.T", "Autos"),
+            ("1623.T", "Steel & Metals"),
+            ("1624.T", "Machinery"),
+            ("1625.T", "Electronics"),
+            ("1626.T", "IT & Services"),
+            ("1627.T", "Power & Gas"),
+            ("1628.T", "Transport"),
+            ("1629.T", "Trading Cos."),
+            ("1630.T", "Retail"),
+            ("1631.T", "Banks"),
+            ("1632.T", "Financials"),
+            ("1633.T", "Real Estate"),
+        ],
+        universe: &[
+            "7203.T", "6758.T", "8306.T", "9984.T", "6861.T", "9432.T", "8035.T", "6501.T",
+            "7974.T", "9983.T", "4063.T", "8316.T", "6098.T", "7267.T",
+        ],
+        session: Session {
+            tz: TzRule::Fixed(9 * 60),
+            tz_label: "JST",
+            open: (9, 0),
+            close: (15, 30),
+            lunch: Some(((11, 30), (12, 30))),
+            half_day_close: None,
+        },
+        holidays: crate::clock::JPX,
+        tax: None,
+    },
+    MarketInfo {
+        code: "hk",
+        aliases: &["hongkong", "hkex"],
+        help: "Hong Kong Exchange: 5 → 0005.HK, 700 → 0700.HK (HKD)",
+        country: "Hong Kong",
+        title: Msg::MarketHk,
+        exchange_name: "Hong Kong Exchanges",
+        short: "HKEX",
+        suffix: ".HK",
+        pad_digits: 4,
+        currency: "HKD",
+        quote_unit: None,
+        indices: &[
+            ("^HSI", "Hang Seng"),
+            ("^HSCE", "HS China Enterprises"),
+            ("HSTECH.HK", "Hang Seng TECH"),
+        ],
+        sectors: &[
+            ("^HSNF", "Finance"),
+            ("^HSNU", "Utilities"),
+            ("^HSNP", "Properties"),
+            ("^HSNC", "Commerce & Industry"),
+        ],
+        universe: &[
+            "0700.HK", "9988.HK", "0005.HK", "1299.HK", "0941.HK", "3690.HK", "0388.HK", "1810.HK",
+            "0939.HK", "1398.HK", "2318.HK", "0883.HK", "0001.HK", "0016.HK",
+        ],
+        session: Session {
+            tz: TzRule::Fixed(8 * 60),
+            tz_label: "HKT",
+            open: (9, 30),
+            close: (16, 0),
+            lunch: Some(((12, 0), (13, 0))),
+            half_day_close: Some((12, 0)),
+        },
+        holidays: crate::clock::HKEX,
+        tax: None,
+    },
+    MarketInfo {
+        code: "sg",
+        aliases: &["singapore", "sgx"],
+        help: "Singapore Exchange: D05 → D05.SI (SGD)",
+        country: "Singapore",
+        title: Msg::MarketSg,
+        exchange_name: "Singapore Exchange",
+        short: "SGX",
+        suffix: ".SI",
+        pad_digits: 0,
+        currency: "SGD",
+        quote_unit: None,
+        indices: &[("^STI", "Straits Times")],
+        sectors: &[],
+        universe: &[
+            "D05.SI", "O39.SI", "U11.SI", "Z74.SI", "C6L.SI", "S68.SI", "C38U.SI", "A17U.SI",
+            "BN4.SI", "F34.SI", "Y92.SI", "G13.SI", "S63.SI", "9CI.SI",
+        ],
+        session: Session {
+            tz: TzRule::Fixed(8 * 60),
+            tz_label: "SGT",
+            open: (9, 0),
+            close: (17, 0),
+            lunch: Some(((12, 0), (13, 0))),
+            half_day_close: Some((12, 0)),
+        },
+        holidays: crate::clock::SGX,
+        tax: None,
+    },
+    MarketInfo {
+        code: "ca",
+        aliases: &["canada", "tsx", "toronto"],
+        help: "Toronto Stock Exchange: RY → RY.TO (CAD)",
+        country: "Canada",
+        title: Msg::MarketCa,
+        exchange_name: "Toronto Stock Exchange",
+        short: "TSX",
+        suffix: ".TO",
+        pad_digits: 0,
+        currency: "CAD",
+        quote_unit: None,
+        indices: &[("^GSPTSE", "S&P/TSX Composite")],
+        // iShares S&P/TSX capped sector ETFs.
+        sectors: &[
+            ("XFN.TO", "Financials"),
+            ("XEG.TO", "Energy"),
+            ("XMA.TO", "Materials"),
+            ("XIT.TO", "Technology"),
+            ("XUT.TO", "Utilities"),
+            ("XST.TO", "Cons. Staples"),
+            ("XRE.TO", "Real Estate"),
+            ("XGD.TO", "Gold Miners"),
+        ],
+        universe: &[
+            "RY.TO", "TD.TO", "SHOP.TO", "ENB.TO", "CNR.TO", "CP.TO", "BN.TO", "BMO.TO", "BNS.TO",
+            "CNQ.TO", "SU.TO", "TRI.TO", "ATD.TO", "CSU.TO", "MFC.TO",
+        ],
+        session: Session {
+            tz: TzRule::UsEastern,
+            tz_label: "ET",
+            open: (9, 30),
+            close: (16, 0),
+            lunch: None,
+            half_day_close: Some((13, 0)),
+        },
+        holidays: crate::clock::TSX,
+        tax: None,
+    },
+    MarketInfo {
+        code: "au",
+        aliases: &["australia", "asx", "sydney"],
+        help: "Australian Securities Exchange: BHP → BHP.AX (AUD)",
+        country: "Australia",
+        title: Msg::MarketAu,
+        exchange_name: "Australian Securities Exchange",
+        short: "ASX",
+        suffix: ".AX",
+        pad_digits: 0,
+        currency: "AUD",
+        quote_unit: None,
+        indices: &[
+            ("^AXJO", "S&P/ASX 200"),
+            ("^AORD", "All Ordinaries"),
+            ("^AXKO", "S&P/ASX 300"),
+        ],
+        // S&P/ASX 200 sector indices.
+        sectors: &[
+            ("^AXFJ", "Financials"),
+            ("^AXMJ", "Materials"),
+            ("^AXEJ", "Energy"),
+            ("^AXHJ", "Health Care"),
+            ("^AXIJ", "Info Tech"),
+            ("^AXDJ", "Cons. Discret."),
+            ("^AXSJ", "Cons. Staples"),
+            ("^AXNJ", "Industrials"),
+            ("^AXUJ", "Utilities"),
+            ("^AXPJ", "A-REIT"),
+            ("^AXTJ", "Communication"),
+        ],
+        universe: &[
+            "BHP.AX", "CBA.AX", "CSL.AX", "NAB.AX", "WBC.AX", "ANZ.AX", "MQG.AX", "WES.AX",
+            "WDS.AX", "FMG.AX", "RIO.AX", "TLS.AX", "WOW.AX", "GMG.AX", "TCL.AX",
+        ],
+        session: Session {
+            tz: TzRule::AuEastern,
+            tz_label: "Sydney",
+            open: (10, 0),
+            close: (16, 0),
+            lunch: None,
+            half_day_close: Some((14, 10)),
+        },
+        holidays: crate::clock::ASX,
+        tax: None,
+    },
+];
+
+/// The global exchange a Yahoo symbol trades on: from its suffix (`VOD.L`
+/// → UK) or, for an index, from the market table (`^N225` → Japan).
+pub fn exchange_of(symbol: &str) -> Option<Exchange> {
+    let upper = symbol.trim().to_ascii_uppercase();
+    Exchange::ALL.into_iter().find(|x| {
+        let info = x.info();
+        upper.ends_with(info.suffix)
+            || info
+                .indices
+                .iter()
+                .chain(info.sectors)
+                .any(|(s, _)| s.eq_ignore_ascii_case(&upper))
+    })
 }
 
 /// What kind of instrument a Yahoo symbol is. Decides how prices are
@@ -84,7 +511,11 @@ pub fn quote_currency() -> &'static str {
 ///
 /// In the crypto market a bare coin gets the quote currency (`BTC` →
 /// `BTC-USD`); in the FX market a pair gets Yahoo's `=X` suffix (`USDINR`,
-/// `usd/inr` → `USDINR=X`).
+/// `usd/inr` → `USDINR=X`). A global exchange adds its suffix from the
+/// market table (`-m uk VOD` → `VOD.L`, `-m hk 5` → `0005.HK`). The
+/// commodity market knows `GOLD` and `SILVER` (COMEX futures `GC=F`,
+/// `SI=F`); other bare tickers are NSE-listed ETFs and bonds (`GOLDBEES` →
+/// `GOLDBEES.NS`).
 pub fn resolve_symbol(symbol: &str, market: Market) -> String {
     resolve_symbol_in(symbol, market, quote_currency())
 }
@@ -110,6 +541,22 @@ fn resolve_symbol_in(symbol: &str, market: Market, crypto_quote: &str) -> String
                 .collect();
             format!("{}=X", pair)
         }
+        Market::Commodity if explicit => upper,
+        Market::Commodity => match commodity_future(&upper) {
+            Some(future) => future.to_string(),
+            None => format!("{}.NS", upper),
+        },
+        Market::Global(_) if explicit => upper,
+        Market::Global(x) => x.info().yahoo_symbol(&upper),
+    }
+}
+
+/// COMEX futures for the metal names `-m commodity` understands.
+pub fn commodity_future(name: &str) -> Option<&'static str> {
+    match name.trim().to_ascii_uppercase().as_str() {
+        "GOLD" | "XAU" | "XAUUSD" => Some("GC=F"),
+        "SILVER" | "XAG" | "XAGUSD" => Some("SI=F"),
+        _ => None,
     }
 }
 
@@ -121,23 +568,69 @@ pub fn not_found_hint(market: Market) -> &'static str {
         Market::Us => Msg::HintNotFoundUs,
         Market::Crypto => Msg::HintNotFoundCrypto,
         Market::Fx => Msg::HintNotFoundFx,
+        Market::Commodity => Msg::HintNotFoundCommodity,
+        Market::Global(_) => Msg::HintNotFoundGlobal,
     })
 }
 
 impl Market {
-    /// Short name for titles: "India", "US", "Crypto", "FX".
+    /// Short name for titles: "India", "US", "Crypto", "FX", "Japan".
     pub fn label(self) -> &'static str {
         match self {
             Market::In => "India",
             Market::Us => "US",
             Market::Crypto => "Crypto",
             Market::Fx => "FX",
+            Market::Commodity => "Commodities",
+            Market::Global(x) => x.info().country,
+        }
+    }
+
+    /// The `-m` spelling (`in`, `us`, `uk`, `commodity`).
+    pub fn code(self) -> &'static str {
+        match self {
+            Market::In => "in",
+            Market::Us => "us",
+            Market::Crypto => "crypto",
+            Market::Fx => "fx",
+            Market::Commodity => "commodity",
+            Market::Global(x) => x.info().code,
+        }
+    }
+
+    /// The upper-case id saved in data files (`IN`, `US`, `UK`). Parse it
+    /// back with `Market::from_str(id, true)`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Market::In => "IN",
+            Market::Us => "US",
+            Market::Crypto => "CRYPTO",
+            Market::Fx => "FX",
+            Market::Commodity => "COMMODITY",
+            Market::Global(x) => match x {
+                Exchange::Uk => "UK",
+                Exchange::De => "DE",
+                Exchange::Jp => "JP",
+                Exchange::Hk => "HK",
+                Exchange::Sg => "SG",
+                Exchange::Ca => "CA",
+                Exchange::Au => "AU",
+            },
+        }
+    }
+
+    /// The market table row of a global exchange; None for India, the US,
+    /// crypto, FX and commodities.
+    pub fn info(self) -> Option<&'static MarketInfo> {
+        match self {
+            Market::Global(x) => Some(x.info()),
+            _ => None,
         }
     }
 
     /// Whether this is a stock exchange (with sessions, sectors, fundamentals).
     pub fn is_stock(self) -> bool {
-        matches!(self, Market::In | Market::Us)
+        matches!(self, Market::In | Market::Us | Market::Global(_))
     }
 
     /// Fail clearly for commands built on stock-exchange concepts — trading
@@ -148,13 +641,14 @@ impl Market {
             return Ok(());
         }
         anyhow::bail!(
-            "`{}` works on stock markets only (-m in or -m us); {} {}",
+            "`{}` works on stock markets only (-m in, -m us or a global exchange such as -m uk); {} {}",
             command,
             self.label(),
-            if self == Market::Crypto {
-                "trades 24/7 without sessions, sectors or fundamentals"
-            } else {
-                "trades 24x5 without exchange sessions, sectors or fundamentals"
+            match self {
+                Market::Crypto => "trade 24/7 without sessions, sectors or fundamentals",
+                Market::Commodity =>
+                    "are futures, ETFs and bonds without sectors or fundamentals — try `stockwise commodity`",
+                _ => "trades 24x5 without exchange sessions, sectors or fundamentals",
             }
         )
     }
@@ -162,28 +656,37 @@ impl Market {
     /// Currency symbol for amounts the user types (capital, SIP budget).
     pub fn currency_symbol(self) -> &'static str {
         match self {
-            Market::In => "\u{20B9}",
+            Market::In | Market::Commodity => "\u{20B9}",
             Market::Us | Market::Fx => "$",
             Market::Crypto => currency_symbol(Some(quote_currency())),
+            Market::Global(x) => currency_symbol(Some(x.info().currency)),
         }
     }
 
     /// Symbols scanned by movers, screeners and the bots.
     pub fn universe(self) -> Vec<String> {
+        let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect();
         match self {
-            Market::In => INDIA_POPULAR.iter().map(|s| s.to_string()).collect(),
-            Market::Us => US_POPULAR.iter().map(|s| s.to_string()).collect(),
+            Market::In => owned(INDIA_POPULAR),
+            Market::Us => owned(US_POPULAR),
             Market::Crypto => crypto_majors().into_iter().map(|(s, _)| s).collect(),
             Market::Fx => FX_MAJORS.iter().map(|(s, _)| s.to_string()).collect(),
+            Market::Commodity => COMMODITY_UNIVERSE
+                .iter()
+                .map(|(s, _)| s.to_string())
+                .collect(),
+            Market::Global(x) => owned(x.info().universe),
         }
     }
 
-    /// Sector indices or ETFs; empty for crypto and FX.
+    /// Sector indices or ETFs; empty for crypto, FX, commodities and
+    /// exchanges without a set on Yahoo.
     pub fn sectors(self) -> &'static [(&'static str, &'static str)] {
         match self {
             Market::In => INDIA_SECTOR_INDICES,
             Market::Us => US_SECTOR_ETFS,
-            Market::Crypto | Market::Fx => &[],
+            Market::Crypto | Market::Fx | Market::Commodity => &[],
+            Market::Global(x) => x.info().sectors,
         }
     }
 }
@@ -221,14 +724,39 @@ pub fn session_note(class: AssetClass, now: chrono::DateTime<chrono::Utc>) -> Op
     }
 }
 
-/// Get the currency symbol character for display
+/// Get the currency symbol for display. London prices come in pence
+/// (`GBp`), shown as `GBp 118.20` here; `display::format_price` writes
+/// `118.20p`.
 pub fn currency_symbol(currency: Option<&str>) -> &'static str {
     match currency {
         Some("INR") => "\u{20B9}",
         Some("EUR") => "\u{20AC}",
         Some("GBP") => "\u{00A3}",
+        Some("GBp") | Some("GBX") => "GBp ",
         Some("JPY") => "\u{00A5}",
+        Some("HKD") => "HK$",
+        Some("SGD") => "S$",
+        Some("CAD") => "C$",
+        Some("AUD") => "A$",
         _ => "$",
+    }
+}
+
+/// A minor currency unit Yahoo quotes in, as (major currency, minor units
+/// per major unit): London's pence `GBp` (also written `GBX`) → (`GBP`, 100).
+pub fn minor_unit(currency: &str) -> Option<(&'static str, f64)> {
+    match currency {
+        "GBp" | "GBX" => Some(("GBP", 100.0)),
+        _ => None,
+    }
+}
+
+/// `amount` in `currency` expressed in the major unit: 118.2 GBp → 1.182 GBP.
+/// Other currencies are returned unchanged.
+pub fn to_major(amount: f64, currency: &str) -> (f64, String) {
+    match minor_unit(currency) {
+        Some((major, per)) => (amount / per, major.to_string()),
+        None => (amount, currency.to_string()),
     }
 }
 
@@ -338,6 +866,17 @@ pub const FX_MAJORS: &[(&str, &str)] = &[
     ("EURUSD=X", "EUR/USD"),
     ("GBPUSD=X", "GBP/USD"),
     ("USDJPY=X", "USD/JPY"),
+];
+
+/// Gold and silver for `-m commodity`: COMEX futures (USD per troy ounce)
+/// and NSE-listed ETFs (₹ per unit).
+pub const COMMODITY_UNIVERSE: &[(&str, &str)] = &[
+    ("GC=F", "Gold (COMEX)"),
+    ("SI=F", "Silver (COMEX)"),
+    ("GOLDBEES.NS", "Nippon India Gold BeES"),
+    ("SETFGOLD.NS", "SBI Gold ETF"),
+    ("HDFCGOLD.NS", "HDFC Gold ETF"),
+    ("SILVERBEES.NS", "Nippon India Silver ETF"),
 ];
 
 /// Predefined screener categories
@@ -501,6 +1040,127 @@ mod tests {
                 .iter()
                 .all(|s| AssetClass::of(s) == AssetClass::Crypto)
         );
+    }
+
+    #[test]
+    fn global_exchanges_resolve_bare_tickers_with_their_suffix() {
+        let m = |x| Market::Global(x);
+        assert_eq!(resolve_symbol("VOD", m(Exchange::Uk)), "VOD.L");
+        assert_eq!(resolve_symbol("sap", m(Exchange::De)), "SAP.DE");
+        assert_eq!(resolve_symbol("7203", m(Exchange::Jp)), "7203.T");
+        // HKEX codes are zero-padded to four digits on Yahoo.
+        assert_eq!(resolve_symbol("5", m(Exchange::Hk)), "0005.HK");
+        assert_eq!(resolve_symbol("700", m(Exchange::Hk)), "0700.HK");
+        assert_eq!(resolve_symbol("9988", m(Exchange::Hk)), "9988.HK");
+        assert_eq!(resolve_symbol("d05", m(Exchange::Sg)), "D05.SI");
+        assert_eq!(resolve_symbol("RY", m(Exchange::Ca)), "RY.TO");
+        assert_eq!(resolve_symbol(" bhp ", m(Exchange::Au)), "BHP.AX");
+        // Explicit symbols pass through, as in the other markets.
+        assert_eq!(resolve_symbol("^ftse", m(Exchange::Uk)), "^FTSE");
+        assert_eq!(resolve_symbol("TCS.NS", m(Exchange::Uk)), "TCS.NS");
+        assert_eq!(resolve_symbol("USDJPY=X", m(Exchange::Jp)), "USDJPY=X");
+    }
+
+    #[test]
+    fn commodity_market_knows_metals_and_sends_the_rest_to_nse() {
+        assert_eq!(resolve_symbol("gold", Market::Commodity), "GC=F");
+        assert_eq!(resolve_symbol("XAU", Market::Commodity), "GC=F");
+        assert_eq!(resolve_symbol("silver", Market::Commodity), "SI=F");
+        assert_eq!(resolve_symbol("goldbees", Market::Commodity), "GOLDBEES.NS");
+        assert_eq!(
+            resolve_symbol("SGBAUG28V", Market::Commodity),
+            "SGBAUG28V.NS"
+        );
+        assert_eq!(resolve_symbol("GC=F", Market::Commodity), "GC=F");
+        assert_eq!(resolve_symbol("MGC=F", Market::Commodity), "MGC=F");
+        assert!(Market::Commodity.require_stocks("sectors").is_err());
+        assert!(Market::Commodity.sectors().is_empty());
+    }
+
+    #[test]
+    fn every_market_parses_from_its_code_aliases_and_id() {
+        for m in ALL_MARKETS {
+            assert_eq!(Market::from_str(m.code(), true), Ok(m), "{m:?}");
+            assert_eq!(Market::from_str(m.id(), true), Ok(m), "{m:?}");
+            assert_eq!(m.id(), m.code().to_uppercase());
+        }
+        assert_eq!(
+            Market::from_str("UK", true),
+            Ok(Market::Global(Exchange::Uk))
+        );
+        assert_eq!(
+            Market::from_str("lse", true),
+            Ok(Market::Global(Exchange::Uk))
+        );
+        assert_eq!(
+            Market::from_str("japan", true),
+            Ok(Market::Global(Exchange::Jp))
+        );
+        assert_eq!(Market::from_str("india", true), Ok(Market::In));
+        assert_eq!(Market::from_str("forex", true), Ok(Market::Fx));
+        assert_eq!(Market::from_str("gold", true), Ok(Market::Commodity));
+        assert!(Market::from_str("mars", true).is_err());
+        // No two markets share a spelling.
+        let mut names: Vec<String> = Vec::new();
+        for m in ALL_MARKETS {
+            let pv = m.to_possible_value().unwrap();
+            for name in pv.get_name_and_aliases() {
+                assert!(!names.contains(&name.to_string()), "{name} twice");
+                names.push(name.to_string());
+            }
+        }
+    }
+
+    #[test]
+    fn market_table_rows_are_consistent() {
+        for (i, x) in Exchange::ALL.into_iter().enumerate() {
+            let info = x.info();
+            assert_eq!(x as usize, i);
+            assert_eq!(Market::Global(x).code(), info.code);
+            assert!(info.suffix.starts_with('.'), "{}", info.code);
+            assert!(!info.indices.is_empty(), "{} has no index", info.code);
+            assert!(
+                info.universe.iter().all(|s| s.ends_with(info.suffix)),
+                "{} universe",
+                info.code
+            );
+            assert!(info.universe.len() >= 10, "{} universe", info.code);
+            assert_eq!(exchange_of(info.universe[0]), Some(x));
+            assert_eq!(Market::Global(x).universe().len(), info.universe.len());
+            assert!(Market::Global(x).is_stock());
+            let (oh, om) = info.session.open;
+            let (ch, cm) = info.session.close;
+            assert!((oh, om) < (ch, cm), "{} hours", info.code);
+            // Tax rules exist only for India, the US and the UK.
+            assert_eq!(
+                info.tax.is_some(),
+                x == Exchange::Uk,
+                "{} tax treatment",
+                info.code
+            );
+        }
+        assert_eq!(exchange_of("^HSI"), Some(Exchange::Hk));
+        assert_eq!(exchange_of("^AXFJ"), Some(Exchange::Au));
+        assert_eq!(exchange_of("RELIANCE.NS"), None);
+        assert_eq!(exchange_of("AAPL"), None);
+    }
+
+    #[test]
+    fn currency_symbols_and_minor_units() {
+        assert_eq!(currency_symbol(Some("HKD")), "HK$");
+        assert_eq!(currency_symbol(Some("SGD")), "S$");
+        assert_eq!(currency_symbol(Some("CAD")), "C$");
+        assert_eq!(currency_symbol(Some("AUD")), "A$");
+        assert_eq!(currency_symbol(Some("GBp")), "GBp ");
+        assert_eq!(minor_unit("GBp"), Some(("GBP", 100.0)));
+        assert_eq!(minor_unit("GBX"), Some(("GBP", 100.0)));
+        assert_eq!(minor_unit("GBP"), None);
+        let (pounds, cur) = to_major(118.2, "GBp");
+        assert!((pounds - 1.182).abs() < 1e-12);
+        assert_eq!(cur, "GBP");
+        assert_eq!(to_major(214.4, "EUR"), (214.4, "EUR".to_string()));
+        assert_eq!(Market::Global(Exchange::Jp).currency_symbol(), "\u{00A5}");
+        assert_eq!(Market::Commodity.currency_symbol(), "\u{20B9}");
     }
 
     #[test]
