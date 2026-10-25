@@ -137,6 +137,12 @@ pub fn tf(msg: Msg, args: &[&dyn Display]) -> String {
     fill(t(msg), args)
 }
 
+/// [`tf`] in a given language — for text that stays English whatever
+/// `--lang` says (notifications, `--json`).
+pub fn tf_in(lang: Lang, msg: Msg, args: &[&dyn Display]) -> String {
+    fill(msg.text(lang), args)
+}
+
 fn fill(template: &str, args: &[&dyn Display]) -> String {
     let mut out = template.to_string();
     for (i, arg) in args.iter().enumerate() {
@@ -189,7 +195,7 @@ messages! {
     AboutDoctor => "Check your setup: data directory, network, cache, AI, broker", "अपना सेटअप जाँचें: डेटा फ़ोल्डर, नेटवर्क, कैश, AI, ब्रोकर";
     AboutPortfolio => "Track holdings and P&L (default: show)", "होल्डिंग्स और लाभ/हानि ट्रैक करें (डिफ़ॉल्ट: दिखाएँ)";
     AboutWatch => "Manage your watchlist (default: show)", "अपनी वॉचलिस्ट संभालें (डिफ़ॉल्ट: दिखाएँ)";
-    AboutAlert => "Price alerts (default: list)", "भाव अलर्ट (डिफ़ॉल्ट: सूची)";
+    AboutAlert => "Price and technical alerts (default: list)", "भाव और तकनीकी अलर्ट (डिफ़ॉल्ट: सूची)";
     AboutCompletions => "Print a shell completion script (bash, zsh, fish, powershell, elvish)", "शेल कम्प्लीशन स्क्रिप्ट दिखाएँ (bash, zsh, fish, powershell, elvish)";
 
     // ── Markets ──
@@ -219,6 +225,9 @@ messages! {
     Ma50 => "50-Day MA", "50-दिन MA";
     Ma200 => "200-Day MA", "200-दिन MA";
     DividendYield => "Dividend Yield", "डिविडेंड यील्ड";
+    DeliveryPercent => "Delivery", "डिलीवरी";
+    UniverseFallback => "NSE's {0} member list is unavailable ({1}); scanning the built-in list of {2} stocks", "NSE की {0} सदस्य सूची उपलब्ध नहीं ({1}); {2} शेयरों की अंतर्निहित सूची देखी जा रही है";
+    CircuitLimits => "Circuit Limits", "सर्किट सीमा";
     Unknown => "Unknown", "अज्ञात";
     DataFrom => "Data: {0}", "डेटा: {0}";
     NoQuoteFor => "No quote for {0}{1}", "{0} का भाव नहीं मिला{1}";
@@ -288,7 +297,8 @@ messages! {
     DoctorProviderAnswered => "{0} answered for {1} ({2} ms); Yahoo fills missing fields", "{1} के लिए {0} ने जवाब दिया ({2} ms); बाकी फ़ील्ड Yahoo से";
     DoctorProviderFellBack => "{0} did not answer ({1}); using Yahoo instead", "{0} से जवाब नहीं मिला ({1}); Yahoo का उपयोग हो रहा है";
     DoctorProviderNoKey => "{0} selected but {1} is not set; using Yahoo", "{0} चुना गया पर {1} सेट नहीं है; Yahoo का उपयोग हो रहा है";
-    DoctorProviderUnknown => "unknown provider '{0}' — use yahoo, alphavantage, massive (polygon) or twelvedata", "अज्ञात प्रदाता '{0}' — yahoo, alphavantage, massive (polygon) या twelvedata चुनें";
+    DoctorProviderUnknown => "unknown provider '{0}' — use yahoo, alphavantage, massive (polygon), twelvedata, nse, bse or exchange", "अज्ञात प्रदाता '{0}' — yahoo, alphavantage, massive (polygon), twelvedata, nse, bse या exchange चुनें";
+    DoctorExchangeNote => "NSE/BSE website data is unofficial; when they refuse automated requests, Yahoo answers", "NSE/BSE वेबसाइट का डेटा अनौपचारिक है; जब वे स्वचालित अनुरोध रोकते हैं, तब Yahoo जवाब देता है";
     DoctorRedis => "Redis cache", "Redis कैश";
     DoctorConnected => "connected", "जुड़ा हुआ";
     DoctorRedisNotUsed => "not used (optional; in-memory cache instead)", "उपयोग में नहीं (वैकल्पिक; मेमोरी कैश चल रहा है)";
@@ -311,6 +321,46 @@ messages! {
     DoctorBrokerOrdersOff => "live orders off (read-only)", "लाइव ऑर्डर बंद (केवल देखना)";
     DoctorAngelStopGttOn => "SL/SL-M and GTT enabled", "SL/SL-M और GTT चालू";
     DoctorMarketDataDown => "Market data is unreachable", "मार्केट डेटा तक पहुँच नहीं हो पा रही";
+
+    // ── Alerts ──
+    AlertsTitle => "Alerts", "अलर्ट";
+    AlertAbove => "above {0}", "{0} से ऊपर";
+    AlertBelow => "below {0}", "{0} से नीचे";
+    AlertRsiBelow => "RSI({0}) below {1}", "RSI({0}) {1} से नीचे";
+    AlertRsiAbove => "RSI({0}) above {1}", "RSI({0}) {1} से ऊपर";
+    AlertCrossAbove => "close crosses above the {0}-day {1}", "क्लोज़ {0}-दिन के {1} को ऊपर की ओर पार करे";
+    AlertCrossBelow => "close crosses below the {0}-day {1}", "क्लोज़ {0}-दिन के {1} को नीचे की ओर पार करे";
+    AlertBreakoutHigh => "close above the previous {0}-day high", "क्लोज़ पिछले {0} दिनों के उच्चतम से ऊपर";
+    AlertBreakdownLow => "close below the previous {0}-day low", "क्लोज़ पिछले {0} दिनों के न्यूनतम से नीचे";
+    AlertChangeAbove => "day change of {0} or better", "दिन का बदलाव {0} या उससे अधिक";
+    AlertChangeBelow => "day change of {0} or worse", "दिन का बदलाव {0} या उससे कम";
+    AlertVolumeSpike => "volume {0}× its {1}-day average", "वॉल्यूम {1}-दिन के औसत का {0}×";
+    AlertResultsIn => "results due within {0} days", "{0} दिनों के भीतर नतीजे";
+
+    // ── Calendar ──
+    CalendarTitle => "Results & corporate calendar — next {0} days", "नतीजे और कॉर्पोरेट कैलेंडर — अगले {0} दिन";
+    CalDate => "Date", "तारीख";
+    CalWhen => "When", "कब";
+    CalEvent => "Event", "इवेंट";
+    CalDetails => "Details", "विवरण";
+    CalSource => "Source", "स्रोत";
+    CalToday => "today", "आज";
+    CalTomorrow => "tomorrow", "कल";
+    CalInDays => "in {0} days", "{0} दिन में";
+    CalEstimated => "estimated", "अनुमानित";
+    CalThisWeek => "{0} event(s) in the next 7 days", "अगले 7 दिनों में {0} इवेंट";
+    CalNoEvents => "No results, dividends or splits in the next {0} days for {1} symbol(s).", "अगले {0} दिनों में {1} सिंबल के लिए कोई नतीजे, डिविडेंड या स्प्लिट नहीं।";
+    CalNoSymbols => "Nothing to look up — add holdings or watchlist symbols, or name them: `stockwise calendar TCS INFY`.", "देखने के लिए कुछ नहीं — होल्डिंग या वॉचलिस्ट में सिंबल जोड़ें, या नाम दें: `stockwise calendar TCS INFY`।";
+    CalSources => "Source: Yahoo Finance (results, ex-dividend and payment dates).", "स्रोत: Yahoo Finance (नतीजे, एक्स-डिविडेंड और भुगतान की तारीखें)।";
+    CalSourcesNse => "Indian stocks: also NSE board meetings and corporate actions (filed results dates, dividends, splits, bonus issues).", "भारतीय शेयर: NSE बोर्ड बैठकें और कॉर्पोरेट एक्शन भी (दाखिल नतीजों की तारीखें, डिविडेंड, स्प्लिट, बोनस)।";
+    EventResults => "Results", "नतीजे";
+    EventBoardMeeting => "Board meeting", "बोर्ड बैठक";
+    EventExDividend => "Ex-dividend", "एक्स-डिविडेंड";
+    EventDividendPaid => "Dividend paid", "डिविडेंड भुगतान";
+    EventSplit => "Split", "स्प्लिट";
+    EventBonus => "Bonus", "बोनस";
+    EventRights => "Rights issue", "राइट्स इश्यू";
+    EventOther => "Corporate action", "कॉर्पोरेट एक्शन";
 
     // ── Web dashboard (`serve`) ──
     ServeDashboard => "Dashboard", "डैशबोर्ड";
