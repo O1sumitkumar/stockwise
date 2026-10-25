@@ -45,7 +45,9 @@ stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR
 - **India-first, US too.** `TCS` means `TCS.NS`; rupee formatting in lakhs and
   crores; NIFTY/SENSEX sectors; mutual funds from AMFI; NSE option chains;
   Indian tax years with LTCG/STCG set-off; imports from Kite, Groww, INDmoney,
-  Upstox and CAS statements. `-m us`, `-m crypto` or `-m fx` for other markets.
+  Upstox and CAS statements; gold in ₹/10 g, Sovereign Gold Bonds and G-sec
+  yields. `-m us`, `-m crypto`, `-m fx`, `-m commodity` or a global exchange
+  (`-m uk`, `de`, `jp`, `hk`, `sg`, `ca`, `au`) for other markets.
 - **Zero setup.** Public market data, no API key or sign-up. One binary for
   macOS, Linux and Windows. `stockwise doctor` checks everything.
 - **65+ commands, one muscle memory.** Fundamentals, technicals, risk, screeners,
@@ -133,6 +135,7 @@ Homebrew, AUR and Nix install the man pages and completions for you.
 | **Analysis** | `analyze`, `technical`, `history`, `chart`, `compare`, `risk`, `correlate`, `timeframes`, `returns`, `patterns`, `support`, `fibs`, `volume`, `gaps`, `stoploss`, `forecast` |
 | **Market** | `movers`, `sectors`, `heatmap`, `sentiment`, `news`, `rotation`, `sectorcmp`, `peers`, `insider`, `ipo`, `earnings`, `surprise`, `matrix`, `picks`, `screen`, `dividends` |
 | **Funds & F&O** | `mf` (search, nav, history, sip, screen, overlap), `options` (chain, pcr, maxpain, moves) |
+| **Commodities & bonds** | `commodity` (spot, futures, etfs, sgb), `bonds` (yields, list, calc) |
 | **Strategies & bots** | `backtest`, `sip`, `whatif`, `intraday`, `longterm`, `daemon`, `sim`, `report` |
 | **Portfolio** | `portfolio`, `watch`, `alert`, `calendar`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
 | **Interfaces** | `tui`, `serve` |
@@ -169,6 +172,20 @@ stockwise options maxpain BANKNIFTY        # or: options pcr, options chain AAPL
 
 NAVs come from AMFI, option chains from NSE (India) or Yahoo (US). See
 [docs/commands.md](docs/commands.md#funds--fo) for what has data and what doesn't.
+
+### Gold, SGBs and G-secs
+
+```bash
+stockwise commodity                          # gold ₹/10 g, silver ₹/kg, and USD/oz
+stockwise commodity sgb                      # Sovereign Gold Bonds vs gold spot
+stockwise history gold -m commodity -p 1y    # COMEX gold (GC=F); also chart, technical, alerts
+stockwise bonds                              # T-bill and G-sec yields, India 10Y
+stockwise bonds calc 718GS2033 --price 101.25   # yield to maturity, accrued interest, duration
+```
+
+Spot is COMEX futures at the USD/INR rate, before import duty and GST; MCX has
+no free feed. Yields come from CCIL (RBI as fallback). Nothing is invented when
+a source is down — see [what has data](docs/commands.md#commodities--bonds).
 
 ### Backtest a strategy
 
@@ -289,9 +306,12 @@ Prefer a hosted model? Set `STOCKWISE_AI_PROVIDER` to `openai`, `anthropic` or
 `gemini` with your key — still only for `report` and `--ai`, with a notice
 whenever data is sent. See [docs/ai.md](docs/ai.md).
 
-### Crypto, forex and Hindi
+### Global exchanges, crypto, forex and Hindi
 
 ```bash
+stockwise quote VOD BARC -m uk                       # VOD.L, BARC.L — London, in pence
+stockwise quote 7203 -m jp                           # Toyota, 7203.T (also de, hk, sg, ca, au)
+stockwise markets --global                           # FTSE, DAX, Nikkei, Hang Seng, ... open or closed now
 stockwise quote BTC ETH -m crypto                    # BTC-USD, ETH-USD — trades 24/7
 stockwise quote BTC -m crypto --quote-currency inr   # BTC-INR
 stockwise quote USDINR EURUSD -m fx                  # USDINR=X, EURUSD=X, 4 decimals
@@ -323,7 +343,7 @@ Precedence: **flag > environment variable > config file > built-in default.**
 
 | Config key | Env var | Flag | Purpose |
 |------------|---------|------|---------|
-| `market` | `STOCKWISE_MARKET` | `-m` | Default market: `in` (default), `us`, `crypto` or `fx` |
+| `market` | `STOCKWISE_MARKET` | `-m` | Default market: `in` (default), `us`, `crypto`, `fx`, `commodity`, or a global exchange: `uk`, `de`, `jp`, `hk`, `sg`, `ca`, `au` |
 | `quote_currency` | `STOCKWISE_QUOTE_CURRENCY` | `--quote-currency` | Currency for bare crypto tickers with `-m crypto` (default `usd`; `inr` gives `BTC-INR`) |
 | `lang` | `STOCKWISE_LANG` | `--lang` | Output language: `en` or `hi` (Hindi). Default: your locale (`LANG=hi_IN…` picks Hindi) |
 | `home` | `STOCKWISE_HOME` | | Where portfolio, watchlist, alerts and history are stored |
@@ -352,6 +372,7 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 ## Docs
 
 - [Commands reference](docs/commands.md)
+- [Markets: global exchanges, commodities, bonds](docs/markets.md)
 - [Terminal dashboard](docs/tui.md) and [web dashboard, HTTP API & metrics](docs/server.md)
 - [Trading bots](docs/bots.md) and [bot design](docs/bot-design.md)
 - [Brokers: live trading, keyring, imports](docs/brokers.md)

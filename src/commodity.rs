@@ -211,10 +211,10 @@ pub const NSE_SGB_PATH: &str = "/api/sovereign-gold-bonds";
 pub const SGB_COUPON_PCT: f64 = 2.5;
 
 /// An outstanding SGB tranche: reference data that NSE's list lacks
-/// (exact issue date, hence maturity). Issue dates and prices are RBI's
-/// (39 of them cross-checked against RBI press releases); the NSE symbols
-/// come from a public list and are only used when NSE's own list cannot be
-/// fetched. Tranches that have matured are left out.
+/// (exact issue date, hence maturity). Issue dates and prices come from
+/// public tranche tables (33 of the 44 issue dates checked against RBI press
+/// releases); the NSE symbols come from a public list and are only used when
+/// NSE's own list cannot be fetched. Tranches that have matured are left out.
 #[derive(Debug, Clone, Copy)]
 pub struct Tranche {
     pub symbol: &'static str,
