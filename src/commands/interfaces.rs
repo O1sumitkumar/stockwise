@@ -25,12 +25,17 @@ pub async fn cmd_tui(_interval_secs: u64, _snapshot: Option<&str>, _market: Mark
 }
 
 #[cfg(feature = "server")]
-pub async fn cmd_serve(bind: &str, allow_remote: bool, market: Market) -> Result<()> {
-    crate::server::run(bind, allow_remote, market).await
+pub async fn cmd_serve(bind: &str, allow_remote: bool, open: bool, market: Market) -> Result<()> {
+    crate::server::run(bind, allow_remote, market, open).await
 }
 
 #[cfg(not(feature = "server"))]
-pub async fn cmd_serve(_bind: &str, _allow_remote: bool, _market: Market) -> Result<()> {
+pub async fn cmd_serve(
+    _bind: &str,
+    _allow_remote: bool,
+    _open: bool,
+    _market: Market,
+) -> Result<()> {
     bail!(
         "This stockwise was built without the `server` feature. Reinstall with \
          `cargo install stockwise` (default features)."
