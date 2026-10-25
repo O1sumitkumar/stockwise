@@ -425,6 +425,7 @@ stockwise mf screen flexi cap -s ter --json | jq '.[] | {name, ter, return_3y}'
   curve are for the whole position (`× multiplier` = lot size × lots).
   `max_profit`/`max_loss` are `null` when unlimited; `max_loss` is negative;
   `to: null` means "and above". `price_from` is `mid`, `ltp`, `manual` or `spot`.
+  Money values, prices and breakevens are rounded to 2 decimals.
 
 **Shapes** (`[...]` is an array; `row` is described next to it)
 
