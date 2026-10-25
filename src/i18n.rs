@@ -434,6 +434,63 @@ messages! {
     ServeDashboard => "Dashboard", "डैशबोर्ड";
     ServeOpenFailed => "Could not open a browser ({0}); open {1} yourself", "ब्राउज़र नहीं खुल सका ({0}); {1} खुद खोलें";
 
+    // ── Practice: replays, challenges, scores, cards (`sim`) ──
+    PracticeDisclaimer => "Paper trading — not financial advice.", "पेपर ट्रेडिंग — यह वित्तीय सलाह नहीं है।";
+    PracticeCardReplay => "paper trading replay", "पेपर ट्रेडिंग रीप्ले";
+    PracticeCardLive => "paper trading challenge", "पेपर ट्रेडिंग चुनौती";
+    PracticeScore => "Score", "स्कोर";
+    PracticeGrade => "Grade", "ग्रेड";
+    PracticeNotScored => "Not scored (fewer than {0} trading days)", "स्कोर नहीं ({0} से कम ट्रेडिंग दिन)";
+    PracticeTradingDays => "{0} trading days", "{0} ट्रेडिंग दिन";
+    PracticeYou => "You", "आप";
+    PracticeReturn => "Return", "रिटर्न";
+    PracticeMaxDrawdown => "Max drawdown", "अधिकतम गिरावट";
+    PracticeInvested => "Invested", "निवेशित";
+    PracticeNoBadges => "No badges this time", "इस बार कोई बैज नहीं";
+    PracticePassed => "passed", "सफल";
+    PracticeFailed => "failed", "असफल";
+    PracticeChallenge => "Challenge", "चुनौती";
+    PracticeScorecard => "Scorecard", "स्कोरकार्ड";
+    PracticeBenchmark => "Benchmark", "बेंचमार्क";
+    PracticeCash => "Cash", "नकद";
+    PracticeEquity => "Equity", "कुल मूल्य";
+    PracticePositions => "Positions", "पोज़िशन";
+    PracticeOrders => "Pending orders (fill at the next open)", "बाकी ऑर्डर (अगले दिन खुलने पर भरेंगे)";
+    PracticeMarket => "Market on this day", "इस दिन का बाज़ार";
+    PracticeDay => "Day {0} of {1}", "दिन {0} / {1}";
+    PracticeBadges => "Badges", "बैज";
+    PracticeNewBadge => "New badge: {0}", "नया बैज: {0}";
+    PracticeStreaks => "Streaks", "लगातार सफलता";
+    PracticeStreakDisciplined => "Disciplined runs in a row", "लगातार अनुशासित रन";
+    PracticeStreakChallenges => "Challenges passed in a row", "लगातार सफल चुनौतियाँ";
+    PracticeBestScores => "Best scores", "सर्वश्रेष्ठ स्कोर";
+    PracticeLocked => "Not earned yet", "अभी नहीं मिला";
+    PracticeRiskAdjusted => "Risk-adjusted return", "जोखिम-समायोजित रिटर्न";
+    PracticeDrawdownControl => "Drawdown control", "गिरावट पर नियंत्रण";
+    PracticeDiscipline => "Discipline", "अनुशासन";
+    PracticeDiversification => "Diversification", "विविधीकरण";
+    PracticeDebrief => "What happened", "क्या हुआ था";
+    BadgeKeptStops => "Kept your stops", "स्टॉप-लॉस निभाया";
+    BadgeKeptStopsHow => "Three or more buys, every one with a stop-loss", "तीन या अधिक खरीद, हर एक के साथ स्टॉप-लॉस";
+    BadgeDiversified => "Diversified across 5 sectors", "5 सेक्टरों में विविधता";
+    BadgeDiversifiedHow => "Hold stocks from five sectors at the same time", "एक साथ पाँच सेक्टरों के शेयर रखें";
+    BadgeSurvived => "Survived the crash", "गिरावट में टिके रहे";
+    BadgeSurvivedHow => "The benchmark falls 20% or more; you lose at most half as much while 30%+ invested", "बेंचमार्क 20% या अधिक गिरे; 30%+ निवेशित रहते हुए आपकी गिरावट उसकी आधी से ज़्यादा न हो";
+    BadgeBeatIndex => "Beat the index", "इंडेक्स को पछाड़ा";
+    BadgeBeatIndexHow => "Higher return than the benchmark with a smaller drawdown, 30%+ invested", "30%+ निवेशित रहते हुए कम गिरावट के साथ बेंचमार्क से अधिक रिटर्न";
+    BadgeSteady => "Steady hands", "स्थिर हाथ";
+    BadgeSteadyHow => "20+ days at least half invested with a drawdown under 10%", "20+ दिन कम से कम आधा निवेशित, गिरावट 10% से कम";
+    BadgeRiskAdjusted => "Risk-adjusted winner", "जोखिम-समायोजित विजेता";
+    BadgeRiskAdjustedHow => "Sharpe ratio of 1 or more over 20+ days, above the benchmark's", "20+ दिनों में 1 या अधिक शार्प अनुपात, बेंचमार्क से ऊपर";
+    BadgeChallenge => "Challenge complete", "चुनौती पूरी";
+    BadgeChallengeHow => "Pass any challenge", "कोई भी चुनौती पूरी करें";
+    BadgeSip => "Never missed a SIP", "कोई SIP नहीं छूटी";
+    BadgeSipHow => "Pass the SIP challenge without missing a month", "बिना कोई महीना छोड़े SIP चुनौती पूरी करें";
+    BadgeDistance => "Went the distance", "पूरा सफ़र तय किया";
+    BadgeDistanceHow => "Play a replay to its last day", "रीप्ले को आखिरी दिन तक खेलें";
+    BadgeStreak => "Three in a row", "लगातार तीन";
+    BadgeStreakHow => "Three disciplined runs in a row: every buy stopped and sized, no rule broken", "लगातार तीन अनुशासित रन: हर खरीद पर स्टॉप और सही आकार, कोई नियम नहीं टूटा";
+
     // ── Errors ──
     ErrorPrefix => "Error:", "त्रुटि:";
 }

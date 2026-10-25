@@ -78,8 +78,9 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - 📋 Commodities: gold and silver — MCX futures, gold/silver ETFs, Sovereign Gold Bonds, spot in ₹/10 g
 - 📋 Global exchanges from one market table — UK, Germany, Japan, Hong Kong, Singapore, Canada, Australia
 - 📋 Indian government bonds and T-bills (G-secs)
-- 📋 Simulator challenges — historical replay ("trade the 2020 crash" with the future hidden),
+- ✅ Simulator challenges — historical replay ("trade the 2020 crash" with the future hidden),
   goal-based challenges, risk-adjusted scores, badges and streaks, a shareable result card
+  (`sim replay`, `sim challenge`, `sim profile`, `sim card`)
 
 ## 💡 Later — exploring (0.6+)
 

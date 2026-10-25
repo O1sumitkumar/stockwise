@@ -60,8 +60,9 @@ stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR
 - **Live dashboards.** `stockwise tui` keeps indices, watchlist, portfolio P&L,
   alerts and a chart on one refreshing screen; `stockwise serve --open` shows
   the same in your browser.
-- **Practice before money.** A paper-trading simulator and an intraday paper
-  daemon with risk controls and notifications. Optional live orders via Angel
+- **Practice before money.** A paper-trading simulator, an intraday paper
+  daemon with risk controls and notifications, and historical replays — trade
+  the 2020 crash with the future hidden — scored on risk, not raw return. Optional live orders via Angel
   One (Zerodha, Upstox, Dhan and Fyers experimental), always behind a preview
   and a typed confirmation.
 - **Private by design.** Your portfolio stays in local files; broker secrets in
@@ -264,6 +265,25 @@ NSE holidays included), survives network blips, resumes after a restart, and
 squares off on Ctrl+C. Read [docs/bot-design.md](docs/bot-design.md) for how
 it decides.
 
+### Practise on past markets
+
+```bash
+stockwise sim replay start covid-crash-2020      # Feb 2020, ₹1,00,000 of paper money, future hidden
+stockwise sim challenge start crash-survivor     # optional goal: lose less than half of what NIFTY loses
+stockwise sim replay buy TCS 10 --stop 1900      # fills at the next day's open, with Indian charges
+stockwise sim replay next 5                      # step through trading days
+stockwise sim replay end                         # 0–100 score, badges, and what really happened
+stockwise sim card --svg card.svg                # share the result
+```
+
+<p align="center"><img src="assets/sim-card.svg" alt="A StockWise replay result card: the COVID crash, score 74, grade B" width="560"></p>
+
+Six built-in scenarios (2008, the dot-com bust, the COVID crash, the 2021 bull
+run, the Adani report, the 2022 rate hikes) or your own dates and stocks. The
+score rewards risk-adjusted return, small drawdowns, stop-losses, sensible
+position sizes and diversification — never raw return alone. Paper money
+only; see [docs/simulator.md](docs/simulator.md).
+
 ### Alerts and notifications
 
 ```bash
@@ -370,6 +390,7 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 - [Commands reference](docs/commands.md)
 - [Terminal dashboard](docs/tui.md) and [web dashboard, HTTP API & metrics](docs/server.md)
 - [Trading bots](docs/bots.md) and [bot design](docs/bot-design.md)
+- [Practice mode: replays, challenges and scores](docs/simulator.md)
 - [Brokers: live trading, keyring, imports](docs/brokers.md)
 - [AI: Ollama and cloud providers](docs/ai.md)
 - [Data providers](docs/data-providers.md)

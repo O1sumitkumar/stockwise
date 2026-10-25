@@ -346,7 +346,7 @@ pub fn annualised_pct(return_pct: f64, bars: usize, periods_per_year: f64) -> Op
 }
 
 /// `technical::sharpe_ratio` (risk-free 0) with a chosen bars-per-year.
-fn sharpe(curve: &[f64], periods_per_year: f64) -> Option<f64> {
+pub(crate) fn sharpe(curve: &[f64], periods_per_year: f64) -> Option<f64> {
     let r = technical::daily_returns(curve);
     if r.len() < 2 {
         return None;
@@ -358,7 +358,7 @@ fn sharpe(curve: &[f64], periods_per_year: f64) -> Option<f64> {
 }
 
 /// `technical::sortino_ratio` (risk-free 0) with a chosen bars-per-year.
-fn sortino(curve: &[f64], periods_per_year: f64) -> Option<f64> {
+pub(crate) fn sortino(curve: &[f64], periods_per_year: f64) -> Option<f64> {
     let r = technical::daily_returns(curve);
     if r.len() < 2 {
         return None;

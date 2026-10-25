@@ -22,6 +22,7 @@ src/
     holdings.rs      watch, alert, import, export, wealth, rebalance, harvest, tax, divcal, pcorr
     imports.rs       Groww / Upstox CSV and CAS (casparser JSON/CSV) import parsers
     sim.rs           paper-trading simulator (settle replays intraday bars)
+    practice.rs      sim replay / challenge / profile / card (practice mode)
     worker.rs        daemon intraday / longterm loops
     alerting.rs      alert watch loop, notify status/test
     trade.rs         Live orders for every broker: place_live_order (validation, preview, cap, confirmation)
@@ -74,6 +75,11 @@ src/
   intraday.rs        Intraday bot (9 strategies, regime detection, Kelly sizing)
   longterm.rs        Long-term bot (6-pillar scoring, Monte Carlo, DRIP)
   simulator.rs       Paper-trading sessions and confidence rating
+  practice/          Practice mode (see docs/simulator.md): scenarios/*.toml and challenges.toml
+                     (embedded), scenario.rs, tape.rs (cached daily bars; reads stop at the replay
+                     date), replay.rs (next-open fills with backtest costs, stops, marks),
+                     challenge.rs + live.rs (rules and goals), score.rs (0–100 score, badges),
+                     profile.rs (streaks, best scores), card.rs (text and SVG cards)
   insights.rs        Rule-based plain-English insights
   charts.rs          Braille line charts, option payoff chart, volume bars, gauges
   display.rs         Currency- and asset-aware formatting (₹/$/€/£/¥, FX and crypto decimals), width-aware padding
@@ -165,6 +171,9 @@ the OS keyring when one is available (`STOCKWISE_KEYRING=off` keeps them in the 
 | `alerts.json` | Price alerts (symbol, condition, target) |
 | `wealth_history.json` | Daily value snapshots of the default portfolio |
 | `sim_history.json` | Paper trading sessions and results |
+| `sim_replay.json` / `sim_replay_tape.json` | The running historical replay and its cached daily prices (removed by `sim replay end`) |
+| `sim_challenge.json` | A challenge running over live paper sessions |
+| `sim_profile.json` | Practice badges, streaks, best scores and recent runs |
 | `daemon_state.json` / `daemon_state_us.json` | The intraday daemon's current day (positions, risk), saved every tick |
 | `alert_watch.json` | Which alerts `alert watch` already announced |
 | `angel_config.json` | Angel One API credentials (secrets in the OS keyring when available) |

@@ -37,6 +37,7 @@ mod notify;
 mod output;
 mod payoff;
 mod portfolio;
+mod practice;
 mod providers;
 #[cfg(feature = "server")]
 mod server;
@@ -1003,6 +1004,183 @@ enum SimCmd {
         #[arg(short, long)]
         yes: bool,
     },
+    /// Historical replay: trade a past market day by day, the future hidden
+    #[command(after_help = REPLAY_HELP)]
+    Replay {
+        #[command(subcommand)]
+        action: ReplayCmd,
+    },
+    /// Goal-based challenges over a replay or live paper sessions
+    Challenge {
+        #[command(subcommand)]
+        action: ChallengeCmd,
+    },
+    /// Your badges, streaks and best scores
+    Profile {
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Shareable card of your last finished run (text, or SVG with --svg)
+    Card {
+        /// Write the card as an SVG image to FILE
+        #[arg(long, value_name = "FILE")]
+        svg: Option<std::path::PathBuf>,
+        /// Also print the text card (the default without --svg)
+        #[arg(long)]
+        text: bool,
+    },
+}
+
+const REPLAY_HELP: &str = "\
+Examples:
+  stockwise sim replay list
+  stockwise sim replay start covid-crash-2020
+  stockwise sim replay buy RELIANCE 20 --stop 1250 --target 1600
+  stockwise sim replay next 5
+  stockwise sim replay chart index
+  stockwise sim replay end
+  stockwise -m us sim replay start --from 2022-01-03 --to 2022-06-30 --symbols AAPL,MSFT,XOM
+
+Prices come from daily history fetched once at the start; you only ever see bars up
+to the replay date. Orders fill at the next day's open with the backtest cost models.
+Paper money only — not financial advice. Guide: docs/simulator.md";
+
+#[derive(Subcommand)]
+enum ReplayCmd {
+    /// The built-in scenarios
+    #[command(alias = "scenarios")]
+    List {
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Start a replay: a scenario name, or --from/--to/--symbols
+    Start {
+        /// covid-crash-2020, gfc-2008, adani-2023, dotcom-2000, bull-run-2021, rate-hikes-2022, or file:PATH.toml
+        #[arg(
+            required_unless_present_all = ["from", "to"],
+            conflicts_with_all = ["from", "to", "symbols", "benchmark"]
+        )]
+        scenario: Option<String>,
+        /// First day of a custom replay (YYYY-MM-DD)
+        #[arg(long, value_parser = replay_date, requires = "to")]
+        from: Option<chrono::NaiveDate>,
+        /// Last day of a custom replay (YYYY-MM-DD, in the past)
+        #[arg(long, value_parser = replay_date, requires = "from")]
+        to: Option<chrono::NaiveDate>,
+        /// Stocks for a custom replay, e.g. TCS,INFY,HDFCBANK
+        #[arg(long, value_delimiter = ',', num_args = 1..)]
+        symbols: Vec<String>,
+        /// Benchmark of a custom replay [default: ^NSEI, or ^GSPC with -m us]
+        #[arg(long)]
+        benchmark: Option<String>,
+        /// Paper capital [default: the scenario's, 100000]
+        #[arg(long, value_parser = capital)]
+        capital: Option<f64>,
+        /// Trading costs; auto = India delivery for INR stocks, US otherwise
+        #[arg(long, default_value = "auto", value_parser = ["auto", "none", "in-delivery", "in-intraday", "us"])]
+        costs: String,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Move forward one or more trading days
+    Next {
+        /// Trading days to move [default: 1]
+        #[arg(default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=1000))]
+        days: u32,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Queue a buy for the next day's open
+    Buy {
+        symbol: String,
+        #[arg(value_parser = clap::value_parser!(u64).range(1..))]
+        qty: u64,
+        /// Stop-loss price: sell if the price falls to it
+        #[arg(long, value_parser = level)]
+        stop: Option<f64>,
+        /// Target price: sell if the price rises to it
+        #[arg(long, value_parser = level)]
+        target: Option<f64>,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Queue a sell for the next day's open [default: the whole position]
+    Sell {
+        symbol: String,
+        #[arg(value_parser = clap::value_parser!(u64).range(1..))]
+        qty: Option<u64>,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Cancel a pending order [default: all of them]
+    Cancel {
+        /// Order number from `sim replay status`
+        id: Option<u32>,
+    },
+    /// Change a position's stop-loss or target
+    Set {
+        symbol: String,
+        #[arg(long, value_parser = level)]
+        stop: Option<f64>,
+        #[arg(long, value_parser = level)]
+        target: Option<f64>,
+    },
+    /// Account, positions, orders and the market on the replay date
+    Status {
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Price chart up to the replay date: a stock, or `index`
+    Chart {
+        symbol: String,
+        /// Trading days to show
+        #[arg(long, default_value_t = 60)]
+        days: usize,
+    },
+    /// Finish the replay: scorecard, badges and what happened next
+    End {
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+}
+
+#[derive(Subcommand)]
+enum ChallengeCmd {
+    /// The built-in challenges
+    List {
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Start a challenge: inside the running replay, or over live paper sessions
+    Start {
+        /// beat-the-index, steady-hands, position-limit, stop-loss, sip-discipline, crash-survivor, or file:PATH.toml
+        name: String,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Progress, rules and anything broken so far
+    Status {
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// End the challenge now and see the result
+    End {
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+}
+
+fn replay_date(s: &str) -> Result<chrono::NaiveDate, String> {
+    chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d")
+        .map_err(|_| format!("`{s}`: use YYYY-MM-DD, e.g. 2020-02-03"))
+}
+
+/// A stop-loss or target price.
+fn level(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
+        _ => Err(format!("`{s}` must be a price above 0")),
+    }
 }
 
 #[derive(Subcommand)]
@@ -2337,6 +2515,73 @@ async fn main() {
             Some(SimCmd::Status) => commands::cmd_sim("status", None, None, m).await,
             Some(SimCmd::Settle { now }) => commands::cmd_sim_settle(now).await,
             Some(SimCmd::History { out }) => commands::cmd_sim_history(m, out.into()),
+            Some(SimCmd::Replay { action }) => match action {
+                ReplayCmd::List { out } => commands::cmd_replay_list(out.into()),
+                ReplayCmd::Start {
+                    scenario,
+                    from,
+                    to,
+                    symbols,
+                    benchmark,
+                    capital,
+                    costs,
+                    out,
+                } => {
+                    let start = commands::ReplayStart {
+                        scenario,
+                        from,
+                        to,
+                        symbols,
+                        benchmark,
+                        capital,
+                        costs,
+                        fmt: out.into(),
+                    };
+                    commands::cmd_replay_start(start, m).await
+                }
+                ReplayCmd::Next { days, out } => commands::cmd_replay_next(days, out.into()),
+                ReplayCmd::Buy {
+                    symbol,
+                    qty,
+                    stop,
+                    target,
+                    out,
+                } => commands::cmd_replay_order(
+                    commands::OrderSide::Buy,
+                    &symbol,
+                    Some(qty),
+                    stop,
+                    target,
+                    out.into(),
+                ),
+                ReplayCmd::Sell { symbol, qty, out } => commands::cmd_replay_order(
+                    commands::OrderSide::Sell,
+                    &symbol,
+                    qty,
+                    None,
+                    None,
+                    out.into(),
+                ),
+                ReplayCmd::Cancel { id } => commands::cmd_replay_cancel(id),
+                ReplayCmd::Set {
+                    symbol,
+                    stop,
+                    target,
+                } => commands::cmd_replay_set(&symbol, stop, target),
+                ReplayCmd::Status { out } => commands::cmd_replay_status(out.into()),
+                ReplayCmd::Chart { symbol, days } => commands::cmd_replay_chart(&symbol, days),
+                ReplayCmd::End { out } => commands::cmd_replay_end(out.into()),
+            },
+            Some(SimCmd::Challenge { action }) => match action {
+                ChallengeCmd::List { out } => commands::cmd_challenge_list(out.into()),
+                ChallengeCmd::Start { name, out } => {
+                    commands::cmd_challenge_start(&name, m, out.into())
+                }
+                ChallengeCmd::Status { out } => commands::cmd_challenge_status(out.into()).await,
+                ChallengeCmd::End { out } => commands::cmd_challenge_end(out.into()).await,
+            },
+            Some(SimCmd::Profile { out }) => commands::cmd_sim_profile(out.into()),
+            Some(SimCmd::Card { svg, text }) => commands::cmd_sim_card(svg, text),
             None => commands::cmd_sim("help", None, None, m).await,
         },
         Commands::Report { what } => commands::cmd_report(&what, m).await,
@@ -2959,6 +3204,152 @@ mod tests {
         }
         // Faster than every 10 seconds would hammer Yahoo.
         assert!(Cli::try_parse_from(["stockwise", "alert", "watch", "--interval", "5"]).is_err());
+    }
+
+    #[test]
+    fn practice_commands_parse() {
+        for args in [
+            vec!["stockwise", "sim", "replay", "list", "--json"],
+            vec!["stockwise", "sim", "replay", "scenarios"],
+            vec!["stockwise", "sim", "replay", "start", "covid-crash-2020"],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "start",
+                "file:my.toml",
+                "--capital",
+                "50000",
+            ],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "start",
+                "--from",
+                "2022-01-03",
+                "--to",
+                "2022-06-30",
+                "--symbols",
+                "TCS,INFY",
+                "--costs",
+                "none",
+                "--json",
+            ],
+            vec!["stockwise", "sim", "replay", "next"],
+            vec!["stockwise", "sim", "replay", "next", "5", "--json"],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "buy",
+                "TCS",
+                "10",
+                "--stop",
+                "3200",
+                "--target",
+                "3900",
+            ],
+            vec!["stockwise", "sim", "replay", "sell", "TCS"],
+            vec!["stockwise", "sim", "replay", "sell", "TCS", "5", "--json"],
+            vec!["stockwise", "sim", "replay", "cancel"],
+            vec!["stockwise", "sim", "replay", "cancel", "3"],
+            vec!["stockwise", "sim", "replay", "set", "TCS", "--stop", "3300"],
+            vec!["stockwise", "sim", "replay", "status", "--json"],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "chart",
+                "index",
+                "--days",
+                "30",
+            ],
+            vec!["stockwise", "sim", "replay", "end", "--json"],
+            vec!["stockwise", "sim", "challenge", "list"],
+            vec![
+                "stockwise",
+                "sim",
+                "challenge",
+                "start",
+                "steady-hands",
+                "--json",
+            ],
+            vec!["stockwise", "sim", "challenge", "status"],
+            vec!["stockwise", "sim", "challenge", "end", "--json"],
+            vec!["stockwise", "sim", "profile", "--json"],
+            vec!["stockwise", "sim", "card"],
+            vec!["stockwise", "sim", "card", "--svg", "card.svg", "--text"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
+        }
+        for args in [
+            vec!["stockwise", "sim", "replay", "start"],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "start",
+                "covid-crash-2020",
+                "--from",
+                "2020-01-01",
+                "--to",
+                "2020-02-01",
+            ],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "start",
+                "--from",
+                "2022-01-03",
+            ],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "start",
+                "--from",
+                "03/01/2022",
+                "--to",
+                "2022-06-30",
+            ],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "start",
+                "x",
+                "--costs",
+                "free",
+            ],
+            vec!["stockwise", "sim", "replay", "next", "0"],
+            vec!["stockwise", "sim", "replay", "buy", "TCS"],
+            vec!["stockwise", "sim", "replay", "buy", "TCS", "0"],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "buy",
+                "TCS",
+                "5",
+                "--stop",
+                "-1",
+            ],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "sell",
+                "TCS",
+                "5",
+                "--stop",
+                "100",
+            ],
+            vec!["stockwise", "sim", "challenge", "start"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_err(), "{args:?} should fail");
+        }
     }
 
     #[test]

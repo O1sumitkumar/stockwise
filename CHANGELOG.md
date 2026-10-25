@@ -78,6 +78,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Portfolio lots and realized sales record the broker order id they came
   from (`order_id`); the portfolio file keeps the list of synced fills
   (`broker_fills`). Older files load unchanged.
+- Practice mode for the paper-trading simulator ([docs/simulator.md](docs/simulator.md)):
+  - `sim replay`: trade a past market day by day with the future hidden. Six
+    built-in scenarios (`covid-crash-2020`, `gfc-2008`, `adani-2023`,
+    `dotcom-2000`, `bull-run-2021`, `rate-hikes-2022`), your own window
+    (`--from --to --symbols`) or a scenario file. Daily history is fetched once
+    and every view, `--json` included, stops at the replay date. Orders fill at
+    the next open with the backtest cost models; stops and targets are checked
+    on each day's range.
+  - `sim challenge`: goal-based challenges with hard and soft rules — beat the
+    index, keep drawdown under 10%, no position above 20%, always set a
+    stop-loss, SIP discipline vs timing, survive the crash — over a replay or
+    over live paper sessions. Rules are data (TOML).
+  - A 0–100 score and grade from risk-adjusted return against the benchmark
+    (Sharpe, Sortino), drawdown control, discipline and diversification —
+    never raw return alone — plus badges and streaks (`sim profile`).
+  - `sim card [--svg FILE]`: a shareable text or SVG result card. Paper
+    money only; every scorecard and card carries the disclaimer.
 - Web dashboard at `/` of `stockwise serve`: indices, watchlist, portfolio
   (P&L, XIRR, allocation, INR/USD totals, sortable columns), alerts, symbol
   search and a price chart with period buttons and a keyboard-readable
