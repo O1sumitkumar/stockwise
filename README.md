@@ -8,7 +8,7 @@
   <a href="https://crates.io/crates/stockwise"><img src="https://img.shields.io/crates/d/stockwise.svg" alt="Downloads"></a>
   <a href="https://github.com/iamsaquib8/stockwise/releases/latest"><img src="https://img.shields.io/github/v/release/iamsaquib8/stockwise?label=binaries" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="#install"><img src="https://img.shields.io/badge/rustc-1.88+-blue.svg" alt="MSRV 1.88"></a>
+  <a href="#install"><img src="https://img.shields.io/badge/rustc-1.97+-blue.svg" alt="MSRV 1.97"></a>
 </p>
 
 <p align="center">
@@ -106,7 +106,7 @@ Portfolio, watchlist and alerts persist in the `stockwise-data` volume.
 
 ```bash
 cargo binstall stockwise    # prebuilt binary via cargo-binstall
-cargo install stockwise     # or build from source (Rust 1.88+)
+cargo install stockwise     # or build from source (Rust 1.97+)
 ```
 
 Then:
