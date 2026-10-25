@@ -33,6 +33,8 @@
               ./src
               # Built-in backtest strategies, embedded with include_str!.
               ./examples/strategies
+              # The `serve` web dashboard, embedded with include_str!.
+              ./web
             ];
           };
           cargoLock.lockFile = ./Cargo.lock;
