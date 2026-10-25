@@ -85,7 +85,7 @@ Run `stockwise doctor` to check your setup, `stockwise config init` to set your 
 defaults, `stockwise <command> --help` for details."
 )]
 struct Cli {
-    /// Market for bare tickers: `in` (India, adds .NS) or `us`
+    /// Market for bare tickers: `in` (India, adds .NS), `us`, `crypto`, `fx`, `commodity`, or an exchange: `uk`, `de`, `jp`, `hk`, `sg`, `ca`, `au`
     #[arg(
         short = 'm',
         long = "market",
