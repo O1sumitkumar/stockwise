@@ -449,23 +449,13 @@ impl Http {
         if self.exhausted.load(Ordering::Relaxed) {
             bail!("{} limit reached for this run", name);
         }
-        // Take one request from the budget. A compare-exchange loop rather
-        // than `fetch_update`, which newer toolchains deprecate and whose
-        // replacement (`try_update`) is newer than our MSRV.
-        let mut left = self.budget.load(Ordering::Relaxed);
-        loop {
-            let Some(next) = left.checked_sub(1) else {
-                bail!("{} per-run request budget used up", name);
-            };
-            match self.budget.compare_exchange_weak(
-                left,
-                next,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(actual) => left = actual,
-            }
+        // Take one request from the budget.
+        if self
+            .budget
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |b| b.checked_sub(1))
+            .is_err()
+        {
+            bail!("{} per-run request budget used up", name);
         }
 
         let mut send_url = url;

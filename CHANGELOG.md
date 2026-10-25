@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   education cost grown by inflation. Amounts in Indian units (`50k`, `25L`,
   `1cr`), results in lakhs and crores; `--json`. New **Planning** help group.
 
+### Changed
+- Minimum supported Rust version is now **1.97** (was 1.88). StockWise
+  supports the latest stable Rust and the two releases before it. Prebuilt
+  binaries, Docker and Nix are unaffected.
+
 ## [0.4.0] - 2026-10-21
 
 Everything on the 0.3 roadmap: new markets and asset classes, a lot-based
