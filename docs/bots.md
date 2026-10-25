@@ -244,11 +244,17 @@ Shows: company info, price action, valuation (P/E, PEG, P/B, EV/EBITDA), profita
 
 ---
 
-## Price Alerts
+## Price and Technical Alerts
 
 ```bash
 stockwise alert add TCS above 4200
 stockwise alert add AAPL -m us below 180
+stockwise alert add INFY rsi-below 30         # RSI(14) at or below 30
+stockwise alert add RELIANCE cross-above-sma 200
+stockwise alert add AAPL -m us breakout-high 52
+stockwise alert add HDFCBANK change-below 3   # a fall of 3% or more today
+stockwise alert add TCS volume-spike 2        # 2x the 20-day average volume
+stockwise alert add TCS results-in 7          # results due within a week
 stockwise alert watch                 # check every 60 s while markets are open
 stockwise alert watch --interval 30   # every 30 s (minimum 10)
 stockwise alert watch --once          # one pass over every alert, for cron
@@ -260,8 +266,19 @@ symbols on the NSE clock, US tickers on the NYSE clock, crypto and FX
 otherwise. Alerts are re-read every pass, so `alert add` in another terminal
 takes effect without a restart.
 
+Technical conditions (RSI, moving-average crosses, breakouts, day change,
+volume spikes) are evaluated on daily bars, fetched once per symbol per check
+and brought up to the live price. A cross fires on the session it happens in,
+not on the days after. `results-in` reads the next results date from
+`stockwise calendar` (Yahoo, plus NSE board meetings for Indian stocks,
+cached for a day). Every condition is listed in
+[commands.md](commands.md#alert-conditions).
+
 Each trigger is announced **once**: an alert fires when its condition becomes
-true, re-arms after the price moves back, and fires at most once a day. That
+true, re-arms after the condition turns false again, and fires at most once a
+trading day. Day-change and volume-spike alerts describe one session, so they
+re-arm with each new session; `results-in` re-arms once the results date has
+passed. That
 memory lives in `alert_watch.json`, so a restart doesn't repeat
 notifications. If every configured channel fails, the trigger is not marked
 and the next check tries again. Network errors are retried with backoff;

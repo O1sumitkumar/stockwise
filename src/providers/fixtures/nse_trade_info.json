@@ -1,0 +1,37 @@
+{
+  "noBlockDeals": true,
+  "bulkBlockDeals": [{ "name": "Session I" }, { "name": "Session II" }],
+  "marketDeptOrderBook": {
+    "totalBuyQuantity": 0,
+    "totalSellQuantity": 1840,
+    "open": 0,
+    "bid": [{ "price": 0, "quantity": 0 }],
+    "ask": [{ "price": 1451.6, "quantity": 1840 }],
+    "tradeInfo": {
+      "totalTradedVolume": 85.32,
+      "totalTradedValue": 1239.68,
+      "totalMarketCap": 1964352.23,
+      "ffmc": 980234.12,
+      "impactCost": 0.01,
+      "cmDailyVolatility": "1.23",
+      "cmAnnualVolatility": "23.50",
+      "marketLot": "",
+      "activeSeries": "EQ"
+    },
+    "valueAtRisk": {
+      "securityVar": 6.12,
+      "indexVar": 0,
+      "varMargin": 6.12,
+      "extremeLossMargin": 3.5,
+      "adhocMargin": 0,
+      "applicableMargin": 12.5
+    }
+  },
+  "securityWiseDP": {
+    "quantityTraded": 8532123,
+    "deliveryQuantity": 4466566,
+    "deliveryToTradedQuantity": 52.35,
+    "seriesRemarks": null,
+    "secWiseDelPosDate": "24-OCT-2025 EOD"
+  }
+}

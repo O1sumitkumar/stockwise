@@ -1,17 +1,65 @@
-# HTTP API and metrics (`stockwise serve`)
+# Web dashboard, HTTP API and metrics (`stockwise serve`)
 
-`stockwise serve` exposes StockWise data as JSON for remote dashboards,
-spreadsheets, Grafana or Home Assistant, plus Prometheus metrics for the
-server and the intraday daemon.
+`stockwise serve` runs a small web dashboard for your browser, exposes
+StockWise data as JSON for remote dashboards, spreadsheets, Grafana or Home
+Assistant, and serves Prometheus metrics for the server and the intraday
+daemon.
 
 ```bash
 stockwise serve                          # http://127.0.0.1:8787; Ctrl+C stops it
+stockwise serve --open                   # ...and open the dashboard in your browser
 stockwise serve --bind 127.0.0.1:9000    # another port (or STOCKWISE_BIND)
 stockwise serve -m us                    # bare tickers are US symbols
 ```
 
 **Read-only.** There are no endpoints that trade, change your portfolio,
 watchlist or alerts, or touch the broker. Broker credentials are never read.
+
+## Web dashboard
+
+<p align="center">
+  <img src="../assets/web-dashboard.png" alt="StockWise web dashboard: index strip, a six-month RELIANCE chart, watchlist, portfolio with allocation bar and XIRR, and alerts" width="760">
+</p>
+
+Open the address the server prints at startup (`Dashboard
+http://127.0.0.1:8787/`), or start it with `--open`. One page shows:
+
+- **Indices** — your market's indices, then the other stock market's. Select
+  one to chart it.
+- **Chart** — the selected symbol's price for 1D, 5D, 1M, 3M, 6M, 1Y, 5Y or
+  Max, with its live quote and day range. Hover it, or focus it and use ←/→,
+  PgUp/PgDn, Home/End, to read a date's close, high, low and volume; Esc hides
+  the crosshair. Times are in your browser's time zone.
+- **Watchlist** — price, change and volume for `stockwise watch`.
+- **Portfolio** — value, invested amount and P&L (Indian amounts in lakhs and
+  crores, e.g. ₹1.74 L, ₹2.10 Cr), an allocation bar, and every holding with
+  quantity, average cost, price, value, P&L, XIRR and weight. Column headers
+  sort the table; *Totals in* switches the totals to INR or USD (`?base=`).
+  Holdings without a live price or exchange rate are listed below the table
+  and left out of the totals, as in `portfolio`.
+- **Alerts** — every alert with its live price; triggered ones first.
+- **Search** — type a company or ticker, pick a result with the arrow keys
+  and Enter (or a click) to chart it.
+
+The page refreshes every 30 seconds while its tab is visible (intraday charts
+too), and right away when you come back to it. The selected symbol and period
+are kept in the address (`/#symbol=TCS.NS&period=6mo`), so you can bookmark a
+chart. It works on a phone (narrow cards drop the less important columns),
+follows your system's light or dark theme, and is usable with the keyboard
+alone.
+
+The dashboard is a few static files (`web/` in the repository) compiled into
+the binary: no build step, no CDN, no fonts or scripts from anywhere else.
+It reads the same `/api/*` endpoints described below, so it shows exactly
+what the CLI prints, and it can't change anything — it only sends `GET`
+requests.
+
+**With a token.** When the server has `STOCKWISE_API_TOKEN` (required for
+`--allow-remote`), the page asks for it on first load. The token is kept in
+the tab's session storage (gone when you close the tab; *Sign out* forgets it
+sooner) and sent only as an `Authorization: Bearer` header to the same
+server — never in the address, a cookie or a log. A wrong token brings the
+prompt back.
 
 ## Endpoints
 
@@ -28,7 +76,7 @@ request.
 | `GET /api/search?q=tata motors` | Array of `{symbol, shortname, longname, quoteType, exchange}` | `search --json` |
 | `GET /api/portfolio?base=usd` | Holdings (lots, FIFO cost) valued at live prices, totals in one currency (below); `base` is `inr` or `usd` | `portfolio --json` |
 | `GET /api/watchlist` | Array of `{symbol, price, change, change_percent, volume, currency}` in watchlist order | `watch --json` |
-| `GET /api/alerts` | Array of `{index, symbol, condition, target, price, currency, status}`; `status` is `triggered`, `waiting` or `no_price` | `alert check --json` |
+| `GET /api/alerts` | Array of `{index, symbol, condition, target, price, currency, status, period, description, value, reference}`; `status` is `triggered`, `waiting`, `no_price` or `no_data` (technical alert with too little history) | `alert check --json` |
 | `GET /healthz` | `{"status": "ok", "version": "..."}` — never needs a token | |
 | `GET /metrics` | Prometheus text format (below) | |
 
@@ -56,11 +104,13 @@ One whose currency couldn't be converted is listed in `unconverted`. The
 server uses the active portfolio (`--portfolio` / `STOCKWISE_PORTFOLIO` when
 it was started).
 Likewise an alert without a price has `"price": null, "status": "no_price"`
-and never counts as triggered.
+and never counts as triggered; a technical alert without enough daily bars
+reads `"status": "no_data"`.
 
 Errors are `{"error": "..."}` with status 400 (bad parameter), 401 (missing
 or wrong token), 403 (request not addressed to localhost while no token is
-set, see below), 404 (unknown symbol or endpoint), 405 (not GET), 500 (a local
+set, or sent by a web page on another origin; see below), 404 (unknown symbol
+or endpoint), 405 (not GET), 500 (a local
 data file such as `portfolio.json` could not be read; details only in the
 server's log), or 502 (market data could not be fetched). Responses carry
 `Cache-Control: no-store`.
@@ -143,10 +193,39 @@ stockwise serve --bind 0.0.0.0:8787 --allow-remote
 curl -H "Authorization: Bearer $STOCKWISE_API_TOKEN" http://my-host:8787/api/portfolio
 ```
 
-When `STOCKWISE_API_TOKEN` is set, every endpoint except `/healthz` requires
-it — on loopback too. The server speaks plain HTTP: across an untrusted
-network, put it behind a TLS reverse proxy (Caddy, nginx) or a private
-network such as Tailscale or WireGuard, so the token isn't sent in clear text.
+When `STOCKWISE_API_TOKEN` is set, every endpoint except `/healthz` and the
+dashboard's static files (`/`, `/assets/*`, which hold no data) requires it —
+on loopback too. The server speaks plain HTTP: across an untrusted network,
+put it behind a TLS reverse proxy (Caddy, nginx) or a private network such as
+Tailscale or WireGuard, so the token isn't sent in clear text.
+
+## Browser security
+
+The dashboard and the API are meant to be read from the server's own origin
+only:
+
+- **No CORS.** The server never sends `Access-Control-Allow-*` headers, so a
+  page on another site can't read responses, and preflight requests get 405.
+- **Cross-origin requests are refused.** Browsers label each request with
+  `Sec-Fetch-Site`; `/api/*` and `/metrics` answer 403 unless it is
+  `same-origin` or `none` (typed address, bookmark). Clients that aren't
+  browsers (curl, Prometheus, Grafana's server) don't send the header and are
+  unaffected.
+- **Strict headers on every response:** `Content-Security-Policy:
+  default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self';
+  connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors
+  'none'; require-trusted-types-for 'script'; trusted-types 'none'`, plus
+  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
+  `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy:
+  same-origin`, `X-Content-Type-Options: nosniff` and `Cache-Control:
+  no-store`.
+- **No inline code.** The page has no inline scripts, styles or event
+  handlers, and inserts API data only as text, never as HTML (the tests in
+  `src/server/web.rs` check both).
+- **No cookies.** Authentication is a header the page adds itself, so another
+  site can't make your browser send it (no CSRF).
+- Without a token, the `Host` check above also covers the dashboard, so a
+  DNS-rebinding page can't load it.
 
 ## Rate limits and caching
 

@@ -52,18 +52,30 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 
 ## 📋 Next — planning and reporting (0.5)
 
+- 🛠️ NSE / BSE data straight from the exchanges' websites (`STOCKWISE_DATA_PROVIDER=nse|bse|exchange`):
+  quotes with circuit limits and delivery %, intraday and daily bars, search, and NIFTY index members
+  for `--universe`. Shipped; still to do: check the parsers against live NSE/BSE responses (the
+  test fixtures are modelled on the endpoints' known shapes) and add SENSEX from BSE. The
+  endpoints are unofficial — licensed exchange feeds remain out of scope
 - 📋 Tax export: capital-gains schedule (ITR Schedule CG–ready CSV) from realized lots
 - 📋 Benchmark comparison and attribution — portfolio vs NIFTY 50 / S&P 500, by holding and sector
 - 📋 Goal planner — SIP needed for a target corpus, retirement and education calculators
-- 📋 Technical alerts — RSI, moving-average crosses and breakouts, not only price levels
-- 📋 Results and corporate-announcement calendar for holdings (NSE/BSE filings)
+- ✅ Technical alerts — RSI, SMA/EMA crosses, N-day breakouts, day-change and volume-spike
+  alerts next to price levels, plus `results-in N` before a results date
+- ✅ Results and corporate calendar for holdings (`stockwise calendar`) — Yahoo earnings and
+  dividend dates for US and Indian stocks; NSE board meetings and corporate actions (filed
+  results dates, splits, bonus) for Indian stocks. BSE filings and advance US splits are not covered
 - 📋 More Indian languages: Marathi, Tamil, Bengali
+- 📋 Commodities: gold and silver — MCX futures, gold/silver ETFs, Sovereign Gold Bonds, spot in ₹/10 g
+- 📋 Global exchanges from one market table — UK, Germany, Japan, Hong Kong, Singapore, Canada, Australia
+- 📋 Indian government bonds and T-bills (G-secs)
+- 📋 Simulator challenges — historical replay ("trade the 2020 crash" with the future hidden),
+  goal-based challenges, risk-adjusted scores, badges and streaks, a shareable result card
 
 ## 💡 Later — exploring (0.6+)
 
-- 💡 Official NSE / BSE data feeds as a data provider
 - 💡 Broker-side GTT and order-status sync into the portfolio
-- 💡 A small web dashboard served by `stockwise serve`
+- ✅ A small web dashboard served by `stockwise serve` (`serve --open`)
 - ✅ WASM strategy plugins (**experimental**; `--features wasm-plugins`, `backtest -s wasm:PATH`)
 - 💡 Options strategy builder — payoff charts for spreads and straddles from the live chain
 

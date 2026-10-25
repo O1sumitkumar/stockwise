@@ -156,16 +156,29 @@ fn alert_check_never_triggers_without_a_price() {
     store.add("TCS.NS", AlertCondition::Above, 3000.0);
     store.add("INFY.NS", AlertCondition::Below, 1000.0);
     store.add("GONE.NS", AlertCondition::Below, 1e9);
-    let rows = alert_check_rows(
-        &store.alerts,
-        &[
-            quote("TCS.NS", Some(3100.0), None),
-            quote("INFY.NS", Some(1500.0), None),
-        ],
-    );
+    store.add("TCS.NS", AlertCondition::RsiBelow, 30.0);
+    let data: std::collections::HashMap<String, crate::alerts::MarketData> = [
+        quote("TCS.NS", Some(3100.0), None),
+        quote("INFY.NS", Some(1500.0), None),
+    ]
+    .iter()
+    .map(|q| {
+        let d = crate::alerts::MarketData {
+            price: q.regular_market_price,
+            currency: q.currency.clone(),
+            ..Default::default()
+        };
+        (q.symbol.clone().unwrap(), d)
+    })
+    .collect();
+    let rows = alert_check_rows(&store.alerts, &data);
     let status: Vec<&str> = rows.iter().map(|r| r.status).collect();
-    assert_eq!(status, ["triggered", "waiting", "no_price"]);
+    // A technical alert without bars has no data rather than a reading.
+    assert_eq!(status, ["triggered", "waiting", "no_price", "no_data"]);
     assert_eq!(rows[2].index, 2);
+    assert_eq!(rows[0].value, Some(3100.0));
+    assert_eq!(rows[3].period, Some(14));
+    assert_eq!(rows[3].description, "RSI(14) below 30");
     assert_columns(&rows[0]);
 }
 
@@ -510,6 +523,8 @@ fn inline_rows_match_their_columns() {
         symbol: "TCS.NS".into(),
         condition: "above".into(),
         target: 1.0,
+        period: None,
+        description: "above 1.00".into(),
         created_at: "2026-01-01 09:15".into(),
     });
     assert_columns(&crate::views::Bar {

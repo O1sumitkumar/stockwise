@@ -55,11 +55,11 @@ jobs:
         run: cargo clippy --all-targets --no-default-features -- -D warnings
 
   msrv:
-    name: msrv (1.88)
+    name: msrv (1.97)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
+      - uses: dtolnay/rust-toolchain@1.97
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-targets
 
@@ -68,7 +68,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
+      - uses: dtolnay/rust-toolchain@1.97
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -76,8 +76,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo +stable clippy --all-targets --features wasm-plugins -- -D warnings
       - run: cargo +stable test --features wasm-plugins
-      - name: msrv (1.88) with the feature
-        run: cargo +1.88 check --all-targets --features wasm-plugins
+      - name: msrv (1.97) with the feature
+        run: cargo +1.97 check --all-targets --features wasm-plugins
       - name: Build the example plugin
         run: cargo +stable build --release --target wasm32-unknown-unknown --manifest-path examples/wasm-strategy-rsi/Cargo.toml
       - name: Example plugin matches the built-in rsi

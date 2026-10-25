@@ -416,10 +416,12 @@ WebAssembly interpreter. It was chosen over wasmtime because:
   build, mostly in parallel with the rest. wasmtime with Cranelift is several
   times larger, slower to compile, and pulls in a much bigger dependency
   tree.
-- **MSRV.** wasmi 2.0 builds on Rust 1.86, inside StockWise's 1.88; the
-  current wasmtime needs a newer compiler than the project supports.
+- **MSRV.** wasmi 2.0 builds on Rust 1.86, well inside StockWise's 1.97.
+  wasmtime requires the newest compilers (wasmtime 50 needs 1.97, and each
+  monthly release moves that up), which would tie StockWise's MSRV to
+  wasmtime's release train.
 - **Limits.** wasmi meters fuel deterministically per instruction and
-  enforces memory, table and module-size limits — what a plugin sandbox
+  enforces memory, table and module-structure limits — what a plugin sandbox
   needs. wasmtime's extra features (JIT speed, epoch interruption, WASI) are
   unneeded: a plugin does a few hundred instructions per bar, and has no
   host access.

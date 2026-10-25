@@ -15,9 +15,18 @@
 //! | Alpha Vantage | `alphavantage`            | `ALPHAVANTAGE_API_KEY`| US, BSE (`.BO`), FX, crypto    |
 //! | Massive       | `massive` / `polygon`     | `MASSIVE_API_KEY`     | US stocks, FX, crypto          |
 //! | Twelve Data   | `twelvedata`              | `TWELVEDATA_API_KEY`  | US stocks, FX, crypto          |
+//! | NSE website   | `nse`                     | — (no key)            | NSE stocks (`.NS`), NSE indices |
+//! | BSE website   | `bse`                     | — (no key)            | BSE stocks (`.BO`, scrip codes) |
+//! | NSE + BSE     | `exchange`                | — (no key)            | `.NS` and NSE indices on NSE, `.BO` on BSE |
+//!
+//! The exchange providers read the JSON endpoints behind nseindia.com and
+//! bseindia.com through one polite session per site (`session.rs`).
 
 pub mod alphavantage;
+pub mod bse;
 pub mod massive;
+pub mod nse;
+pub mod session;
 pub mod twelvedata;
 
 use crate::api::{ChartData, ChartMeta, Indicators, Quote, QuoteIndicator, SearchResult};
@@ -56,6 +65,12 @@ pub enum ProviderKind {
     AlphaVantage,
     Massive,
     TwelveData,
+    /// NSE's website (no key).
+    Nse,
+    /// BSE's website (no key).
+    Bse,
+    /// NSE for `.NS` and NSE indices, BSE for `.BO`, Yahoo for the rest.
+    Exchange,
 }
 
 impl ProviderKind {
@@ -69,6 +84,9 @@ impl ProviderKind {
             "alphavantage" | "av" => Some(ProviderKind::AlphaVantage),
             "massive" | "polygon" | "polygonio" => Some(ProviderKind::Massive),
             "twelvedata" | "12data" => Some(ProviderKind::TwelveData),
+            "nse" | "nseindia" => Some(ProviderKind::Nse),
+            "bse" | "bseindia" => Some(ProviderKind::Bse),
+            "exchange" | "exchanges" | "nsebse" | "nse+bse" => Some(ProviderKind::Exchange),
             _ => None,
         }
     }
@@ -78,20 +96,30 @@ impl ProviderKind {
             ProviderKind::AlphaVantage => "Alpha Vantage",
             ProviderKind::Massive => "Massive (Polygon.io)",
             ProviderKind::TwelveData => "Twelve Data",
+            ProviderKind::Nse => "NSE",
+            ProviderKind::Bse => "BSE",
+            ProviderKind::Exchange => "NSE + BSE",
         }
     }
 
-    /// Variables checked for the API key, preferred first.
+    /// Variables checked for the API key, preferred first; empty for the
+    /// exchanges, which need none.
     pub fn key_envs(self) -> &'static [&'static str] {
         match self {
             ProviderKind::AlphaVantage => &["ALPHAVANTAGE_API_KEY", "ALPHA_VANTAGE_API_KEY"],
             ProviderKind::Massive => &["MASSIVE_API_KEY", "POLYGON_API_KEY"],
             ProviderKind::TwelveData => &["TWELVEDATA_API_KEY", "TWELVE_DATA_API_KEY"],
+            ProviderKind::Nse | ProviderKind::Bse | ProviderKind::Exchange => &[],
         }
     }
 
     pub fn key_env(self) -> &'static str {
-        self.key_envs()[0]
+        self.key_envs().first().copied().unwrap_or_default()
+    }
+
+    /// Whether the provider needs an API key.
+    pub fn needs_key(self) -> bool {
+        !self.key_envs().is_empty()
     }
 
     /// Provider requests one command may make before the rest of its
@@ -103,6 +131,9 @@ impl ProviderKind {
             ProviderKind::AlphaVantage => 5,
             ProviderKind::Massive => 5,
             ProviderKind::TwelveData => 8,
+            ProviderKind::Nse => nse::QUOTE_BATCH,
+            ProviderKind::Bse => bse::QUOTE_BATCH,
+            ProviderKind::Exchange => nse::QUOTE_BATCH,
         }
     }
 
@@ -115,6 +146,8 @@ impl ProviderKind {
             ProviderKind::AlphaVantage => Some(140),
             ProviderKind::Massive => Some(730),
             ProviderKind::TwelveData => None,
+            ProviderKind::Nse | ProviderKind::Exchange => Some(nse::HISTORY_DAYS),
+            ProviderKind::Bse => Some(bse::HISTORY_DAYS),
         }
     }
 }
@@ -152,6 +185,9 @@ impl Selection {
         let Some(kind) = ProviderKind::parse(raw) else {
             return Selection::Unknown(raw.to_string());
         };
+        if !kind.needs_key() {
+            return Selection::Ready(Provider::new(kind, String::new(), None));
+        }
         let key = kind
             .key_envs()
             .iter()
@@ -170,11 +206,39 @@ pub enum Provider {
     AlphaVantage(alphavantage::AlphaVantage),
     Massive(massive::Massive),
     TwelveData(twelvedata::TwelveData),
+    Nse(nse::Nse),
+    Bse(bse::Bse),
+    Exchange(Exchange),
+}
+
+/// `STOCKWISE_DATA_PROVIDER=exchange`: each Indian symbol from its own
+/// exchange.
+pub struct Exchange {
+    pub nse: nse::Nse,
+    pub bse: bse::Bse,
 }
 
 impl Provider {
     /// `base_url` overrides the API endpoint (tests use a local mock).
     pub fn new(kind: ProviderKind, key: String, base_url: Option<String>) -> Self {
+        let nse = || {
+            nse::Nse::new(match &base_url {
+                Some(base) => std::sync::Arc::new(session::Session::new(
+                    nse::site(base),
+                    session::Limiter::polite(),
+                )),
+                None => nse::shared_session(),
+            })
+        };
+        let bse = || {
+            bse::Bse::new(match &base_url {
+                Some(base) => std::sync::Arc::new(session::Session::new(
+                    bse::site(base),
+                    session::Limiter::polite(),
+                )),
+                None => bse::shared_session(),
+            })
+        };
         let http = |default: &str| {
             Http::new(
                 kind,
@@ -192,19 +256,34 @@ impl Provider {
             ProviderKind::TwelveData => {
                 Provider::TwelveData(twelvedata::TwelveData::new(http(twelvedata::BASE_URL)))
             }
+            ProviderKind::Nse => Provider::Nse(nse()),
+            ProviderKind::Bse => Provider::Bse(bse()),
+            ProviderKind::Exchange => Provider::Exchange(Exchange {
+                nse: nse(),
+                bse: bse(),
+            }),
         }
     }
 
-    fn http(&self) -> &Http {
+    /// The key-based providers' HTTP state; `None` for the exchanges.
+    fn http(&self) -> Option<&Http> {
         match self {
-            Provider::AlphaVantage(p) => &p.http,
-            Provider::Massive(p) => &p.http,
-            Provider::TwelveData(p) => &p.http,
+            Provider::AlphaVantage(p) => Some(&p.http),
+            Provider::Massive(p) => Some(&p.http),
+            Provider::TwelveData(p) => Some(&p.http),
+            Provider::Nse(_) | Provider::Bse(_) | Provider::Exchange(_) => None,
         }
     }
 
     pub fn kind(&self) -> ProviderKind {
-        self.http().kind
+        match self {
+            Provider::Nse(_) => ProviderKind::Nse,
+            Provider::Bse(_) => ProviderKind::Bse,
+            Provider::Exchange(_) => ProviderKind::Exchange,
+            Provider::AlphaVantage(p) => p.http.kind,
+            Provider::Massive(p) => p.http.kind,
+            Provider::TwelveData(p) => p.http.kind,
+        }
     }
 
     /// Share the Redis/in-memory cache, so free-tier calls survive between
@@ -214,6 +293,12 @@ impl Provider {
             Provider::AlphaVantage(p) => p.http.cache = Some(cache),
             Provider::Massive(p) => p.http.cache = Some(cache),
             Provider::TwelveData(p) => p.http.cache = Some(cache),
+            Provider::Nse(p) => p.session().set_cache(cache),
+            Provider::Bse(p) => p.session().set_cache(cache),
+            Provider::Exchange(p) => {
+                p.nse.session().set_cache(cache.clone());
+                p.bse.session().set_cache(cache);
+            }
         }
         self
     }
@@ -224,22 +309,67 @@ impl Provider {
             Provider::AlphaVantage(_) => alphavantage::target(symbol).is_some(),
             Provider::Massive(_) => massive::ticker(symbol).is_some(),
             Provider::TwelveData(_) => twelvedata::target(symbol).is_some(),
+            Provider::Nse(p) => p.supports(symbol),
+            Provider::Bse(p) => p.supports(symbol),
+            Provider::Exchange(p) => p.nse.supports(symbol) || p.bse.supports(symbol),
         }
     }
 
-    /// Requests left before this run falls back to Yahoo.
+    /// Requests left before this run falls back to Yahoo. For the
+    /// exchanges, how many uncached symbols one quote request may ask for
+    /// (0 after a refusal).
     pub fn remaining(&self) -> u32 {
-        let http = self.http();
-        if http.exhausted.load(Ordering::Relaxed) {
-            0
-        } else {
-            http.budget.load(Ordering::Relaxed)
+        match self {
+            Provider::Nse(p) => p.remaining(),
+            Provider::Bse(p) => p.remaining(),
+            Provider::Exchange(p) => p.nse.remaining().max(p.bse.remaining()),
+            _ => {
+                let Some(http) = self.http() else { return 0 };
+                if http.exhausted.load(Ordering::Relaxed) {
+                    0
+                } else {
+                    http.budget.load(Ordering::Relaxed)
+                }
+            }
         }
     }
 
-    /// A symbol `doctor` asks for to show the provider answers.
-    pub fn probe_symbol(&self) -> &'static str {
-        "AAPL"
+    /// Whether one quote request for `symbols` (all supported) fits what
+    /// the provider has left; if not, the whole request goes to Yahoo so a
+    /// table never mixes sources. Exchange quotes already fetched with an
+    /// index snapshot cost nothing.
+    pub fn can_serve(&self, symbols: &[&str]) -> bool {
+        match self {
+            Provider::Nse(p) => p.quote_cost(symbols) <= p.remaining(),
+            Provider::Bse(p) => p.quote_cost(symbols) <= p.remaining(),
+            Provider::Exchange(p) => {
+                let (ns, bo): (Vec<&str>, Vec<&str>) =
+                    symbols.iter().partition(|s| p.nse.supports(s));
+                (ns.is_empty() || p.nse.quote_cost(&ns) <= p.nse.remaining())
+                    && (bo.is_empty() || p.bse.quote_cost(&bo) <= p.bse.remaining())
+            }
+            _ => symbols.len() as u32 <= self.remaining(),
+        }
+    }
+
+    /// `(source, symbol)` pairs `doctor` asks for to show the provider
+    /// answers — one per exchange in mixed mode.
+    pub fn probes(&self) -> Vec<(&'static str, &'static str)> {
+        match self {
+            Provider::Nse(_) => vec![("NSE", "RELIANCE.NS")],
+            Provider::Bse(_) => vec![("BSE", "500325.BO")],
+            Provider::Exchange(_) => vec![("NSE", "RELIANCE.NS"), ("BSE", "500325.BO")],
+            _ => vec![(self.name(), "AAPL")],
+        }
+    }
+
+    /// The NSE side of the provider, if it has one (for index members).
+    pub fn nse(&self) -> Option<&nse::Nse> {
+        match self {
+            Provider::Nse(p) => Some(p),
+            Provider::Exchange(p) => Some(&p.nse),
+            _ => None,
+        }
     }
 }
 
@@ -249,12 +379,19 @@ impl MarketData for Provider {
     }
 
     async fn quotes(&self, symbols: &[&str]) -> Result<Vec<Quote>> {
+        match self {
+            Provider::Nse(p) => return p.quotes(symbols).await,
+            Provider::Bse(p) => return p.quotes(symbols).await,
+            Provider::Exchange(p) => return p.quotes(symbols).await,
+            _ => {}
+        }
         let mut out = Vec::new();
         for symbol in symbols {
             let quote = match self {
                 Provider::AlphaVantage(p) => p.quote(symbol).await,
                 Provider::Massive(p) => p.quote(symbol).await,
                 Provider::TwelveData(p) => p.quote(symbol).await,
+                Provider::Nse(_) | Provider::Bse(_) | Provider::Exchange(_) => unreachable!(),
             };
             match quote {
                 Ok(Some(mut q)) => {
@@ -284,6 +421,15 @@ impl MarketData for Provider {
     }
 
     async fn chart(&self, symbol: &str, range: &str, interval: &str) -> Result<ChartData> {
+        match self {
+            Provider::Nse(p) => return p.chart(symbol, range, interval).await,
+            Provider::Bse(p) => return p.chart(symbol, range, interval).await,
+            Provider::Exchange(p) if p.nse.supports(symbol) => {
+                return p.nse.chart(symbol, range, interval).await;
+            }
+            Provider::Exchange(p) => return p.bse.chart(symbol, range, interval).await,
+            _ => {}
+        }
         let Some(step) = Resample::for_interval(interval) else {
             bail!("{} serves daily, weekly and monthly bars only", self.name());
         };
@@ -303,6 +449,7 @@ impl MarketData for Provider {
             Provider::AlphaVantage(p) => p.daily(symbol, start).await?,
             Provider::Massive(p) => p.daily(symbol, start).await?,
             Provider::TwelveData(p) => p.daily(symbol, start).await?,
+            Provider::Nse(_) | Provider::Bse(_) | Provider::Exchange(_) => unreachable!(),
         };
         let series = series.since(start);
         if !series.covers(start) {
@@ -321,7 +468,66 @@ impl MarketData for Provider {
             Provider::AlphaVantage(p) => p.search(query).await,
             Provider::Massive(p) => p.search(query).await,
             Provider::TwelveData(p) => p.search(query).await,
+            Provider::Nse(p) => p.search(query).await,
+            Provider::Bse(p) => p.search(query).await,
+            Provider::Exchange(p) => p.search(query).await,
         }
+    }
+}
+
+impl Exchange {
+    /// NSE and BSE quotes, in request order.
+    async fn quotes(&self, symbols: &[&str]) -> Result<Vec<Quote>> {
+        let (ns, bo): (Vec<&str>, Vec<&str>) = symbols
+            .iter()
+            .filter(|s| self.nse.supports(s) || self.bse.supports(s))
+            .partition(|s| self.nse.supports(s));
+        let from_nse = if ns.is_empty() {
+            Ok(Vec::new())
+        } else {
+            self.nse.quotes(&ns).await
+        };
+        let from_bse = if bo.is_empty() {
+            Ok(Vec::new())
+        } else {
+            self.bse.quotes(&bo).await
+        };
+        let mut all = match (from_nse, from_bse) {
+            (Err(e), Err(_)) => return Err(e),
+            (Err(e), Ok(b)) if b.is_empty() => return Err(e),
+            (Ok(n), Err(e)) if n.is_empty() => return Err(e),
+            (n, b) => n
+                .unwrap_or_default()
+                .into_iter()
+                .chain(b.unwrap_or_default())
+                .collect::<Vec<_>>(),
+        };
+        let mut out = Vec::with_capacity(all.len());
+        for symbol in symbols {
+            if let Some(i) = all.iter().position(|q| {
+                q.symbol
+                    .as_deref()
+                    .is_some_and(|s| s.eq_ignore_ascii_case(symbol))
+            }) {
+                out.push(all.remove(i));
+            }
+        }
+        Ok(out)
+    }
+
+    /// NSE's matches first, then BSE's, ten in all.
+    async fn search(&self, query: &str) -> Result<Vec<SearchResult>> {
+        let from_nse = self.nse.search(query).await;
+        let from_bse = self.bse.search(query).await;
+        let (n, b) = match (from_nse, from_bse) {
+            (Err(e), Err(_)) => return Err(e),
+            (n, b) => (n.unwrap_or_default(), b.unwrap_or_default()),
+        };
+        // Leave BSE up to three places when NSE fills the list.
+        let nse_places = 10 - b.len().min(3);
+        let mut out: Vec<SearchResult> = n.into_iter().take(nse_places).chain(b).collect();
+        out.truncate(10);
+        Ok(out)
     }
 }
 
@@ -376,6 +582,10 @@ pub fn merge_quote(provider: Quote, yahoo: Option<Quote>) -> Quote {
     if q.exchange.is_none() {
         q.exchange = provider.exchange;
     }
+    // Exchange-only fields: Yahoo never has them.
+    q.delivery_percent = provider.delivery_percent;
+    q.upper_circuit = provider.upper_circuit;
+    q.lower_circuit = provider.lower_circuit;
     q.data_source = provider.data_source;
     q
 }
@@ -449,23 +659,13 @@ impl Http {
         if self.exhausted.load(Ordering::Relaxed) {
             bail!("{} limit reached for this run", name);
         }
-        // Take one request from the budget. A compare-exchange loop rather
-        // than `fetch_update`, which newer toolchains deprecate and whose
-        // replacement (`try_update`) is newer than our MSRV.
-        let mut left = self.budget.load(Ordering::Relaxed);
-        loop {
-            let Some(next) = left.checked_sub(1) else {
-                bail!("{} per-run request budget used up", name);
-            };
-            match self.budget.compare_exchange_weak(
-                left,
-                next,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(actual) => left = actual,
-            }
+        // Take one request from the budget.
+        if self
+            .budget
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |b| b.checked_sub(1))
+            .is_err()
+        {
+            bail!("{} per-run request budget used up", name);
         }
 
         let mut send_url = url;
@@ -741,6 +941,71 @@ impl Series {
     }
 }
 
+/// One intraday bar, stamped with its start (Unix seconds).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimedBar {
+    pub ts: i64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: Option<u64>,
+}
+
+/// Yahoo-shaped chart data from intraday bars.
+fn timed_chart(symbol: &str, bars: &[TimedBar], currency: Option<&str>) -> ChartData {
+    let last = bars.last();
+    ChartData {
+        meta: Some(ChartMeta {
+            regular_market_price: last.map(|b| b.close),
+            chart_previous_close: None,
+            symbol: Some(symbol.to_string()),
+            long_name: None,
+            short_name: None,
+            regular_market_day_high: bars.iter().map(|b| b.high).reduce(f64::max),
+            regular_market_day_low: bars.iter().map(|b| b.low).reduce(f64::min),
+            regular_market_volume: None,
+            fifty_two_week_high: None,
+            fifty_two_week_low: None,
+            currency: currency.map(str::to_string),
+            exchange_name: None,
+        }),
+        timestamp: Some(bars.iter().map(|b| b.ts).collect()),
+        indicators: Indicators {
+            quote: vec![QuoteIndicator {
+                open: Some(bars.iter().map(|b| Some(b.open)).collect()),
+                high: Some(bars.iter().map(|b| Some(b.high)).collect()),
+                low: Some(bars.iter().map(|b| Some(b.low)).collect()),
+                close: Some(bars.iter().map(|b| Some(b.close)).collect()),
+                volume: Some(bars.iter().map(|b| b.volume).collect()),
+            }],
+        },
+        events: None,
+    }
+}
+
+/// Split one CSV line into fields (double quotes group, `""` escapes a
+/// quote).
+fn csv_fields(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quoted = false;
+    let mut chars = line.trim_end_matches(['\r', '\n']).chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                cur.push('"');
+                chars.next();
+            }
+            '"' => quoted = !quoted,
+            ',' if !quoted => out.push(std::mem::take(&mut cur)),
+            _ => cur.push(c),
+        }
+    }
+    out.push(cur);
+    out
+}
+
 fn max_opt(a: Option<f64>, b: Option<f64>) -> Option<f64> {
     match (a, b) {
         (Some(x), Some(y)) => Some(x.max(y)),
@@ -833,6 +1098,119 @@ mod tests {
             Selection::from_lookup(env(&[("STOCKWISE_DATA_PROVIDER", "bloomberg")])),
             Selection::Unknown(v) if v == "bloomberg"
         ));
+        // The exchanges need no key.
+        for (name, kind) in [
+            ("nse", ProviderKind::Nse),
+            ("BSE", ProviderKind::Bse),
+            ("exchange", ProviderKind::Exchange),
+            ("nse+bse", ProviderKind::Exchange),
+        ] {
+            match Selection::from_lookup(env_one("STOCKWISE_DATA_PROVIDER", name)) {
+                Selection::Ready(p) => assert_eq!(p.kind(), kind),
+                _ => panic!("{name} should be ready without a key"),
+            }
+        }
+    }
+
+    fn env_one(key: &'static str, value: &'static str) -> impl Fn(&str) -> Option<String> {
+        move |k: &str| (k == key).then(|| value.to_string())
+    }
+
+    #[test]
+    fn exchange_mode_routes_each_suffix_to_its_exchange() {
+        let p = Provider::new(
+            ProviderKind::Exchange,
+            String::new(),
+            Some("http://127.0.0.1:9".into()),
+        );
+        assert!(p.supports("TCS.NS"));
+        assert!(p.supports("^NSEI"));
+        assert!(p.supports("500325.BO"));
+        assert!(p.supports("RELIANCE.BO"));
+        assert!(!p.supports("AAPL"));
+        assert!(!p.supports("^BSESN"));
+        assert!(!p.supports("BTC-USD"));
+        assert_eq!(p.name(), "NSE + BSE");
+        assert_eq!(p.probes(), [("NSE", "RELIANCE.NS"), ("BSE", "500325.BO")]);
+        assert!(p.nse().is_some());
+        assert!(p.can_serve(&["TCS.NS", "INFY.NS", "500325.BO"]));
+        let many: Vec<String> = (0..20).map(|i| format!("S{i}.NS")).collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert!(!p.can_serve(&refs), "a big scan goes to Yahoo");
+        let nse_only = Provider::new(
+            ProviderKind::Nse,
+            String::new(),
+            Some("http://127.0.0.1:9".into()),
+        );
+        assert!(!nse_only.supports("RELIANCE.BO"));
+        assert!(nse_only.nse().is_some());
+    }
+
+    #[tokio::test]
+    async fn exchange_quotes_keep_request_order_across_exchanges() {
+        use crate::testutil::MockServer;
+        let nse_server = MockServer::start(vec![(
+            200,
+            include_str!("fixtures/nse_quote_equity.json").into(),
+        )])
+        .await;
+        let bse_server =
+            MockServer::start(vec![(200, include_str!("fixtures/bse_header.json").into())]).await;
+        let mut nse_site = nse::site(&nse_server.url);
+        nse_site.home = None;
+        let ex = Exchange {
+            nse: nse::Nse::new(std::sync::Arc::new(session::Session::for_tests(
+                nse_site,
+                session::DiskCache::Off,
+            ))),
+            bse: bse::Bse::new(std::sync::Arc::new(session::Session::for_tests(
+                bse::site(&bse_server.url),
+                session::DiskCache::Off,
+            ))),
+        };
+        let quotes = ex
+            .quotes(&["500325.BO", "AAPL", "RELIANCE.NS"])
+            .await
+            .unwrap();
+        let got: Vec<(&str, &str)> = quotes
+            .iter()
+            .map(|q| {
+                (
+                    q.symbol.as_deref().unwrap(),
+                    q.data_source.as_deref().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(got, [("500325.BO", "BSE"), ("RELIANCE.NS", "NSE")]);
+    }
+
+    #[test]
+    fn merge_carries_exchange_only_fields() {
+        let provider = Quote {
+            regular_market_price: Some(1451.6),
+            delivery_percent: Some(52.35),
+            upper_circuit: Some(1597.6),
+            lower_circuit: Some(1307.2),
+            data_source: Some("NSE".into()),
+            ..Default::default()
+        };
+        let yahoo = Quote {
+            regular_market_price: Some(1450.0),
+            trailing_pe: Some(24.0),
+            ..Default::default()
+        };
+        let q = merge_quote(provider, Some(yahoo));
+        assert_eq!(q.delivery_percent, Some(52.35));
+        assert_eq!(q.upper_circuit, Some(1597.6));
+        assert_eq!(q.lower_circuit, Some(1307.2));
+        assert_eq!(q.trailing_pe, Some(24.0));
+        let json = serde_json::to_value(&q).unwrap();
+        assert_eq!(json["deliveryPercent"], 52.35);
+        assert_eq!(json["upperCircuit"], 1597.6);
+        // Yahoo-only quotes keep their JSON shape.
+        let plain = serde_json::to_value(Quote::default()).unwrap();
+        assert!(plain.get("deliveryPercent").is_none());
+        assert!(plain.get("lowerCircuit").is_none());
     }
 
     #[test]

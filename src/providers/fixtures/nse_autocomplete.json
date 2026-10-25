@@ -1,0 +1,31 @@
+{
+  "symbols": [
+    {
+      "symbol": "RELIANCE",
+      "symbol_info": "Reliance Industries Limited",
+      "search_highlight": "<b>RELIANCE</b>",
+      "type": "equity",
+      "listing_date": "1995-11-29",
+      "url": "/get-quotes/equity?symbol=RELIANCE",
+      "activeSeries": ["EQ"]
+    },
+    {
+      "symbol": "RELIANCE",
+      "symbol_info": "Reliance Industries Limited",
+      "search_highlight": "<b>RELIANCE</b>",
+      "type": "derivatives",
+      "url": "/get-quotes/derivatives?symbol=RELIANCE"
+    },
+    {
+      "symbol": "RELINFRA",
+      "symbol_info": "Reliance Infrastructure Limited",
+      "search_highlight": "<b>REL</b>INFRA",
+      "type": "equity",
+      "listing_date": "1995-01-01",
+      "url": "/get-quotes/equity?symbol=RELINFRA",
+      "activeSeries": ["EQ"]
+    }
+  ],
+  "mfsymbols": [],
+  "search_content": []
+}

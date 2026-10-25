@@ -19,7 +19,7 @@ cargo build
 cargo test
 ```
 
-Requires Rust **1.88+** (edition 2024 + let-chains). Optional at runtime: a local
+Requires Rust **1.97+** (edition 2024). We support the latest stable release and the two before it. Optional at runtime: a local
 [Ollama](https://ollama.com) server for AI features and Redis for caching — both
 degrade gracefully when absent.
 
