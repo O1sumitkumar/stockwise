@@ -2,6 +2,7 @@
 //! changes state, so a frame can be rendered into a test buffer.
 
 use super::app::{App, CHART_PERIODS, Focus, Mode, Series};
+use crate::alerts::{Alert, AlertCondition};
 use crate::display::format_price;
 use crate::views::{AlertCheckRow, IndexRow};
 use ratatui::Frame;
@@ -457,8 +458,23 @@ fn triggered(a: &AlertCheckRow) -> bool {
     a.status == "triggered"
 }
 
+/// `≥ 4000` for price levels, `RSI14≤30`, `↑SMA50`, ... for the rest.
+fn alert_label(a: &AlertCheckRow) -> String {
+    match AlertCondition::parse(&a.condition) {
+        Some(AlertCondition::Above) | None => format!("≥ {}", compact(a.target)),
+        Some(AlertCondition::Below) => format!("≤ {}", compact(a.target)),
+        Some(condition) => Alert {
+            symbol: a.symbol.clone(),
+            condition,
+            target: a.target,
+            period: a.period,
+            created_at: String::new(),
+        }
+        .short_label(),
+    }
+}
+
 fn alert_row(a: &AlertCheckRow, theme: &Theme) -> Row<'static> {
-    let op = if a.condition == "above" { "≥" } else { "≤" };
     let (mark, style) = if triggered(a) {
         ("! ", theme.warn)
     } else {
@@ -467,7 +483,7 @@ fn alert_row(a: &AlertCheckRow, theme: &Theme) -> Row<'static> {
     let now = a.price.map_or_else(|| "—".into(), compact);
     Row::new(vec![
         Cell::from(Span::styled(
-            format!("{}{} {} {}", mark, short(&a.symbol), op, compact(a.target)),
+            format!("{}{} {}", mark, short(&a.symbol), alert_label(a)),
             style,
         )),
         Cell::from(Line::styled(now, theme.dim).right_aligned()),

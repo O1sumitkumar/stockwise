@@ -504,8 +504,10 @@ pub fn quote_currency() -> &'static str {
 
 /// Normalise a user-typed symbol for Yahoo Finance.
 ///
-/// In the Indian market a bare ticker gets the NSE suffix (`TCS` → `TCS.NS`).
-/// Symbols that already say where they trade are passed through untouched:
+/// In the Indian market a bare ticker gets the NSE suffix (`TCS` → `TCS.NS`)
+/// and a bare BSE scrip code the BSE one (`500325` → `500325.BO`; NSE
+/// symbols are never all digits). Symbols that already say where they trade
+/// are passed through untouched:
 /// an exchange suffix (`RELIANCE.BO`, `VOD.L`), an index (`^NSEI`), or a
 /// currency/futures pair (`USDINR=X`, `BTC-USD`).
 ///
@@ -530,6 +532,9 @@ fn resolve_symbol_in(symbol: &str, market: Market, crypto_quote: &str) -> String
     match market {
         Market::Us => upper,
         Market::In if explicit => upper,
+        Market::In if !upper.is_empty() && upper.chars().all(|c| c.is_ascii_digit()) => {
+            format!("{}.BO", upper)
+        }
         Market::In => format!("{}.NS", upper),
         Market::Crypto if upper.contains('-') || explicit => upper,
         Market::Crypto => format!("{}-{}", upper, crypto_quote),
@@ -845,6 +850,85 @@ pub const INDIA_POPULAR: &[&str] = &[
     "DRREDDY.NS",
 ];
 
+/// An NSE index whose members a scan covers (`movers`, `heatmap`, `screen`
+/// with `--universe`). The member list comes from NSE; the built-in lists
+/// below are the offline fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Universe {
+    /// NIFTY 50
+    #[value(name = "nifty50")]
+    Nifty50,
+    /// NIFTY NEXT 50
+    #[value(name = "niftynext50", alias = "next50")]
+    NiftyNext50,
+    /// NIFTY 100
+    #[value(name = "nifty100")]
+    Nifty100,
+    /// NIFTY BANK
+    #[value(name = "banknifty", alias = "niftybank")]
+    BankNifty,
+    /// NIFTY IT
+    #[value(name = "niftyit")]
+    NiftyIt,
+}
+
+impl Universe {
+    /// NSE's name for the index.
+    pub fn nse_index(self) -> &'static str {
+        match self {
+            Universe::Nifty50 => "NIFTY 50",
+            Universe::NiftyNext50 => "NIFTY NEXT 50",
+            Universe::Nifty100 => "NIFTY 100",
+            Universe::BankNifty => "NIFTY BANK",
+            Universe::NiftyIt => "NIFTY IT",
+        }
+    }
+
+    /// What to scan when NSE can't list the members: the built-in large
+    /// caps (all NIFTY 50 members, so also inside NIFTY 100), or a built-in
+    /// list of the sector's members. `None` for NIFTY NEXT 50, which has no
+    /// built-in list.
+    pub fn fallback(self) -> Option<Vec<String>> {
+        let list: &[&str] = match self {
+            Universe::Nifty50 | Universe::Nifty100 => INDIA_POPULAR,
+            Universe::BankNifty => BANK_NIFTY,
+            Universe::NiftyIt => NIFTY_IT,
+            Universe::NiftyNext50 => return None,
+        };
+        Some(list.iter().map(|s| s.to_string()).collect())
+    }
+}
+
+/// NIFTY BANK members (2025), the offline fallback for `--universe banknifty`.
+pub const BANK_NIFTY: &[&str] = &[
+    "HDFCBANK.NS",
+    "ICICIBANK.NS",
+    "SBIN.NS",
+    "KOTAKBANK.NS",
+    "AXISBANK.NS",
+    "INDUSINDBK.NS",
+    "BANKBARODA.NS",
+    "PNB.NS",
+    "CANBK.NS",
+    "FEDERALBNK.NS",
+    "IDFCFIRSTB.NS",
+    "AUBANK.NS",
+];
+
+/// NIFTY IT members (2025), the offline fallback for `--universe niftyit`.
+pub const NIFTY_IT: &[&str] = &[
+    "TCS.NS",
+    "INFY.NS",
+    "HCLTECH.NS",
+    "WIPRO.NS",
+    "TECHM.NS",
+    "LTIM.NS",
+    "PERSISTENT.NS",
+    "COFORGE.NS",
+    "MPHASIS.NS",
+    "OFSS.NS",
+];
+
 /// Coins for `markets --crypto` and the crypto universe, without the quote
 /// currency (added by `crypto_majors`).
 pub const CRYPTO_MAJORS: &[(&str, &str)] = &[
@@ -925,6 +1009,39 @@ mod tests {
         assert_eq!(resolve_symbol("vod.l", Market::In), "VOD.L");
         assert_eq!(resolve_symbol(" m&m ", Market::In), "M&M.NS");
         assert_eq!(resolve_symbol("BAJAJ-AUTO", Market::In), "BAJAJ-AUTO.NS");
+    }
+
+    #[test]
+    fn bare_scrip_codes_resolve_to_bse() {
+        assert_eq!(resolve_symbol("500325", Market::In), "500325.BO");
+        assert_eq!(resolve_symbol(" 532540 ", Market::In), "532540.BO");
+        // Tickers that merely start with digits stay on NSE.
+        assert_eq!(resolve_symbol("3MINDIA", Market::In), "3MINDIA.NS");
+        assert_eq!(resolve_symbol("500325.NS", Market::In), "500325.NS");
+        assert_eq!(resolve_symbol("500325", Market::Us), "500325");
+    }
+
+    #[test]
+    fn universes_name_nse_indices_with_offline_fallbacks() {
+        assert_eq!(Universe::Nifty50.nse_index(), "NIFTY 50");
+        assert_eq!(Universe::BankNifty.nse_index(), "NIFTY BANK");
+        assert_eq!(
+            Universe::from_str("next50", true),
+            Ok(Universe::NiftyNext50)
+        );
+        assert_eq!(Universe::from_str("NIFTY100", true), Ok(Universe::Nifty100));
+        assert_eq!(
+            Universe::Nifty50.fallback().unwrap().len(),
+            INDIA_POPULAR.len()
+        );
+        assert!(
+            Universe::BankNifty
+                .fallback()
+                .unwrap()
+                .iter()
+                .all(|s| s.ends_with(".NS"))
+        );
+        assert!(Universe::NiftyNext50.fallback().is_none());
     }
 
     #[test]

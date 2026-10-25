@@ -54,6 +54,10 @@ pub(crate) struct QuoteRow {
     pub(crate) pe_ttm: Option<f64>,
     pub(crate) eps_ttm: Option<f64>,
     pub(crate) dividend_yield: Option<f64>,
+    /// NSE provider only (`STOCKWISE_DATA_PROVIDER=nse`); empty otherwise.
+    pub(crate) delivery_percent: Option<f64>,
+    pub(crate) lower_circuit: Option<f64>,
+    pub(crate) upper_circuit: Option<f64>,
 }
 
 impl CsvRow for QuoteRow {
@@ -75,6 +79,9 @@ impl CsvRow for QuoteRow {
         "pe_ttm",
         "eps_ttm",
         "dividend_yield",
+        "delivery_percent",
+        "lower_circuit",
+        "upper_circuit",
     ];
 }
 
@@ -98,6 +105,9 @@ impl From<&crate::api::Quote> for QuoteRow {
             pe_ttm: q.trailing_pe,
             eps_ttm: q.eps_trailing_twelve_months,
             dividend_yield: q.trailing_annual_dividend_yield,
+            delivery_percent: q.delivery_percent,
+            lower_circuit: q.lower_circuit,
+            upper_circuit: q.upper_circuit,
         }
     }
 }
@@ -176,6 +186,13 @@ pub async fn cmd_quote(symbols: &[String], market: Market, fmt: Format) -> Resul
                 px(q.fifty_two_week_high)
             ),
         );
+        // NSE's price band, when the NSE provider answered.
+        if q.lower_circuit.is_some() || q.upper_circuit.is_some() {
+            print_kv(
+                t(Msg::CircuitLimits),
+                &format!("{} — {}", px(q.lower_circuit), px(q.upper_circuit)),
+            );
+        }
         // FX has no exchange volume (Yahoo reports 0).
         if market::AssetClass::of(symbol) != market::AssetClass::Fx {
             print_kv(
@@ -187,6 +204,9 @@ pub async fn cmd_quote(symbols: &[String], market: Market, fmt: Format) -> Resul
                 &q.average_daily_volume_3_month
                     .map_or_else(na, format_volume),
             );
+            if let Some(delivery) = q.delivery_percent {
+                print_kv(t(Msg::DeliveryPercent), &format!("{:.2}%", delivery));
+            }
         }
         print_kv(
             t(Msg::MarketCap),
@@ -428,27 +448,14 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
         unique.sort();
         unique.dedup();
         let a_quotes = client.get_quote(&unique).await?;
-        let mut triggered = Vec::new();
-        for alert in &store.alerts {
-            // No live price: never report it as triggered.
-            let Some(price) = a_quotes
-                .iter()
-                .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()))
-                .and_then(|q| q.regular_market_price)
-            else {
-                continue;
-            };
-            let hit = match alert.condition {
-                AlertCondition::Above => price >= alert.target,
-                AlertCondition::Below => price <= alert.target,
-            };
-            if hit {
-                triggered.push(format!(
-                    "{} {} {:.2}",
-                    alert.symbol, alert.condition, alert.target
-                ));
-            }
-        }
+        // Missing data (no price, too little history) never reads as triggered.
+        let rows = views::alert_rows(&client, &store.alerts, &a_quotes, chrono::Utc::now()).await;
+        let triggered: Vec<String> = rows
+            .iter()
+            .zip(&store.alerts)
+            .filter(|(row, _)| row.status == "triggered")
+            .map(|(_, alert)| format!("{} {}", alert.symbol, alert.describe(crate::i18n::lang())))
+            .collect();
         if !triggered.is_empty() {
             print_section(t(Msg::TriggeredAlerts));
             for line in &triggered {
@@ -668,33 +675,49 @@ pub async fn cmd_doctor(market: Market, sources: crate::config::CliSources) -> R
 
     // Optional data provider
     use crate::providers::{MarketData, Selection};
-    let provider_line = match Selection::from_env() {
-        Selection::Yahoo => t(Msg::DoctorProviderDefault).dimmed().to_string(),
-        Selection::Unknown(value) => warn(&tf(Msg::DoctorProviderUnknown, &[&value])),
-        Selection::MissingKey(kind) => warn(&tf(
+    let provider_lines = match Selection::from_env() {
+        Selection::Yahoo => vec![t(Msg::DoctorProviderDefault).dimmed().to_string()],
+        Selection::Unknown(value) => vec![warn(&tf(Msg::DoctorProviderUnknown, &[&value]))],
+        Selection::MissingKey(kind) => vec![warn(&tf(
             Msg::DoctorProviderNoKey,
             &[&kind.name(), &kind.key_env()],
-        )),
+        ))],
         Selection::Ready(provider) => {
-            let probe = provider.probe_symbol();
-            let started = std::time::Instant::now();
-            match provider.quotes(&[probe]).await {
-                Ok(q) if q.iter().any(|q| q.regular_market_price.is_some()) => ok(&tf(
-                    Msg::DoctorProviderAnswered,
-                    &[&provider.name(), &probe, &started.elapsed().as_millis()],
-                )),
-                Ok(_) => warn(&tf(
-                    Msg::DoctorProviderFellBack,
-                    &[&provider.name(), &"no price returned"],
-                )),
-                Err(e) => warn(&tf(
-                    Msg::DoctorProviderFellBack,
-                    &[&provider.name(), &format!("{:#}", e)],
-                )),
+            // One probe per source: NSE and BSE separately in mixed mode.
+            let mut lines = Vec::new();
+            for (source, probe) in provider.probes() {
+                let started = std::time::Instant::now();
+                lines.push(match provider.quotes(&[probe]).await {
+                    Ok(q) if q.iter().any(|q| q.regular_market_price.is_some()) => ok(&tf(
+                        Msg::DoctorProviderAnswered,
+                        &[&source, &probe, &started.elapsed().as_millis()],
+                    )),
+                    Ok(_) => warn(&tf(
+                        Msg::DoctorProviderFellBack,
+                        &[&source, &"no price returned"],
+                    )),
+                    Err(e) => warn(&tf(
+                        Msg::DoctorProviderFellBack,
+                        &[&source, &format!("{:#}", e)],
+                    )),
+                });
             }
+            if !provider.kind().needs_key() {
+                lines.push(t(Msg::DoctorExchangeNote).dimmed().to_string());
+            }
+            lines
         }
     };
-    print_kv(t(Msg::DoctorDataProvider), &provider_line);
+    for (i, line) in provider_lines.iter().enumerate() {
+        print_kv(
+            if i == 0 {
+                t(Msg::DoctorDataProvider)
+            } else {
+                ""
+            },
+            line,
+        );
+    }
 
     // Cache
     let redis = crate::api::connect_redis().await.is_some();

@@ -283,7 +283,7 @@ impl Config {
             && crate::providers::ProviderKind::parse(p).is_none()
         {
             bail!(
-                "`data_provider` = \"{}\" is not a provider; use yahoo, alphavantage, massive or twelvedata",
+                "`data_provider` = \"{}\" is not a provider; use yahoo, alphavantage, massive, twelvedata, nse, bse or exchange",
                 p
             );
         }
@@ -440,8 +440,10 @@ pub const TEMPLATE: &str = r#"# StockWise configuration.
 # (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY). Env: STOCKWISE_AI_PROVIDER.
 # ai_provider = "ollama"
 
-# Market-data provider: "yahoo" (default), "alphavantage", "massive" or
-# "twelvedata". API keys stay in environment variables. Env: STOCKWISE_DATA_PROVIDER.
+# Market-data provider: "yahoo" (default), "alphavantage", "massive",
+# "twelvedata", or the exchanges' own websites: "nse", "bse" or "exchange"
+# (NSE for .NS, BSE for .BO; no key). API keys stay in environment variables.
+# Env: STOCKWISE_DATA_PROVIDER.
 # data_provider = "yahoo"
 
 # Default --period per command. Periods: 1d 5d 1w 1mo 3mo 6mo ytd 1y 2y 5y 10y max.
@@ -660,6 +662,8 @@ mod tests {
             Some("42")
         );
         assert!(parse("data_provider = \"yahoo\"\n", CMDS).is_ok());
+        assert!(parse("data_provider = \"nse\"\n", CMDS).is_ok());
+        assert!(parse("data_provider = \"exchange\"\n", CMDS).is_ok());
 
         assert!(err("lang = \"klingon\"\n").contains("`lang`"));
         assert!(err("quote_currency = \"dollars\"\n").contains("`quote_currency`"));
