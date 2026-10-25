@@ -869,7 +869,12 @@ mod tests {
             .map(|s| (s - 100.0).clamp(0.0, 10.0) - 3.0)
             .collect();
         let today: Vec<f64> = expiry.iter().map(|v| v * 0.8).collect();
-        let lines = payoff_chart(&prices, &expiry, Some(&today), 101.0, 40, 8);
+        // Compare plain text: colours are on when tests run under a terminal
+        // (e.g. Nix builds), and escape codes would split the labels.
+        let lines: Vec<String> = payoff_chart(&prices, &expiry, Some(&today), 101.0, 40, 8)
+            .iter()
+            .map(|l| strip_ansi(l))
+            .collect();
         assert_eq!(lines.len(), 8 + 2, "rows, axis line, price labels");
         assert!(lines[0].contains("7.00"), "{lines:?}");
         assert!(lines[7].contains("-3.00"), "{lines:?}");

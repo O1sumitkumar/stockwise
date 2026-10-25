@@ -30,6 +30,13 @@ jobs:
         run: cargo build --all-targets --verbose
       - name: Test
         run: cargo test --verbose
+      # Colours switch on when output is a terminal (Nix builds run tests
+      # under a pty); make sure no test depends on plain output.
+      - name: Test with colours forced
+        if: runner.os == 'Linux'
+        env:
+          CLICOLOR_FORCE: "1"
+        run: cargo test
 
   fmt:
     name: rustfmt
