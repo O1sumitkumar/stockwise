@@ -4,8 +4,8 @@
 use super::http::{self, unknown_state};
 use super::secrets::{self, Secret, Storage};
 use super::{
-    Broker, BrokerKind, Gtt, GttRequest, Holding, Instrument, Order, OrderAck, OrderKind,
-    OrderRequest, Position,
+    Broker, BrokerKind, Endpoint, Gtt, GttRequest, Holding, Instrument, Order, OrderAck, OrderKind,
+    OrderRequest, Position, Profile, Shape, Trade,
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -25,13 +25,15 @@ pub const SETUP: &[&str] = &[
 
 pub fn status(migrate: bool) -> Result<super::ConfigStatus> {
     let (config, storage) = AngelConfig::load_with_storage(migrate)?;
-    super::status_of(
+    let mut status = super::status_of(
         BrokerKind::Angel,
         config.is_configured(),
         format!("client {}", config.client_id),
         storage,
         None,
-    )
+    )?;
+    status.identifiers = vec![config.client_id.clone()];
+    Ok(status)
 }
 
 // ── Config persistence ──
@@ -566,7 +568,92 @@ fn order(o: &serde_json::Value) -> Option<Order> {
         trigger: http::price(o.get("triggerprice")),
         status: http::text(o.get("status")),
         message: http::text(o.get("text")),
+        filled_qty: http::num(o.get("filledshares")),
+        avg_price: http::price(o.get("averageprice")),
+        product: http::text(o.get("producttype")),
     })
+}
+
+/// One fill from the trade book. Angel One gives the fill time only; the
+/// book is today's.
+fn trade(t: &serde_json::Value) -> Option<Trade> {
+    let sym = http::text(t.get("tradingsymbol"))?;
+    let (date, time) = super::split_timestamp(http::text(t.get("filltime")).as_deref());
+    Some(Trade {
+        trade_id: http::text(t.get("fillid")),
+        order_id: http::text(t.get("orderid"))?,
+        symbol: super::strip_series(&sym).to_string(),
+        exchange: http::text(t.get("exchange")),
+        product: http::text(t.get("producttype")),
+        side: super::side_from(http::text(t.get("transactiontype")).as_deref()),
+        qty: http::num(t.get("fillsize")).unwrap_or(0.0),
+        price: http::price(t.get("fillprice")),
+        date,
+        time,
+    })
+}
+
+fn profile(p: &serde_json::Value) -> Profile {
+    // `exchanges` / `products` are arrays in the docs; accept a
+    // comma-separated string too.
+    let list = |k: &str| match p.get(k) {
+        Some(serde_json::Value::Array(a)) => a.iter().filter_map(|v| http::text(Some(v))).collect(),
+        Some(serde_json::Value::String(s)) => s
+            .split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    };
+    Profile {
+        user_id: http::text(p.get("clientcode")),
+        exchanges: list("exchanges"),
+        products: list("products"),
+    }
+}
+
+/// Fields read from each endpoint, and the ones SmartAPI's docs list.
+fn shape(endpoint: Endpoint) -> Shape {
+    match endpoint {
+        Endpoint::Profile => Shape {
+            required: "clientcode",
+            documented: "name email mobileno exchanges products lastlogintime brokerid",
+        },
+        Endpoint::Holdings => Shape {
+            required: "tradingsymbol quantity averageprice ltp",
+            documented: "exchange isin t1quantity realisedquantity authorisedquantity product \
+                collateralquantity collateraltype haircut symboltoken close profitandloss \
+                pnlpercentage",
+        },
+        Endpoint::Positions => Shape {
+            required: "tradingsymbol netqty|quantity",
+            documented: "exchange symboltoken producttype symbolname instrumenttype priceden \
+                pricenum genden gennum precision multiplier boardlotsize buyqty sellqty buyamount \
+                sellamount symbolgroup strikeprice optiontype expirydate lotsize cfbuyqty \
+                cfsellqty cfbuyamount cfsellamount buyavgprice sellavgprice avgnetprice netvalue \
+                totalbuyvalue totalsellvalue cfbuyavgprice cfsellavgprice totalbuyavgprice \
+                totalsellavgprice netprice ltp pnl unrealised realised close",
+        },
+        Endpoint::Orders => Shape {
+            required: "orderid tradingsymbol transactiontype status quantity",
+            documented: "variety ordertype producttype duration price triggerprice \
+                disclosedquantity squareoff stoploss trailingstoploss exchange symboltoken \
+                ordertag instrumenttype strikeprice optiontype expirydate lotsize cancelsize \
+                averageprice filledshares unfilledshares text orderstatus updatetime exchtime \
+                exchorderupdatetime fillid filltime parentorderid uniqueorderid exchangeorderid",
+        },
+        Endpoint::Trades => Shape {
+            required: "orderid fillid exchange producttype tradingsymbol transactiontype fillsize \
+                fillprice filltime",
+            documented: "instrumenttype symbolgroup strikeprice optiontype expirydate marketlot \
+                precision multiplier tradevalue",
+        },
+        Endpoint::Gtts => Shape {
+            required: "id status tradingsymbol transactiontype qty triggerprice price",
+            documented: "stoplossprice stoplosstriggerprice gttType createddate updateddate \
+                expirydate clientid symboltoken exchange producttype disclosedqty",
+        },
+    }
 }
 
 fn gtt(r: &serde_json::Value) -> Option<Gtt> {
@@ -588,27 +675,50 @@ impl Broker for AngelClient {
     }
 
     async fn holdings(&self) -> Result<Vec<Holding>> {
-        let raw: Vec<serde_json::Value> = self
-            .get("portfolio/v1/getHolding", "holdings request")
-            .await?
-            .unwrap_or_default();
+        let raw = self.rows(Endpoint::Holdings).await?;
         Ok(raw.iter().filter_map(holding).collect())
     }
 
     async fn positions(&self) -> Result<Vec<Position>> {
-        let raw: Vec<serde_json::Value> = self
-            .get("order/v1/getPosition", "positions request")
-            .await?
-            .unwrap_or_default();
+        let raw = self.rows(Endpoint::Positions).await?;
         Ok(raw.iter().filter_map(position).collect())
     }
 
     async fn orders(&self) -> Result<Vec<Order>> {
-        let raw: Vec<serde_json::Value> = self
-            .get("order/v1/getOrderBook", "order book request")
-            .await?
-            .unwrap_or_default();
+        let raw = self.rows(Endpoint::Orders).await?;
         Ok(raw.iter().filter_map(order).collect())
+    }
+
+    async fn profile(&self) -> Result<Profile> {
+        let raw = self.rows(Endpoint::Profile).await?;
+        Ok(raw.first().map(profile).unwrap_or_default())
+    }
+
+    /// Today's fills; SmartAPI's trade book has no history.
+    async fn trades(&self, _since: Option<chrono::NaiveDate>) -> Result<Vec<Trade>> {
+        let raw = self.rows(Endpoint::Trades).await?;
+        Ok(raw.iter().filter_map(trade).collect())
+    }
+
+    async fn rows(&self, endpoint: Endpoint) -> Result<Vec<serde_json::Value>> {
+        let path = match endpoint {
+            Endpoint::Profile => "user/v1/getProfile",
+            Endpoint::Holdings => "portfolio/v1/getHolding",
+            Endpoint::Positions => "order/v1/getPosition",
+            Endpoint::Orders => "order/v1/getOrderBook",
+            Endpoint::Trades => "order/v1/getTradeBook",
+            Endpoint::Gtts => return self.gtt_rules().await,
+        };
+        let what = format!("{} request", endpoint.label());
+        Ok(match self.get::<serde_json::Value>(path, &what).await? {
+            Some(serde_json::Value::Array(a)) => a,
+            Some(obj @ serde_json::Value::Object(_)) => vec![obj],
+            _ => vec![],
+        })
+    }
+
+    fn shape(&self, endpoint: Endpoint) -> Option<Shape> {
+        Some(shape(endpoint))
     }
 
     /// Resolve a user-typed NSE/BSE symbol (e.g. `RELIANCE`) to its exact
@@ -965,5 +1075,68 @@ mod tests {
             .json();
         assert_eq!(cancel["symboltoken"], "3045");
         assert!(client.gtt_cancel("999").await.is_err());
+    }
+
+    fn read_routes() -> Vec<Route> {
+        vec![
+            Route::json(
+                "GET",
+                "/rest/secure/angelbroking/user/v1/getProfile",
+                include_str!("fixtures/angel_profile.json"),
+            ),
+            Route::json(
+                "GET",
+                "/rest/secure/angelbroking/portfolio/v1/getHolding",
+                include_str!("fixtures/angel_holdings.json"),
+            ),
+            Route::json(
+                "GET",
+                "/rest/secure/angelbroking/order/v1/getTradeBook",
+                include_str!("fixtures/angel_trades.json"),
+            ),
+            Route::json(
+                "POST",
+                "/rest/secure/angelbroking/gtt/v1/ruleList",
+                include_str!("fixtures/angel_gtt_list.json"),
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn trade_book_and_profile_parse() {
+        let (_s, client) = logged_in(read_routes()).await;
+        let t = client.trades(None).await.unwrap();
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].symbol, "ITC");
+        assert_eq!(t[0].trade_id.as_deref(), Some("50005750"));
+        assert_eq!(t[0].order_id, "201020000000095");
+        assert_eq!((t[0].qty, t[0].price), (1.0, Some(175.0)));
+        assert_eq!(t[0].side, Some(Side::Buy));
+        // Time only: the trade book is today's.
+        assert_eq!((t[0].date, t[0].time.as_deref()), (None, Some("13:27:53")));
+        assert!(t[0].is_delivery_equity());
+        assert!(
+            !t[1].is_delivery_equity(),
+            "INTRADAY is not a delivery fill"
+        );
+
+        let p = client.profile().await.unwrap();
+        assert_eq!(p.user_id.as_deref(), Some("A1000042"));
+        assert!(p.products.contains(&"CNC".to_string()));
+    }
+
+    #[tokio::test]
+    async fn fixtures_match_the_documented_shape() {
+        let (_s, client) = logged_in(read_routes()).await;
+        crate::brokers::mock::assert_fixture_shapes(
+            &client,
+            &[
+                Endpoint::Profile,
+                Endpoint::Holdings,
+                Endpoint::Trades,
+                Endpoint::Gtts,
+            ],
+        )
+        .await;
     }
 }

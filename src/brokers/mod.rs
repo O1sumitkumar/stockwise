@@ -18,9 +18,11 @@ pub mod angel;
 mod app;
 pub mod dhan;
 pub mod fyers;
+pub mod gtt_watch;
 mod http;
 #[cfg(test)]
 pub mod mock;
+pub mod readonly;
 pub mod secrets;
 pub mod upstox;
 pub mod zerodha;
@@ -115,7 +117,8 @@ impl BrokerKind {
 /// The one-line warning shown wherever an experimental broker is used.
 pub const EXPERIMENTAL_NOTE: &str = "experimental — untested against a live account";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum Side {
     Buy,
     Sell,
@@ -279,6 +282,198 @@ pub struct Order {
     pub trigger: Option<f64>,
     pub status: Option<String>,
     pub message: Option<String>,
+    /// Shares filled so far (partial fills show `filled_qty < qty`).
+    #[serde(default)]
+    pub filled_qty: Option<f64>,
+    /// Average fill price.
+    #[serde(default)]
+    pub avg_price: Option<f64>,
+    /// The broker's product code: CNC / DELIVERY / D, MIS / INTRADAY / I, ...
+    #[serde(default)]
+    pub product: Option<String>,
+}
+
+/// The account behind a session. `user_id` is never shown in full.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Profile {
+    pub user_id: Option<String>,
+    /// Exchanges or segments the account is enabled for.
+    pub exchanges: Vec<String>,
+    /// Product types the account may use.
+    pub products: Vec<String>,
+}
+
+/// One execution (fill) from the broker's trade book. An order filled in
+/// parts has one trade per part.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Trade {
+    /// The exchange's or broker's id for this fill, when it has one.
+    pub trade_id: Option<String>,
+    pub order_id: String,
+    /// Plain exchange symbol (series suffix removed), e.g. `RELIANCE`.
+    pub symbol: String,
+    /// `NSE` / `BSE` for cash equity; anything else (`NFO`, `NSE_FNO`,
+    /// `MCX`, ...) is not a delivery holding.
+    pub exchange: Option<String>,
+    /// The broker's product code, as for [`Order::product`].
+    pub product: Option<String>,
+    pub side: Option<Side>,
+    pub qty: f64,
+    pub price: Option<f64>,
+    /// Fill date. `None` when the broker gives a time only (Angel One's
+    /// trade book is today's).
+    pub date: Option<chrono::NaiveDate>,
+    /// Fill time, `HH:MM:SS`, when given.
+    pub time: Option<String>,
+}
+
+impl Trade {
+    /// A delivery (CNC) fill in NSE/BSE cash equity: the only kind
+    /// `trade sync` turns into lots. Intraday, margin (MTF) and F&O fills
+    /// are left out.
+    pub fn is_delivery_equity(&self) -> bool {
+        let exchange_ok = matches!(self.exchange.as_deref(), Some("NSE" | "BSE"));
+        let product_ok = self
+            .product
+            .as_deref()
+            .is_some_and(|p| matches!(p.to_ascii_uppercase().as_str(), "CNC" | "DELIVERY" | "D"));
+        exchange_ok && product_ok
+    }
+}
+
+/// `BUY` / `SELL` (any case, or `B` / `S`) as a [`Side`].
+pub fn side_from(text: Option<&str>) -> Option<Side> {
+    match text?.trim().to_ascii_uppercase().as_str() {
+        "BUY" | "B" => Some(Side::Buy),
+        "SELL" | "S" => Some(Side::Sell),
+        _ => None,
+    }
+}
+
+/// Split a broker timestamp (`2024-03-15 09:30:00`, `15-Mar-2024 09:30:00`,
+/// `2024-03-15T09:30:00`, or a bare `09:30:00`) into a date and a time.
+pub fn split_timestamp(raw: Option<&str>) -> (Option<chrono::NaiveDate>, Option<String>) {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return (None, None);
+    };
+    let time = raw
+        .split(['T', ' '])
+        .find(|p| p.len() >= 5 && p.as_bytes().get(2) == Some(&b':'))
+        .map(|t| t.chars().take(8).collect::<String>());
+    let date = crate::portfolio::parse_trade_date(raw, false);
+    (date, time)
+}
+
+/// A read-only endpoint, for `trade selftest` response-shape checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Endpoint {
+    Profile,
+    Holdings,
+    Positions,
+    Orders,
+    Trades,
+    Gtts,
+}
+
+impl Endpoint {
+    pub const ALL: [Endpoint; 6] = [
+        Endpoint::Profile,
+        Endpoint::Holdings,
+        Endpoint::Positions,
+        Endpoint::Orders,
+        Endpoint::Trades,
+        Endpoint::Gtts,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Endpoint::Profile => "profile",
+            Endpoint::Holdings => "holdings",
+            Endpoint::Positions => "positions",
+            Endpoint::Orders => "order book",
+            Endpoint::Trades => "trade book",
+            Endpoint::Gtts => "GTT list",
+        }
+    }
+}
+
+/// The fields StockWise expects in one row of an endpoint's response, as
+/// space-separated names.
+#[derive(Debug, Clone, Copy)]
+pub struct Shape {
+    /// Fields the parser reads; `a|b` means either. A missing one means
+    /// StockWise will misread the response.
+    pub required: &'static str,
+    /// Other fields the broker's docs list. A field in neither list is
+    /// reported as new — harmless, but worth knowing.
+    pub documented: &'static str,
+}
+
+/// What a shape check found in the rows of one endpoint. Only field
+/// names are kept — never values.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ShapeReport {
+    pub rows: usize,
+    /// Required fields absent from at least one row.
+    pub missing: Vec<String>,
+    /// Fields not in the documented list.
+    pub unknown: Vec<String>,
+    /// Rows that were not JSON objects.
+    pub not_objects: usize,
+}
+
+/// Compare the field names of `rows` with `shape`. Names that don't look
+/// like plain identifiers are counted, not echoed, so an odd response
+/// can't smuggle a value into a report.
+pub fn check_shape(rows: &[serde_json::Value], shape: &Shape) -> ShapeReport {
+    let plain = |k: &str| {
+        !k.is_empty()
+            && k.len() <= 40
+            && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !k.starts_with(|c: char| c.is_ascii_digit())
+    };
+    let mut report = ShapeReport {
+        rows: rows.len(),
+        ..Default::default()
+    };
+    let mut odd = 0usize;
+    for row in rows {
+        let Some(obj) = row.as_object() else {
+            report.not_objects += 1;
+            continue;
+        };
+        for req in shape.required.split_whitespace() {
+            if !req.split('|').any(|k| obj.contains_key(k))
+                && !report.missing.iter().any(|m| m == req)
+            {
+                report.missing.push(req.to_string());
+            }
+        }
+        for key in obj.keys() {
+            let known = shape
+                .documented
+                .split_whitespace()
+                .chain(shape.required.split_whitespace())
+                .any(|d| d.split('|').any(|k| k == key));
+            if known || report.unknown.iter().any(|u| u == key) {
+                continue;
+            }
+            if plain(key) {
+                report.unknown.push(key.clone());
+            } else {
+                odd += 1;
+            }
+        }
+    }
+    if odd > 0 {
+        report
+            .unknown
+            .push(format!("({odd} unprintable field names)"));
+    }
+    report.missing.sort();
+    report.unknown.sort();
+    report
 }
 
 /// One logged-in broker session.
@@ -289,6 +484,28 @@ pub trait Broker: Send + Sync {
     async fn positions(&self) -> Result<Vec<Position>>;
     /// Today's order book.
     async fn orders(&self) -> Result<Vec<Order>>;
+    /// The account's profile (a cheap call that proves the session works).
+    async fn profile(&self) -> Result<Profile> {
+        bail!("{} profile is not supported yet", self.kind().label())
+    }
+    /// Executed trades (fills). Most brokers return today's only; `since`
+    /// asks for older ones where the broker keeps them (Dhan).
+    async fn trades(&self, _since: Option<chrono::NaiveDate>) -> Result<Vec<Trade>> {
+        bail!("{} trade book is not supported yet", self.kind().label())
+    }
+    /// The raw rows of a read-only endpoint, for shape checks. Never an
+    /// order-changing request.
+    async fn rows(&self, endpoint: Endpoint) -> Result<Vec<serde_json::Value>> {
+        bail!(
+            "{} raw {} is not supported yet",
+            self.kind().label(),
+            endpoint.label()
+        )
+    }
+    /// The fields StockWise reads from `endpoint`, when known.
+    fn shape(&self, _endpoint: Endpoint) -> Option<Shape> {
+        None
+    }
     /// The exact cash-equity instrument for `symbol` on `exchange` (`NSE`),
     /// or an error. Never a partial or first-of-many match.
     async fn resolve_instrument(&self, symbol: &str, exchange: &str) -> Result<Instrument>;
@@ -351,6 +568,11 @@ pub struct ConfigStatus {
     pub storage: secrets::Storage,
     /// For brokers with daily sessions: when `trade login` last succeeded.
     pub session: Option<String>,
+    /// The IST date of that login.
+    pub session_date: Option<chrono::NaiveDate>,
+    /// Account and app ids (not secrets, but personal): `trade selftest`
+    /// scrubs them from anything it prints.
+    pub identifiers: Vec<String>,
 }
 
 /// Read a broker's config. With `migrate`, plaintext secrets move into the
@@ -409,6 +631,8 @@ fn status_of(
         summary,
         storage,
         session,
+        session_date: None,
+        identifiers: Vec::new(),
     })
 }
 

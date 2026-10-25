@@ -414,7 +414,9 @@ untested against a live account.
 | `trade sell <SYMBOL> <QTY> [--limit P] [--trigger T] [--dry-run] [--yes]` | Sell on NSE, same order types |
 | `trade limit <SYMBOL> <QTY> <PRICE> [--dry-run] [--yes]` | Limit buy on NSE |
 | `trade gtt <buy\|sell> <SYMBOL> <QTY> --trigger T --limit P [--dry-run] [--yes]` | Single-leg GTT (not Upstox) |
-| `trade gtt list` / `trade gtt cancel <ID>` | List / cancel GTTs (cancel asks for confirmation) |
+| `trade gtt list [--notify] [--json]` / `trade gtt cancel <ID>` | List GTTs with status changes since the last look (triggered, cancelled, expired, gone; `--notify` sends them) / cancel one (asks for confirmation) |
+| `trade sync [--since DATE] [--apply] [--notify] [--json]` | Today's executed delivery trades into the portfolio — buys become dated lots, sells come out FIFO — idempotent by broker trade id; previews unless `--apply`. Dhan also reads older fills with `--since`. See [brokers.md](brokers.md#syncing-trades-and-gtts-into-the-portfolio) |
+| `trade selftest [--redact-amounts] [--json]` | Read-only check of the integration against your account (session, profile, holdings, positions, orders, trades, GTTs, instrument lookup, a dry-run order, response shapes); prints a redacted report for a [broker test report](brokers.md#help-verify-a-broker). Exits 1 if a check failed |
 
 ## Setup
 
@@ -508,6 +510,9 @@ stockwise options chain NIFTY -n 2 --json | jq '.rows[] | {strike, delta: .call.
 | `goal education` | `{cost_today, years, inflation_pct, future_cost, sip: plan, goal, currency}` | — |
 | `tax` | `{country, tax_year, currency, sales: [{symbol, qty, bought, bought_estimated, sold, gain, term}], holdings: [{symbol, cost, value, short_term_gain, long_term_gain, estimated_dates}], realized: estimate, if_sold_today: estimate, ltcg_exemption_left, unpriced: [symbol], other_currency: [symbol]}`, estimate = `{short_term_gains, short_term_losses, long_term_gains, long_term_losses, taxable_short_term, taxable_long_term, exemption_used, short_term_tax, long_term_tax, total_tax, loss_carried_forward}` — `term` is `short`, `long`, or null (UK); `ltcg_exemption_left` is India only | open holding |
 | `sim history` | `{stats: {days, winning_days, day_win_rate_percent, total_pnl, avg_daily_pnl, best_day, worst_day, trades, winning_trades, losing_trades, trade_win_rate_percent, sharpe, max_win_streak, max_loss_streak}, confidence, sessions: [{date, market, capital, target_percent, settled, trades, pnl, pnl_percent, wins, losses}]}` — `confidence` is `high`, `moderate`, `low`, or null before 5 settled days | — |
+| `trade selftest` | `{stockwise, os, date, market, broker, broker_name, experimental, account, secrets, orders_enabled, max_order_value_set, amounts_redacted, read_only, checks: [{name, status, detail}], shapes: [{endpoint, status, rows, missing, unknown, error}], summary: {pass, warn, fail, skip}}` — `status` is `pass`, `warn`, `fail` or `skip`; `account` is the last 2 characters only | — |
+| `trade sync` | `{broker, experimental, portfolio, since, applied, orders: [{symbol, order_id, side, date, time, qty, price, fills, result, sales?, held?}], already_synced, skipped: [{order_id, symbol, reason}], open_orders: [{order_id, symbol, side, status, qty, filled_qty}], quantity_check: [{symbol, portfolio_qty, broker_qty}], gtt_changes: [change], notes}` — `result` is `lot`, `sold` (with `sales`) or `unmatched` (with `held`); `applied` is true only when `--apply` wrote something | — |
+| `trade gtt list` | `{broker, experimental, gtts: [{id, symbol, side, qty, trigger, limit, status}], changes: [change], first_check, last_checked}`, change = `{kind, id, symbol, side, qty, trigger, from, to, state}` — `kind` is `new`, `status` or `gone`; `state` is `active`, `triggered`, `cancelled`, `expired`, `rejected` or `other` | — |
 | `config show` | `{path, status, error, settings: [{key, value, source}]}` — `status` is `loaded`, `missing` or `invalid`; `source` is `flag`, `env`, `file` or `default` | — |
 
 ## Alert conditions

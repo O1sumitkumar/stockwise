@@ -41,6 +41,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `regularMarketTime`.
 
 ### Added
+- `stockwise trade selftest [--broker NAME] [--redact-amounts] [--json]` — a
+  strictly read-only check of a broker integration against your own account:
+  login / session, profile, holdings, positions, order book, trade book, GTT
+  list, exact instrument lookup for RELIANCE, TCS and NIFTYBEES, a 1-share
+  LIMIT buy run through every order check without being sent, and
+  response-shape checks (missing and new field names, never values). Prints a
+  redacted Markdown report for a GitHub issue: no credentials or tokens, the
+  account id cut to its last 2 characters, e-mails and long numbers masked in
+  error messages, amounts hidden with `--redact-amounts`. The session is
+  wrapped so that every order, GTT or cancel call fails before reaching the
+  broker. See [Help verify a broker](docs/brokers.md#help-verify-a-broker).
+- Community testing kit: a "Broker test report" issue template, a
+  verification-status table per broker in docs/brokers.md, and the criteria for
+  dropping the experimental label (3 independent self-test reports plus one
+  small live order a tester chose to place themselves).
+- `stockwise trade sync [--since DATE] [--apply] [--notify] [--json]` — pulls
+  the broker's executed trades into the lot-based portfolio: delivery buys
+  become dated lots (fill date, average fill price, broker order id), sells
+  come out FIFO as realized sales. Previews by default; `--apply` writes.
+  Idempotent: applied fills are remembered by broker, order and trade id, so re-running,
+  or syncing the rest of a partly filled order, never double-counts. Intraday,
+  margin and F&O fills are skipped; sells wait while a split or bonus is not
+  yet applied to the lots; open and partly filled orders are listed;
+  quantities are compared with the broker's holdings. Dhan reads older fills
+  with `--since`; the other brokers return today's trades only.
+- `trade gtt list` shows what changed since the last look (triggered,
+  cancelled, expired, no longer listed), with `--notify` to send the changes
+  to your notification channels and `--json`. `trade sync --apply` tracks the
+  same changes.
+- `Broker` trait: `profile`, `trades` (trade book), raw read-only `rows` and
+  per-endpoint response shapes for all five brokers; order-book rows now carry
+  filled quantity, average price and product. Experimental on Zerodha, Upstox,
+  Dhan and Fyers like the rest of those integrations — the new endpoints were
+  built from the brokers' public docs and tested against fixtures only.
+- Portfolio lots and realized sales record the broker order id they came
+  from (`order_id`); the portfolio file keeps the list of synced fills
+  (`broker_fills`). Older files load unchanged.
 - Web dashboard at `/` of `stockwise serve`: indices, watchlist, portfolio
   (P&L, XIRR, allocation, INR/USD totals, sortable columns), alerts, symbol
   search and a price chart with period buttons and a keyboard-readable
@@ -92,6 +129,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Minimum supported Rust version is now **1.97** (was 1.88). StockWise
   supports the latest stable Rust and the two releases before it. Prebuilt
   binaries, Docker and Nix are unaffected.
+- `alert list --json/--csv` adds `period` and `description`; `alert check
+  --json/--csv` adds `period`, `description`, `value`, `reference` and the
+  status `no_data` (new CSV columns come after the old ones). Existing
+  `alerts.json` files load unchanged. Quotes carry Yahoo's
+  `regularMarketTime`.
 - In the Indian market a bare BSE scrip code resolves to BSE: `quote 500325`
   is `500325.BO` (it used to become the invalid `500325.NS`).
 

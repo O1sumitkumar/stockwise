@@ -84,7 +84,11 @@ integrations implement the `Broker` trait in `src/brokers/` — see `zerodha.rs`
 for a compact example. Keep secrets in `secrets::Secret` fields (stored in the OS
 keyring via `src/brokers/secrets.rs`), never in source, logs or error messages.
 Test against `brokers::mock::MockServer` with fixtures from the broker's docs, and
-label anything not yet run against a live account "experimental".
+label anything not yet run against a live account "experimental". Give each read
+endpoint a `Shape` (the fields the parser reads and the documented ones) and check
+your fixtures with `mock::assert_fixture_shapes`, so `trade selftest` can tell
+testers when a live response differs. Anything that only reads from a real account
+(`trade selftest`, `trade sync`) must run on a `brokers::readonly::ReadOnly` session.
 
 ## Commit messages
 
