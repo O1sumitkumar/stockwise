@@ -20,18 +20,21 @@ use serde_json::{Value, json};
 const LOOKBACK_DAYS: i64 = 370;
 
 fn currency(r: &Replay) -> Option<&'static str> {
-    Some(if r.scenario.market == "us" {
-        "USD"
-    } else {
-        "INR"
-    })
+    Some(super::portfolio::market_currency(scenario_market(
+        &r.scenario,
+    )))
 }
 
 fn scenario_market(s: &Scenario) -> Market {
-    if s.market == "us" {
-        Market::Us
-    } else {
-        Market::In
+    <Market as clap::ValueEnum>::from_str(&s.market, true).unwrap_or(Market::In)
+}
+
+/// The index a market's replays and challenges are measured against.
+fn default_benchmark(m: Market) -> (&'static str, &'static str) {
+    match m {
+        Market::Us => ("^GSPC", "S&P 500"),
+        Market::Global(x) => x.info().benchmark(),
+        _ => ("^NSEI", "NIFTY 50"),
     }
 }
 
@@ -153,7 +156,7 @@ pub struct ReplayStart {
 
 /// A scenario from `--from/--to/--symbols` in the active market.
 fn custom_scenario(a: &ReplayStart, m: Market) -> Result<Scenario> {
-    m.require_stocks("sim replay")?;
+    m.require_bot_support("sim replay")?;
     let (Some(from), Some(to)) = (a.from, a.to) else {
         bail!("A custom replay needs --from DATE and --to DATE (YYYY-MM-DD)");
     };
@@ -169,8 +172,10 @@ fn custom_scenario(a: &ReplayStart, m: Market) -> Result<Scenario> {
     }
     let (bench, bench_name) = match (&a.benchmark, m) {
         (Some(b), _) => (market::resolve_symbol(b, m), b.to_uppercase()),
-        (None, Market::Us) => ("^GSPC".to_string(), "S&P 500".to_string()),
-        (None, _) => ("^NSEI".to_string(), "NIFTY 50".to_string()),
+        (None, _) => {
+            let (symbol, name) = default_benchmark(m);
+            (symbol.to_string(), name.to_string())
+        }
     };
     let mut universe: Vec<Member> = Vec::new();
     for s in a.symbols.iter().flat_map(|s| s.split(',')) {
@@ -187,7 +192,7 @@ fn custom_scenario(a: &ReplayStart, m: Market) -> Result<Scenario> {
     Ok(Scenario {
         name: "custom".into(),
         title: format!("{} {} → {}", m.label(), from, to),
-        market: if m == Market::Us { "us" } else { "in" }.into(),
+        market: m.code().into(),
         from,
         to,
         benchmark: bench,
@@ -1208,7 +1213,7 @@ pub fn cmd_challenge_start(name: &str, m: Market, fmt: Format) -> Result<()> {
             def.title
         );
     }
-    m.require_stocks("sim challenge")?;
+    m.require_bot_support("sim challenge")?;
     if let Some(c) = LiveChallenge::load()? {
         bail!(
             "The {} challenge is already running on live paper sessions. `stockwise sim challenge end` first.",
@@ -1219,7 +1224,7 @@ pub fn cmd_challenge_start(name: &str, m: Market, fmt: Format) -> Result<()> {
     let days = def.days;
     let live = LiveChallenge {
         active: Active::new(def, 0, today, days),
-        market: if m == Market::Us { "US" } else { "IN" }.into(),
+        market: m.id().into(),
     };
     live.save()?;
     if fmt == Format::Json {
@@ -1250,12 +1255,8 @@ pub fn cmd_challenge_start(name: &str, m: Market, fmt: Format) -> Result<()> {
 
 /// Benchmark bars for a live challenge, from a few days before it started.
 async fn live_benchmark(live: &LiveChallenge) -> Result<Vec<DayBar>> {
-    let m = if live.market == "US" {
-        Market::Us
-    } else {
-        Market::In
-    };
-    let symbol = if m == Market::Us { "^GSPC" } else { "^NSEI" };
+    let m = <Market as clap::ValueEnum>::from_str(&live.market, true).unwrap_or(Market::In);
+    let symbol = default_benchmark(m).0;
     let start = crate::clock::at(m, live.active.start_date, chrono::NaiveTime::MIN).timestamp()
         - 10 * 86_400;
     let end = chrono::Utc::now().timestamp() + 86_400;
@@ -1265,11 +1266,8 @@ async fn live_benchmark(live: &LiveChallenge) -> Result<Vec<DayBar>> {
 }
 
 fn live_benchmark_name(live: &LiveChallenge) -> &'static str {
-    if live.market == "US" {
-        "S&P 500"
-    } else {
-        "NIFTY 50"
-    }
+    let m = <Market as clap::ValueEnum>::from_str(&live.market, true).unwrap_or(Market::In);
+    default_benchmark(m).1
 }
 
 pub async fn cmd_challenge_status(fmt: Format) -> Result<()> {
@@ -1753,6 +1751,13 @@ mod tests {
         assert_eq!(s.benchmark, "^NSEI");
         assert_eq!(custom_scenario(&a, Market::Us).unwrap().benchmark, "^GSPC");
         assert!(custom_scenario(&a, Market::Crypto).is_err());
+        // Global exchanges keep their market and benchmark; London's pence
+        // prices are refused like the other bots.
+        let jp = custom_scenario(&a, Market::Global(market::Exchange::Jp)).unwrap();
+        assert_eq!(jp.market, "jp");
+        assert_eq!(jp.benchmark, "^N225");
+        assert_eq!(scenario_market(&jp), Market::Global(market::Exchange::Jp));
+        assert!(custom_scenario(&a, Market::Global(market::Exchange::Uk)).is_err());
         a.to = Some(d("2022-01-05"));
         assert!(custom_scenario(&a, Market::In).is_err());
         a.to = Some(d("2099-01-01"));

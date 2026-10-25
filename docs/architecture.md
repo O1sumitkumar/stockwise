@@ -14,6 +14,8 @@ src/
     risk.rs          risk, correlate, returns, forecast, options moves
     funds.rs         mf search, nav, history, sip, screen, overlap (TER in nav/history/screen)
     fno.rs           options chain, pcr, maxpain, payoff
+    commodities.rs   commodity spot, futures, etfs, sgb
+    bonds.rs         bonds yields, list, calc
     markets.rs       movers, sectors, news, sentiment, screen, picks, earnings, rotation, matrix, surprise, heatmap, sectorcmp, ipo
     backtests.rs     backtest (single, portfolio, walkforward, strategies)
     strategies.rs    sip, whatif, intraday, longterm, report
@@ -60,8 +62,14 @@ src/
   derivatives.rs     Option chains from NSE / BSE / Yahoo, lot sizes, PCR, max pain, per-contract IV and greeks
   greeks.rs          Black-Scholes pricing, greeks, implied-volatility solver
   payoff.rs          Multi-leg option payoffs: presets, max profit/loss, breakevens, probability of profit
+  commodity.rs       Gold/silver spot in ₹ from COMEX × USDINR, futures and ETF lists, SGB tranches
+                     and NSE's SGB list parser (pure, fixture-tested)
+  bonds.rs           Bond math: price ↔ YTM (half-yearly, 30/360), accrued interest, duration, T-bills
+  gsec.rs            CCIL tenor-wise yields, RBI benchmarks and outstanding G-sec list (HTML parsers)
+  pagecache.rs       Cached fetch of public pages (CCIL, RBI, NSE SGB list) with a stale-copy fallback
   ai.rs              AI: Ollama (default) or opt-in OpenAI / Anthropic / Gemini; prompts, opt-in flag, model checks
-  clock.rs           Exchange clock: IST / US Eastern, NSE + NYSE holidays, session phases
+  clock.rs           Exchange clock: IST / US Eastern / European / Sydney time, NSE, NYSE and global
+                     exchange holidays and half days, lunch breaks, session phases
   daemon.rs          Worker state: positions, risk manager, daemon_state.json, shutdown, retry
   notify.rs          Notifications: Telegram, Slack, Discord, SMTP email, desktop
   technical.rs       Indicators and statistics (SMA, EMA, RSI, MACD, BB, ATR, VWAP, OBV, VaR, Sharpe, XIRR, ...)
@@ -84,7 +92,9 @@ src/
   insights.rs        Rule-based plain-English insights
   charts.rs          Braille line charts, option payoff chart, volume bars, gauges
   display.rs         Currency- and asset-aware formatting (₹/$/€/£/¥, FX and crypto decimals), width-aware padding
-  market.rs          Market enum (in/us/crypto/fx), asset classes, symbol resolution, index/sector/coin/pair lists
+  market.rs          Market enum (in/us/crypto/fx/commodity + global exchanges), the MarketInfo table
+                     (uk/de/jp/hk/sg/ca/au: suffix, currency, indices, sectors, hours, holidays, tax),
+                     asset classes, symbol resolution, index/sector/coin/pair lists
   alerts.rs          Alert conditions (price, RSI, MA crosses, breakouts, day change, volume, results)
                      and their evaluation on quotes / daily bars; persisted via store.rs
   calendar.rs        Results, dividend and split dates: Yahoo calendarEvents + NSE board meetings and
@@ -115,6 +125,8 @@ User Input → clap CLI → commands/* → views.rs → api.rs → Yahoo Finance
               tui/, server/ ───────────↗
                                    → funds.rs → AMFI NAVAll.txt + TER disclosure, api.mfapi.in
                                    → derivatives.rs → NSE / BSE option chains (India), Yahoo (US)
+                                   → gsec.rs → CCIL yields, RBI benchmarks and G-sec list (pagecache.rs)
+                                   → commodity.rs ← NSE SGB list (providers/nse session)
                                             → providers/* → Alpha Vantage / Massive / Twelve Data / NSE / BSE (opt-in)
                                    → brokers/* → Angel One, Kite, Upstox, Dhan, Fyers
                                    → ai.rs → Local Ollama (or opt-in OpenAI / Anthropic / Gemini)
@@ -179,7 +191,7 @@ the OS keyring when one is available (`STOCKWISE_KEYRING=off` keeps them in the 
 | `alert_watch.json` | Which alerts `alert watch` already announced |
 | `angel_config.json` | Angel One API credentials (secrets in the OS keyring when available) |
 | `zerodha_config.json`, `upstox_config.json`, `dhan_config.json`, `fyers_config.json` | Experimental broker apps and daily sessions (secrets in the keyring when available) |
-| `cache/` | AMFI NAV file and per-scheme NAV history, re-downloaded after 12 hours (safe to delete) |
+| `cache/` | AMFI NAV file and per-scheme NAV history, re-downloaded after 12 hours; CCIL/RBI pages (6–24 hours) and NSE's SGB list (5 minutes) (safe to delete) |
 
 ## Dependencies
 

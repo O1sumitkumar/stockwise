@@ -496,6 +496,8 @@ fn check_market(market: Market) -> Result<()> {
         Market::Us => ("US", "us"),
         Market::Crypto => ("crypto", "crypto"),
         Market::Fx => ("forex", "fx"),
+        Market::Commodity => ("commodity", "commodity"),
+        Market::Global(x) => (x.info().country, x.info().code),
     };
     bail!(
         "`trade` places NSE equity orders only and can't trade the {name} market. \

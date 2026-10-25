@@ -16,7 +16,7 @@ pub async fn cmd_sim(
 
     match action {
         "start" => {
-            market.require_stocks("sim start")?;
+            market.require_bot_support("sim start")?;
             let capital = amount.unwrap_or(25000.0);
             let target_pct = target.unwrap_or(2.0);
             let now = chrono::Utc::now();
@@ -135,13 +135,7 @@ pub async fn cmd_sim(
 
             history.sessions.push(SimSession {
                 date: today,
-                market: match market {
-                    Market::In => "IN",
-                    Market::Us => "US",
-                    Market::Crypto => "CRYPTO",
-                    Market::Fx => "FX",
-                }
-                .into(),
+                market: market.id().into(),
                 capital,
                 target_pct,
                 trades: sim_trades,
@@ -391,10 +385,7 @@ pub(crate) fn sim_history_json(
 
 /// `sim history`: past sessions and the bot's confidence rating.
 pub fn cmd_sim_history(market: Market, fmt: Format) -> Result<()> {
-    let csym = match market {
-        Market::In => "₹",
-        Market::Us | Market::Crypto | Market::Fx => "$",
-    };
+    let csym = market.currency_symbol();
     let history = SimHistory::load()?;
     let stats = history.stats();
     if fmt == Format::Json {
@@ -522,11 +513,7 @@ pub fn cmd_sim_history(market: Market, fmt: Format) -> Result<()> {
 }
 
 fn session_market(code: &str) -> Market {
-    if code.eq_ignore_ascii_case("US") {
-        Market::Us
-    } else {
-        Market::In
-    }
+    <Market as clap::ValueEnum>::from_str(code, true).unwrap_or(Market::In)
 }
 
 /// Bars of one session, finest first: 5-minute bars (Yahoo keeps ~60
@@ -608,10 +595,7 @@ pub async fn cmd_sim_settle(now_flag: bool) -> Result<()> {
 
     for session in history.sessions.iter_mut().filter(|s| !s.settled) {
         let market = session_market(&session.market);
-        let csym = match market {
-            Market::In => "₹",
-            Market::Us | Market::Crypto | Market::Fx => "$",
-        };
+        let csym = market.currency_symbol();
         let Ok(date) = NaiveDate::parse_from_str(&session.date, "%Y-%m-%d") else {
             skipped.push(format!("{}: not a valid session date", session.date));
             continue;

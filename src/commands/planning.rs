@@ -327,10 +327,11 @@ pub(crate) fn resolve_benchmark(name: Option<&str>, market: Market) -> (String, 
     let name = name
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or(if market == Market::In {
-            "NIFTY"
-        } else {
-            "SP500"
+        .unwrap_or(match market {
+            Market::In => "NIFTY",
+            // A global exchange's main index (`^FTSE`, `^N225`).
+            Market::Global(x) => x.info().benchmark().0,
+            _ => "SP500",
         });
     let upper = name.to_uppercase();
     let key: String = upper
@@ -1279,6 +1280,10 @@ mod tests {
             ("^NSEI".into(), "NIFTY 50".into())
         );
         assert_eq!(resolve_benchmark(None, Market::Us).0, "^GSPC");
+        assert_eq!(
+            resolve_benchmark(None, Market::Global(market::Exchange::Jp)).0,
+            "^N225"
+        );
         assert_eq!(resolve_benchmark(Some("sensex"), Market::Us).0, "^BSESN");
         assert_eq!(resolve_benchmark(Some("S&P 500"), Market::In).0, "^GSPC");
         assert_eq!(resolve_benchmark(Some("nifty-50"), Market::Us).0, "^NSEI");

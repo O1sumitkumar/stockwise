@@ -225,11 +225,10 @@ impl Replay {
     /// The cost model in words, e.g. "India delivery — brokerage ₹20 or
     /// 0.1%, lower, STT, ...".
     pub fn cost_summary(&self, tape: &Tape) -> String {
-        let csym = if self.scenario.market == "us" {
-            "$"
-        } else {
-            "₹"
-        };
+        let market =
+            <crate::market::Market as clap::ValueEnum>::from_str(&self.scenario.market, true)
+                .unwrap_or(crate::market::Market::In);
+        let csym = market.currency_symbol();
         self.scenario
             .universe
             .first()

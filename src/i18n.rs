@@ -183,6 +183,7 @@ messages! {
     GroupMarket => "Market", "बाज़ार";
     GroupStrategies => "Strategies & bots", "रणनीतियाँ और बॉट";
     GroupFunds => "Funds & F&O", "फंड और F&O";
+    GroupCommoditiesBonds => "Commodities & bonds", "कमोडिटी और बॉन्ड";
     GroupPortfolio => "Portfolio", "पोर्टफोलियो";
     GroupInterfaces => "Interfaces", "इंटरफ़ेस";
     GroupLiveTrading => "Live trading", "लाइव ट्रेडिंग";
@@ -204,10 +205,20 @@ messages! {
     MarketUs => "US", "अमेरिका";
     MarketCrypto => "Crypto", "क्रिप्टो";
     MarketFx => "FX", "विदेशी मुद्रा";
+    MarketCommodity => "Commodities", "कमोडिटी";
+    MarketUk => "UK", "ब्रिटेन";
+    MarketDe => "Germany", "जर्मनी";
+    MarketJp => "Japan", "जापान";
+    MarketHk => "Hong Kong", "हांगकांग";
+    MarketSg => "Singapore", "सिंगापुर";
+    MarketCa => "Canada", "कनाडा";
+    MarketAu => "Australia", "ऑस्ट्रेलिया";
     SectionIndianMarkets => "Indian Markets", "भारतीय बाज़ार";
     SectionUsMarkets => "US Markets", "अमेरिकी बाज़ार";
     SectionCrypto => "Crypto (24/7)", "क्रिप्टो (24/7)";
     SectionFx => "Currencies (FX)", "मुद्राएँ (FX)";
+    SectionGlobal => "Global Markets", "वैश्विक बाज़ार";
+    SectionCommodities => "Gold & Silver", "सोना और चाँदी";
     SessionCrypto => "Trades 24/7 — change is since 00:00 UTC", "24/7 ट्रेडिंग — बदलाव 00:00 UTC से";
     SessionFxOpen => "FX trades 24 hours, Monday to Friday", "विदेशी मुद्रा बाज़ार सोमवार से शुक्रवार, 24 घंटे खुला";
     SessionFxWeekend => "FX market closed for the weekend — showing Friday's close", "सप्ताहांत पर विदेशी मुद्रा बाज़ार बंद — शुक्रवार का बंद भाव";
@@ -236,6 +247,8 @@ messages! {
     HintNotFoundUs => " (use `stockwise search <name>` to find a ticker; Indian stocks need `-m in` or a .NS suffix)", " (टिकर खोजने के लिए `stockwise search <नाम>` चलाएँ; भारतीय शेयरों के लिए `-m in` या .NS जोड़ें)";
     HintNotFoundCrypto => " (use the coin's ticker, e.g. BTC or ETH, or a full pair like BTC-INR)", " (कॉइन का टिकर लिखें, जैसे BTC या ETH, या पूरा जोड़ा जैसे BTC-INR)";
     HintNotFoundFx => " (use a currency pair such as USDINR or EURUSD)", " (मुद्रा जोड़ा लिखें, जैसे USDINR या EURUSD)";
+    HintNotFoundCommodity => " (use GOLD or SILVER, an NSE ETF such as GOLDBEES, or a futures symbol like GC=F)", " (GOLD या SILVER, NSE ETF जैसे GOLDBEES, या फ़्यूचर्स सिंबल जैसे GC=F लिखें)";
+    HintNotFoundGlobal => " (bare tickers get this exchange's suffix, e.g. -m uk VOD → VOD.L; use `stockwise search <name>` to find a ticker)", " (बिना सफ़िक्स वाले टिकर को इस एक्सचेंज का सफ़िक्स मिलता है, जैसे -m uk VOD → VOD.L; टिकर खोजने के लिए `stockwise search <नाम>` चलाएँ)";
 
     // ── Search ──
     SearchTitle => "Search: {0}", "खोज: {0}";
@@ -433,6 +446,60 @@ messages! {
     // ── Web dashboard (`serve`) ──
     ServeDashboard => "Dashboard", "डैशबोर्ड";
     ServeOpenFailed => "Could not open a browser ({0}); open {1} yourself", "ब्राउज़र नहीं खुल सका ({0}); {1} खुद खोलें";
+
+    // ── Commodities (`commodity`) ──
+    Gold => "Gold", "सोना";
+    Silver => "Silver", "चाँदी";
+    CommoditySpotTitle => "Gold & Silver — spot", "सोना और चाँदी — हाजिर भाव";
+    CommoditySpotSource => "Spot ≈ COMEX front-month futures (GC=F, SI=F) at USD/INR {0}; 1 troy oz = 31.1035 g.", "हाजिर ≈ COMEX निकटतम फ़्यूचर्स (GC=F, SI=F), USD/INR {0} पर; 1 ट्रॉय औंस = 31.1035 ग्राम।";
+    CommodityDutyNote => "₹ prices are international prices converted at USD/INR — they exclude import duty and GST, so jewellers' and MCX prices are higher.", "₹ भाव अंतरराष्ट्रीय भाव को USD/INR से बदलकर हैं — इनमें आयात शुल्क और GST शामिल नहीं, इसलिए ज्वैलर और MCX के भाव ऊँचे होते हैं।";
+    CommodityMcxNote => "MCX gold and silver futures have no free public feed, so StockWise shows COMEX contracts (`commodity futures`).", "MCX सोना-चाँदी फ़्यूचर्स का कोई मुफ़्त सार्वजनिक फ़ीड नहीं है, इसलिए StockWise COMEX कॉन्ट्रैक्ट दिखाता है (`commodity futures`)।";
+    CommodityFuturesTitle => "Gold & Silver futures — COMEX", "सोना और चाँदी फ़्यूचर्स — COMEX";
+    CommodityFuturesNote => "COMEX (CME Group) contracts via Yahoo Finance, USD per troy ounce, front month. Not MCX: MCX has no free public feed.", "COMEX (CME Group) कॉन्ट्रैक्ट, Yahoo Finance से, USD प्रति ट्रॉय औंस, निकटतम माह। MCX नहीं: MCX का कोई मुफ़्त सार्वजनिक फ़ीड नहीं।";
+    CommodityEtfsTitle => "Gold & Silver ETFs — NSE", "सोना और चाँदी ETF — NSE";
+    CommodityEtfsNote => "₹ per unit. Each ETF holds a different amount of metal per unit, so compare their % moves, not their prices.", "₹ प्रति यूनिट। हर ETF की एक यूनिट में धातु की मात्रा अलग होती है, इसलिए भाव नहीं, % बदलाव की तुलना करें।";
+    SgbTitle => "Sovereign Gold Bonds — NSE", "सॉवरेन गोल्ड बॉन्ड — NSE";
+    SgbMatures => "Matures", "परिपक्वता";
+    SgbYield => "Yield", "यील्ड";
+    SgbSeries => "Series", "श्रृंखला";
+    SgbIssuePrice => "Issue ₹/g", "निर्गम ₹/ग्राम";
+    SgbInterest => "Interest/yr", "ब्याज/वर्ष";
+    SgbPremium => "Premium", "प्रीमियम";
+    SgbNoQuotes => "No SGB prices from NSE ({0}) — listing outstanding tranches without prices", "NSE से SGB भाव नहीं मिले ({0}) — बिना भाव के बकाया किश्तें दिखाई जा रही हैं";
+    SgbGoldBasis => "Premium is over 1 g of gold at the international spot price, {0} (no import duty or GST); domestic gold, and so SGBs, usually trade above it. Yield = 2.5% interest on the issue price over today's price.", "प्रीमियम 1 ग्राम सोने के अंतरराष्ट्रीय हाजिर भाव {0} (बिना आयात शुल्क या GST) पर है; घरेलू सोना, और इसलिए SGB, आमतौर पर इससे ऊपर रहते हैं। यील्ड = निर्गम मूल्य पर 2.5% ब्याज ÷ आज का भाव।";
+    SgbNote => "SGBs pay 2.5% a year on the issue price, half-yearly; 1 unit = 1 g. RBI redeems at the IBJA 999 average of the 3 business days before, 8 years after issue (early redemption from year 5, on interest dates).", "SGB निर्गम मूल्य पर सालाना 2.5% ब्याज देते हैं, छमाही; 1 यूनिट = 1 ग्राम। RBI जारी होने के 8 साल बाद पिछले 3 कारोबारी दिनों के IBJA 999 औसत पर भुनाता है (5वें साल से, ब्याज की तारीखों पर, जल्दी भुनाना संभव)।";
+    SgbSymbolsUnconfirmed => "Symbols come from a public list of tranches, not from NSE — check them before you trade.", "सिंबल किश्तों की एक सार्वजनिक सूची से हैं, NSE से नहीं — ट्रेड से पहले जाँच लें।";
+
+    // ── Bonds (`bonds`) ──
+    BondsYieldsTitle => "India G-sec & T-bill yields — {0}, {1}", "भारत G-sec और T-bill यील्ड — {0}, {1}";
+    BondsTenor => "Tenor", "अवधि";
+    BondsSecurity => "Security", "प्रतिभूति";
+    BondsYtm => "Yield to maturity", "परिपक्वता यील्ड";
+    BondsIndia10y => "India 10Y:", "भारत 10 वर्ष:";
+    BondsTenYearIs => "{0} at {1}", "{0}, {1} पर";
+    BondsCcilNote => "Indicative yields; T-bill and SDL rows are primary-market cut-offs. CCIL data, for personal non-commercial use.", "सांकेतिक यील्ड; T-bill और SDL पंक्तियाँ प्राथमिक बाज़ार कट-ऑफ़ हैं। CCIL डेटा, केवल निजी गैर-व्यावसायिक उपयोग के लिए।";
+    BondsRbiNote => "RBI benchmark yields (CCIL was not available). T-bill rows are the last auction cut-offs; N/A when RBI shows none.", "RBI बेंचमार्क यील्ड (CCIL उपलब्ध नहीं था)। T-bill पंक्तियाँ पिछली नीलामी के कट-ऑफ़ हैं; RBI न दिखाए तो N/A।";
+    BondsSourceUrl => "Source: {0}", "स्रोत: {0}";
+    BondsListTitle => "Government of India securities outstanding — RBI", "बकाया भारत सरकार प्रतिभूतियाँ — RBI";
+    BondsListEmpty => "No outstanding G-sec matches '{0}'", "'{0}' से कोई बकाया G-sec नहीं मिली";
+    BondsOutstanding => "Outstanding ₹ Cr", "बकाया ₹ करोड़";
+    BondsListNote => "{0} securities. NSE symbols follow NSE's naming (7.18% GS 2033 → 718GS2033); FRBs and green bonds have their own. Price a bond with `stockwise bonds calc`.", "{0} प्रतिभूतियाँ। NSE सिंबल NSE के नामकरण पर हैं (7.18% GS 2033 → 718GS2033); FRB और ग्रीन बॉन्ड के अपने हैं। `stockwise bonds calc` से बॉन्ड का भाव निकालें।";
+    BondsMaturity => "Maturity", "परिपक्वता";
+    BondsSettlement => "Settlement", "निपटान";
+    BondsDaysLeft => "{0} days to maturity", "परिपक्वता में {0} दिन";
+    BondsCleanPrice => "Clean price (per ₹100)", "क्लीन मूल्य (प्रति ₹100)";
+    BondsAccrued => "Accrued interest", "उपार्जित ब्याज";
+    BondsDirtyPrice => "Dirty price", "डर्टी मूल्य";
+    BondsSemiAnnual => "(semi-annual)", "(छमाही)";
+    BondsTbillBasis => "(discount yield, 365-day)", "(डिस्काउंट यील्ड, 365 दिन)";
+    BondsCurrentYield => "Current yield", "वर्तमान यील्ड";
+    BondsMacaulay => "Macaulay duration (years)", "मैकॉले अवधि (वर्ष)";
+    BondsModified => "Modified duration", "संशोधित अवधि";
+    BondsNextCoupon => "Next coupon", "अगला कूपन";
+    BondsCouponsLeft => "{0} ({1} left)", "{0} ({1} बाकी)";
+    BondsCalcNote => "Half-yearly coupons, 30/360 day count, as for G-secs. NSE quotes G-secs at dirty prices: add --dirty when you enter one.", "छमाही कूपन, 30/360 दिन-गणना, जैसा G-sec में होता है। NSE G-sec का डर्टी भाव दिखाता है: वह भाव डालें तो --dirty जोड़ें।";
+    BondsTbillNote => "T-bill yield = (100 − price) / price × 365 / days, the convention RBI auctions use.", "T-bill यील्ड = (100 − मूल्य) / मूल्य × 365 / दिन, RBI नीलामी की परिपाटी।";
+    India10yName => "India 10Y G-sec", "भारत 10Y G-sec";
 
     // ── Practice: replays, challenges, scores, cards (`sim`) ──
     PracticeDisclaimer => "Paper trading — not financial advice.", "पेपर ट्रेडिंग — यह वित्तीय सलाह नहीं है।";

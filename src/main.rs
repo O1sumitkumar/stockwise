@@ -15,11 +15,13 @@ mod alerts;
 mod api;
 mod backtest;
 mod benchmark;
+mod bonds;
 mod brokers;
 mod calendar;
 mod charts;
 mod clock;
 mod commands;
+mod commodity;
 mod config;
 mod daemon;
 mod daemon_status;
@@ -28,6 +30,7 @@ mod display;
 mod funds;
 mod goals;
 mod greeks;
+mod gsec;
 mod i18n;
 mod insights;
 mod intraday;
@@ -35,6 +38,7 @@ mod longterm;
 mod market;
 mod notify;
 mod output;
+mod pagecache;
 mod payoff;
 mod portfolio;
 mod practice;
@@ -87,7 +91,7 @@ Run `stockwise doctor` to check your setup, `stockwise config init` to set your 
 defaults, `stockwise <command> --help` for details."
 )]
 struct Cli {
-    /// Market for bare tickers: `in` (India, adds .NS) or `us`
+    /// Market for bare tickers: `in` (India, adds .NS), `us`, `crypto`, `fx`, `commodity`, or an exchange: `uk`, `de`, `jp`, `hk`, `sg`, `ca`, `au`
     #[arg(
         short = 'm',
         long = "market",
@@ -182,6 +186,9 @@ enum Commands {
         /// Add major currency pairs (USD/INR, EUR/USD, ...)
         #[arg(long)]
         fx: bool,
+        /// Add each exchange's main index (FTSE 100, DAX, Nikkei, ...) with its session
+        #[arg(long)]
+        global: bool,
     },
 
     /// Markets + portfolio + watchlist + alerts on one screen
@@ -416,6 +423,33 @@ stockwise options TCS                     expected moves (same as `options moves
         symbol: Option<String>,
         #[arg(short, long, default_value = "1mo", value_parser = PERIODS)]
         period: String,
+    },
+
+    // ── Commodities & bonds ──
+    /// Gold and silver: spot in ₹/10 g and USD/oz, COMEX futures, ETFs, SGBs (default: spot)
+    #[command(
+        alias = "commodities",
+        args_conflicts_with_subcommands = true,
+        after_help = COMMODITY_HELP
+    )]
+    Commodity {
+        #[command(subcommand)]
+        action: Option<CommodityCmd>,
+        #[command(flatten)]
+        out: TableOutput,
+    },
+
+    /// Indian G-secs and T-bills: benchmark yields, outstanding list, price/YTM calculator (default: yields)
+    #[command(
+        alias = "bond",
+        args_conflicts_with_subcommands = true,
+        after_help = BONDS_HELP
+    )]
+    Bonds {
+        #[command(subcommand)]
+        action: Option<BondsCmd>,
+        #[command(flatten)]
+        out: TableOutput,
     },
 
     // ── Strategies & bots ──
@@ -1245,6 +1279,120 @@ fn mf_period(s: &str) -> Result<String, String> {
     funds::parse_period(s).map(|_| s.trim().to_lowercase())
 }
 
+const COMMODITY_HELP: &str = "\
+Spot is the COMEX front-month future (Yahoo GC=F / SI=F) converted at USD/INR:
+international prices, before Indian import duty and GST. MCX futures have no
+free public feed. With -m commodity, GOLD and SILVER resolve to GC=F and SI=F
+and other bare tickers to NSE (GOLDBEES → GOLDBEES.NS), so history, chart,
+technical and alerts work on them too.
+
+Examples:
+  stockwise commodity                       gold and silver in ₹/g, ₹/10 g, ₹/kg and USD/oz
+  stockwise commodity sgb                   Sovereign Gold Bonds vs gold spot
+  stockwise commodity etfs --csv            gold and silver ETFs on NSE
+  stockwise commodity futures --json        COMEX gold and silver contracts
+  stockwise history gold -m commodity -p 1y
+  stockwise alert add silver above 60 -m commodity";
+
+const BONDS_HELP: &str = "\
+Yields come from CCIL's tenor-wise indicative yields (RBI's benchmarks when
+CCIL is unavailable), cached for 6 hours. The outstanding list is RBI's.
+Neither publishes prices of individual G-secs, and NSE's live debt quotes have
+no documented API, so StockWise does not show bond prices: enter the price
+your broker shows in `bonds calc`.
+
+Examples:
+  stockwise bonds                                 benchmark yields, incl. India 10Y
+  stockwise bonds list 2033                       G-secs maturing in 2033
+  stockwise bonds calc 718GS2033 --price 101.25   yield to maturity
+  stockwise bonds calc \"6.94% GS 2036\" --ytm 7.4  price for a yield
+  stockwise bonds calc --coupon 7.1 --maturity 2034-04-08 --price 99.5
+  stockwise bonds calc --tbill --maturity 2027-01-14 --price 98.6";
+
+#[derive(Subcommand)]
+enum CommodityCmd {
+    /// Gold and silver spot: USD per troy ounce and ₹ per gram, 10 g and kg (before duty and GST)
+    Spot {
+        #[command(flatten)]
+        out: TableOutput,
+    },
+    /// Gold and silver futures — COMEX via Yahoo (MCX has no public feed)
+    Futures {
+        #[command(flatten)]
+        out: TableOutput,
+    },
+    /// Gold and silver ETFs listed on NSE (GOLDBEES, SILVERBEES, ...)
+    Etfs {
+        #[command(flatten)]
+        out: TableOutput,
+    },
+    /// Sovereign Gold Bonds on NSE: price vs gold spot, maturity, 2.5% interest
+    Sgb {
+        #[command(flatten)]
+        out: TableOutput,
+    },
+}
+
+#[derive(Subcommand)]
+enum BondsCmd {
+    /// Benchmark yields by tenor: T-bills, G-secs (India 10Y) and SDLs
+    Yields {
+        #[command(flatten)]
+        out: TableOutput,
+    },
+    /// Government of India securities outstanding (RBI); QUERY = maturity year or name
+    List {
+        /// A maturity year (2033), part of a name ("GS 2036"), an ISIN or an NSE symbol
+        query: Option<String>,
+        #[command(flatten)]
+        out: TableOutput,
+    },
+    /// Price ↔ yield to maturity, accrued interest and duration for a G-sec or T-bill
+    #[command(group(clap::ArgGroup::new("input").required(true).args(["price", "ytm"])))]
+    Calc {
+        /// The security: NSE symbol (718GS2033), name ("7.18% GS 2033") or ISIN, looked up in RBI's list
+        #[arg(required_unless_present = "maturity")]
+        security: Option<String>,
+        /// Annual coupon in percent (instead of looking the security up)
+        #[arg(long, value_parser = coupon_pct)]
+        coupon: Option<f64>,
+        /// Maturity date, YYYY-MM-DD
+        #[arg(long, value_parser = expiry_date)]
+        maturity: Option<chrono::NaiveDate>,
+        /// Price per ₹100 face value (clean, unless --dirty)
+        #[arg(long, value_parser = bond_price)]
+        price: Option<f64>,
+        /// Yield to maturity in percent, to get the price
+        #[arg(long, allow_negative_numbers = true)]
+        ytm: Option<f64>,
+        /// Settlement date, YYYY-MM-DD (default: today in India)
+        #[arg(long, value_parser = expiry_date)]
+        settle: Option<chrono::NaiveDate>,
+        /// A Treasury bill: discount yield, no coupon
+        #[arg(long, conflicts_with = "coupon")]
+        tbill: bool,
+        /// The --price includes accrued interest (NSE quotes G-secs dirty)
+        #[arg(long, conflicts_with = "tbill")]
+        dirty: bool,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+}
+
+fn coupon_pct(s: &str) -> Result<f64, String> {
+    match s.trim().trim_end_matches('%').parse::<f64>() {
+        Ok(v) if (0.0..=50.0).contains(&v) => Ok(v),
+        _ => Err(format!("`{s}`: a coupon in percent, e.g. 7.18")),
+    }
+}
+
+fn bond_price(s: &str) -> Result<f64, String> {
+    match s.trim().parse::<f64>() {
+        Ok(v) if v > 0.0 && v.is_finite() => Ok(v),
+        _ => Err(format!("`{s}`: a price per ₹100 face value, e.g. 101.25")),
+    }
+}
+
 fn expiry_date(s: &str) -> Result<chrono::NaiveDate, String> {
     derivatives::parse_expiry(s).ok_or_else(|| format!("`{s}`: use YYYY-MM-DD, e.g. 2026-10-27"))
 }
@@ -2002,6 +2150,7 @@ const GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     ("Funds & F&O", &["mf", "options"]),
+    ("Commodities & bonds", &["commodity", "bonds"]),
     (
         "Strategies & bots",
         &[
@@ -2041,6 +2190,7 @@ fn group_msg(english: &str) -> Option<i18n::Msg> {
         "Market" => Msg::GroupMarket,
         "Strategies & bots" => Msg::GroupStrategies,
         "Funds & F&O" => Msg::GroupFunds,
+        "Commodities & bonds" => Msg::GroupCommoditiesBonds,
         "Portfolio" => Msg::GroupPortfolio,
         "Interfaces" => Msg::GroupInterfaces,
         "Live trading" => Msg::GroupLiveTrading,
@@ -2274,9 +2424,12 @@ async fn main() {
     let result = match cli.command {
         Commands::Quote { symbols, out } => commands::cmd_quote(&symbols, m, out.into()).await,
         Commands::Deep { symbol, period } => commands::cmd_deep(&symbol, &period, m).await,
-        Commands::Markets { out, crypto, fx } => {
-            commands::cmd_markets(m, out.into(), crypto, fx).await
-        }
+        Commands::Markets {
+            out,
+            crypto,
+            fx,
+            global,
+        } => commands::cmd_markets(m, out.into(), crypto, fx, global).await,
         Commands::Dashboard => commands::cmd_dashboard(m).await,
         Commands::Search { query, out } => commands::cmd_search(&query, out.into()).await,
         Commands::Doctor => commands::cmd_doctor(m, sources).await,
@@ -2346,6 +2499,47 @@ async fn main() {
             commands::cmd_dividends(&symbol, m, out.into()).await
         }
 
+        Commands::Commodity { action, out } => {
+            use commands::CommodityView as V;
+            let (view, out) = match action {
+                None => (V::Spot, out),
+                Some(CommodityCmd::Spot { out }) => (V::Spot, out),
+                Some(CommodityCmd::Futures { out }) => (V::Futures, out),
+                Some(CommodityCmd::Etfs { out }) => (V::Etfs, out),
+                Some(CommodityCmd::Sgb { out }) => (V::Sgb, out),
+            };
+            commands::cmd_commodity(view, out.into()).await
+        }
+        Commands::Bonds { action, out } => match action {
+            None => commands::cmd_bonds_yields(out.into()).await,
+            Some(BondsCmd::Yields { out }) => commands::cmd_bonds_yields(out.into()).await,
+            Some(BondsCmd::List { query, out }) => {
+                commands::cmd_bonds_list(query.as_deref(), out.into()).await
+            }
+            Some(BondsCmd::Calc {
+                security,
+                coupon,
+                maturity,
+                price,
+                ytm,
+                settle,
+                tbill,
+                dirty,
+                out,
+            }) => {
+                let input = commands::CalcInput {
+                    security: security.as_deref(),
+                    coupon,
+                    maturity,
+                    price,
+                    ytm,
+                    settle,
+                    tbill,
+                    dirty,
+                };
+                commands::cmd_bonds_calc(input, out.into()).await
+            }
+        },
         Commands::Mf { action } => match action {
             MfCmd::Search { query, limit, json } => {
                 commands::cmd_mf_search(&query.join(" "), limit, json).await
@@ -2959,6 +3153,113 @@ mod tests {
             assert!(dir.join(page).is_file(), "{page} was not written");
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn commodity_and_bonds_commands_parse() {
+        for args in [
+            vec!["stockwise", "commodity"],
+            vec!["stockwise", "commodity", "--json"],
+            vec!["stockwise", "commodity", "spot", "--csv"],
+            vec!["stockwise", "commodity", "futures"],
+            vec!["stockwise", "commodity", "etfs", "--json"],
+            vec!["stockwise", "commodity", "sgb", "--csv"],
+            vec!["stockwise", "bonds"],
+            vec!["stockwise", "bonds", "--csv"],
+            vec!["stockwise", "bonds", "yields", "--json"],
+            vec!["stockwise", "bonds", "list", "2033"],
+            vec![
+                "stockwise",
+                "bonds",
+                "calc",
+                "718GS2033",
+                "--price",
+                "101.25",
+            ],
+            vec!["stockwise", "bonds", "calc", "718GS2033", "--ytm", "-0.5"],
+            vec![
+                "stockwise",
+                "bonds",
+                "calc",
+                "--coupon",
+                "7.1%",
+                "--maturity",
+                "2034-04-08",
+                "--price",
+                "99.5",
+                "--dirty",
+                "--json",
+            ],
+            vec![
+                "stockwise",
+                "bonds",
+                "calc",
+                "--tbill",
+                "--maturity",
+                "2027-01-14",
+                "--price",
+                "98.6",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
+        }
+        for args in [
+            // Neither a price nor a yield.
+            vec!["stockwise", "bonds", "calc", "718GS2033"],
+            // Both.
+            vec![
+                "stockwise",
+                "bonds",
+                "calc",
+                "718GS2033",
+                "--price",
+                "100",
+                "--ytm",
+                "7",
+            ],
+            // No security and no maturity.
+            vec!["stockwise", "bonds", "calc", "--price", "100"],
+            vec!["stockwise", "bonds", "calc", "X", "--price", "-1"],
+            vec![
+                "stockwise",
+                "bonds",
+                "calc",
+                "X",
+                "--price",
+                "99",
+                "--tbill",
+                "--dirty",
+            ],
+            vec!["stockwise", "commodity", "spot", "sgb"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_err(), "{args:?} should fail");
+        }
+    }
+
+    #[test]
+    fn global_and_commodity_markets_parse() {
+        use market::Exchange;
+        for (flag, want) in [
+            ("uk", Market::Global(Exchange::Uk)),
+            ("UK", Market::Global(Exchange::Uk)),
+            ("lse", Market::Global(Exchange::Uk)),
+            ("de", Market::Global(Exchange::De)),
+            ("jp", Market::Global(Exchange::Jp)),
+            ("hk", Market::Global(Exchange::Hk)),
+            ("sg", Market::Global(Exchange::Sg)),
+            ("ca", Market::Global(Exchange::Ca)),
+            ("au", Market::Global(Exchange::Au)),
+            ("commodity", Market::Commodity),
+        ] {
+            let cli = Cli::try_parse_from(["stockwise", "quote", "X", "-m", flag]).unwrap();
+            assert_eq!(cli.market, want, "-m {flag}");
+        }
+        assert!(Cli::try_parse_from(["stockwise", "quote", "X", "-m", "mars"]).is_err());
+        let cli = Cli::try_parse_from(["stockwise", "markets", "--global"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Markets { global: true, .. }
+        ));
     }
 
     #[test]

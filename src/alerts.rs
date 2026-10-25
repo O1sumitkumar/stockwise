@@ -519,6 +519,8 @@ pub fn alert_market(symbol: &str) -> Option<Market> {
         || s == "^BSESN"
     {
         Some(Market::In)
+    } else if let Some(x) = crate::market::exchange_of(&s) {
+        Some(Market::Global(x))
     } else if s.contains('.') {
         None
     } else {
@@ -1167,5 +1169,15 @@ mod tests {
         assert_eq!(alert_market("USDINR=X"), None);
         assert_eq!(alert_market("BRK-B"), Some(Market::Us));
         assert_eq!(alert_market("BAJAJ-AUTO.NS"), Some(Market::In));
+        assert_eq!(
+            alert_market("VOD.L"),
+            Some(Market::Global(crate::market::Exchange::Uk))
+        );
+        assert_eq!(
+            alert_market("^N225"),
+            Some(Market::Global(crate::market::Exchange::Jp))
+        );
+        // COMEX futures trade nearly around the clock: always checked.
+        assert_eq!(alert_market("GC=F"), None);
     }
 }

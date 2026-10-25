@@ -13,8 +13,12 @@ use serde::Deserialize;
 /// wait while the market is closed, saves at least every 30 minutes.
 pub const STALE_AFTER_SECS: i64 = 45 * 60;
 
-/// Markets a daemon can run for, as the metrics label them.
+/// Markets whose daemon is always reported by the metrics (as `0` when it
+/// has never run).
 pub const MARKETS: [&str; 2] = ["IN", "US"];
+
+/// Every market a daemon can run for, with its own state file.
+const STATE_MARKETS: [&str; 9] = ["IN", "US", "UK", "DE", "JP", "HK", "SG", "CA", "AU"];
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DaemonStatus {
@@ -105,7 +109,7 @@ impl DaemonStatus {
 /// The last saved state of each market's daemon that has run against this
 /// data directory (unreadable files are skipped).
 pub fn load() -> Vec<DaemonStatus> {
-    MARKETS
+    STATE_MARKETS
         .iter()
         .filter_map(|m| {
             let path = crate::store::path(crate::daemon::state_file(m)).ok()?;

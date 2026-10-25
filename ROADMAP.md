@@ -75,9 +75,14 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
   dividend dates for US and Indian stocks; NSE board meetings and corporate actions (filed
   results dates, splits, bonus) for Indian stocks. BSE filings and advance US splits are not covered
 - 📋 More Indian languages: Marathi, Tamil, Bengali
-- 📋 Commodities: gold and silver — MCX futures, gold/silver ETFs, Sovereign Gold Bonds, spot in ₹/10 g
-- 📋 Global exchanges from one market table — UK, Germany, Japan, Hong Kong, Singapore, Canada, Australia
-- 📋 Indian government bonds and T-bills (G-secs)
+- 🛠️ Commodities: gold and silver — spot in ₹/10 g, gold/silver ETFs, Sovereign Gold Bonds and
+  COMEX futures (`commodity`, `-m commodity`); still missing: MCX futures (no free public feed),
+  and SGB prices only show when NSE accepts StockWise's session
+- ✅ Global exchanges from one market table — UK, Germany, Japan, Hong Kong, Singapore, Canada,
+  Australia (`-m uk|de|jp|hk|sg|ca|au`, `markets --global`)
+- 🛠️ Indian government bonds and T-bills (G-secs) — benchmark yields, India 10Y in `markets`, the
+  outstanding list and a YTM calculator (`bonds`); still missing: live prices of individual G-secs
+  and T-bills (no documented public source)
 - ✅ Simulator challenges — historical replay ("trade the 2020 crash" with the future hidden),
   goal-based challenges, risk-adjusted scores, badges and streaks, a shareable result card
   (`sim replay`, `sim challenge`, `sim profile`, `sim card`)

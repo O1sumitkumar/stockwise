@@ -121,6 +121,9 @@ struct MarketsParams {
     /// Add the currency section (`markets --fx`).
     #[serde(default)]
     fx: bool,
+    /// Add each exchange's main index (`markets --global`).
+    #[serde(default)]
+    global: bool,
 }
 
 impl<D> AppState<D> {
@@ -225,11 +228,11 @@ async fn history<D: DataSource>(
     json(hist)
 }
 
-/// `GET /api/markets?crypto=true&fx=true` — the `markets --json` array.
+/// `GET /api/markets?crypto=true&fx=true&global=true` — the `markets --json` array.
 async fn markets<D: DataSource>(State(st): Shared<D>, Query(p): Query<MarketsParams>) -> ApiResult {
     let market = st.market_for(p.market.as_deref())?;
     json(
-        views::markets(&st.source, market, p.crypto, p.fx)
+        views::markets(&st.source, market, p.crypto, p.fx, p.global)
             .await
             .map_err(ApiError::from_data)?,
     )
@@ -583,6 +586,12 @@ pub async fn run(bind: &str, allow_remote: bool, market: Market, open: bool) -> 
             Market::Us => "us (override with ?market=in)",
             Market::Crypto => "crypto (bare tickers are coins; override with ?market=in)",
             Market::Fx => "fx (bare tickers are currency pairs; override with ?market=in)",
+            Market::Commodity => {
+                "commodity (gold/silver → COMEX futures, other bare tickers → NSE)"
+            }
+            Market::Global(_) => {
+                "a global exchange (bare tickers get its suffix; override with ?market=in)"
+            }
         },
     );
     crate::display::print_kv(

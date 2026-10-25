@@ -7,7 +7,7 @@ shows its arguments. This page adds detail.
 
 | Option | Env var | Description |
 |--------|---------|-------------|
-| `-m, --market <in\|us\|crypto\|fx>` | `STOCKWISE_MARKET` | Market for bare tickers. Default `in`: `TCS` → `TCS.NS`. `crypto`: `BTC` → `BTC-USD`. `fx` (or `forex`): `USDINR`, `usd/inr` → `USDINR=X`. Symbols with a suffix (`RELIANCE.BO`, `VOD.L`), indices (`^NSEI`), FX (`USDINR=X`) and crypto pairs (`BTC-INR`) pass through unchanged |
+| `-m, --market <MARKET>` | `STOCKWISE_MARKET` | Market for bare tickers. Default `in`: `TCS` → `TCS.NS`. `us`: `AAPL`. `crypto`: `BTC` → `BTC-USD`. `fx` (or `forex`): `USDINR`, `usd/inr` → `USDINR=X`. `commodity`: `GOLD` → `GC=F`, `SILVER` → `SI=F`, other bare tickers → NSE (`GOLDBEES` → `GOLDBEES.NS`). Global exchanges from the [market table](markets.md): `uk` (`VOD` → `VOD.L`), `de` (`SAP.DE`), `jp` (`7203` → `7203.T`), `hk` (`5` → `0005.HK`), `sg` (`D05.SI`), `ca` (`RY.TO`), `au` (`BHP.AX`). Symbols with a suffix (`RELIANCE.BO`, `VOD.L`), indices (`^NSEI`), FX (`USDINR=X`), futures (`GC=F`) and crypto pairs (`BTC-INR`) pass through unchanged |
 | `--quote-currency <CODE>` | `STOCKWISE_QUOTE_CURRENCY` | Currency bare crypto tickers are quoted in with `-m crypto`. Default `usd`; `inr` gives `BTC-INR` |
 | `--lang <en\|hi>` | `STOCKWISE_LANG` | Language for help groups, tables and messages. Default: your locale (`LC_ALL` / `LC_MESSAGES` / `LANG` starting with `hi` picks Hindi), else English. `--json` and `--csv` output is never translated |
 | `--ai` | `STOCKWISE_AI` | Add an AI section to `analyze`, `technical`, `compare`, `screen`, `backtest`, `deep` (slow with a local model; see [ai.md](ai.md)) |
@@ -36,6 +36,26 @@ sessions, sectors or fundamentals — `sectors`, `rotation`, `sectorcmp`,
 `daemon`, `sim start` — refuse `-m crypto` / `-m fx` with an explanation;
 `movers`, `heatmap`, `history`, `technical`, `backtest` and friends work.
 
+**Global exchanges** (`-m uk|de|jp|hk|sg|ca|au`): quotes, history, charts,
+technicals, `movers` (each exchange's large caps), `markets` and alerts work as
+for India and the US. Prices show in the local currency (`£`, `€`, `¥`, `HK$`,
+`S$`, `C$`, `A$`); London quotes in pence, so `VOD.L` shows `118.20p` while its
+market cap shows in pounds. `sectors`, `rotation` and `sectorcmp` need sector
+indices or ETFs, which Yahoo has for Japan (TOPIX-17 ETFs), Hong Kong, Canada
+and Australia only. Sessions, lunch breaks, half days and holidays come from
+each exchange's calendar ([markets.md](markets.md)). `tax` has rules for India,
+the US and the UK only, and names the other listings it leaves out. Backtest
+costs default to the US model outside India. The bots and the simulator
+(`intraday`, `longterm`, `daemon`, `sim start`, `sim replay`, `sim challenge`,
+`report`) size positions from the capital you type, so they refuse `-m uk`,
+whose prices are in pence; replays on other exchanges use their main index
+as the benchmark.
+
+**Commodities** (`-m commodity`): `GOLD`/`SILVER` resolve to COMEX futures, so
+`history gold`, `chart silver`, `technical gold` and `alert add gold above
+4200` work; `commodity` and `bonds` have their own commands
+([below](#commodities--bonds)).
+
 **Hindi** (`--lang hi`): help group titles and the main command descriptions,
 `quote`, `markets`, `dashboard`, `portfolio`, `search` and `doctor` labels,
 and common errors. Other commands are still English. Indian amounts keep
@@ -57,7 +77,7 @@ network, invalid config file), `2` invalid arguments.
 |---------|-------------|
 | `quote <SYMBOLS...> [--json\|--csv]` (`q`) | Price, change, day/52-week range, volume, market cap, P/E, EPS, moving averages. Unknown symbols are named in the error |
 | `deep <SYMBOL> [-p PERIOD]` | Everything about one stock: fundamentals, technicals, support/resistance, Fibonacci, risk, gaps, volume, insights. Default `3mo` |
-| `markets [--crypto] [--fx] [--json\|--csv]` | US + India indices (S&P 500, Dow, NASDAQ, Russell, VIX, NIFTY 50, SENSEX, Bank NIFTY, NIFTY IT); `--crypto` adds the largest coins, `--fx` major pairs (USD/INR, EUR/USD, ...). With `-m crypto` / `-m fx` that section comes first. `--json` rows carry `region`: `Indian Markets`, `US Markets`, `Crypto` or `FX` |
+| `markets [--crypto] [--fx] [--global] [--json\|--csv]` | US + India indices (S&P 500, Dow, NASDAQ, Russell, VIX, NIFTY 50, SENSEX, Bank NIFTY, NIFTY IT) and the India 10-year G-sec yield (CCIL, RBI fallback; left out when neither answers); `--crypto` adds the largest coins, `--fx` major pairs (USD/INR, EUR/USD, ...), `--global` one row per exchange's main index (NIFTY 50, S&P 500, FTSE 100, DAX, Nikkei 225, Hang Seng, Straits Times, S&P/TSX, S&P/ASX 200) with whether it is open and its local time. With `-m crypto`, `-m fx`, `-m commodity` or a global exchange that section comes first. `--json` rows carry `region`: `Indian Markets`, `US Markets`, `Crypto`, `FX`, `Commodities`, a country (`United Kingdom`, `Japan`, ...) or `Global` |
 | `dashboard` (`d`) | Indices + portfolio P&L + watchlist + triggered alerts; first-run hints when empty |
 | `search <QUERY> [--json\|--csv]` | Find a ticker by company name |
 | `doctor` | Check the config file, market and language, data directory, Yahoo reachability, the data provider that answered, Redis, AI provider and model (never the key), broker config. Exits 1 if market data is unreachable or the config file is invalid |
@@ -214,6 +234,55 @@ MF periods (`-p`) are `<n>mo`, `<n>y` or `max`, e.g. `6mo`, `3y`, `10y`. Expirie
   are American, so their greeks are the usual European approximation.
 - **PCR and max pain** describe positioning for one expiry; they are not
   forecasts.
+
+## Commodities & bonds
+
+| Command | Description |
+|---------|-------------|
+| `commodity [--json\|--csv]` / `commodity spot` | Gold and silver in USD per troy ounce and in ₹ per gram, per 10 g (gold) and per kg (silver), with the day's change. ₹ prices are international prices converted at USD/INR — before Indian import duty and GST |
+| `commodity futures [--json\|--csv]` | COMEX gold and silver futures (GC=F, MGC=F, SI=F, SIL=F) with the front contract month and volume |
+| `commodity etfs [--json\|--csv]` | Gold and silver ETFs on NSE: GOLDBEES, SETFGOLD, HDFCGOLD, GOLDIETF, GOLD1, GOLDCASE, SILVERBEES, SILVERIETF, HDFCSILVER, SILVER1 |
+| `commodity sgb [--json\|--csv]` | Sovereign Gold Bonds trading on NSE: price per unit (1 g), premium or discount to 1 g of gold at the international spot price, current yield of the 2.5% interest, maturity and volume |
+| `bonds [--json\|--csv]` / `bonds yields` | Benchmark yields by tenor — 91/182/364-day T-bills, G-secs from 1–2 to 28–30 years (India 10Y = the 9Y–10Y bucket) and state loans (SDLs) |
+| `bonds list [QUERY] [--json\|--csv]` | Government of India securities outstanding: ISIN, name, maturity, NSE symbol, outstanding stock. `QUERY` is a maturity year (`2033`), part of a name (`GS 2036`), an ISIN or an NSE symbol |
+| `bonds calc [SECURITY] (--price P \| --ytm Y) [--coupon C --maturity DATE] [--settle DATE] [--dirty] [--tbill] [--json]` | Price ↔ yield to maturity, accrued interest, dirty price, current yield, Macaulay and modified duration, next coupon. `SECURITY` (`718GS2033`, `"7.18% GS 2033"`, `IN0020230085`) is looked up in RBI's list for its coupon and maturity; or give `--coupon` and `--maturity`. `--dirty`: the price includes accrued interest (NSE quotes G-secs that way). `--tbill`: a Treasury bill, priced on its discount yield. Settlement defaults to today in India |
+
+**Where the data comes from, and what has none**
+
+- **Gold and silver spot**: Yahoo Finance has no free spot quote, so spot is
+  the COMEX front-month future (`GC=F`, `SI=F`, USD per troy ounce) converted at
+  `USDINR=X` (1 troy ounce = 31.1035 g). It excludes Indian import duty and GST,
+  so jewellers' rates, IBJA rates and MCX prices are higher.
+- **MCX futures** have no free public feed (MCX's site is bot-protected and its
+  data is licensed), so StockWise shows COMEX contracts and labels them.
+- **ETFs** are NSE listings via Yahoo, in ₹ per unit; each ETF holds a
+  different amount of metal per unit, so compare % moves, not prices.
+- **SGB prices** come from NSE's Sovereign Gold Bond list
+  (`/api/sovereign-gold-bonds`) through the same polite NSE session as the
+  [NSE provider](data-providers.md#nse-and-bse), cached for 5 minutes and kept
+  on disk. When NSE refuses (it often blocks scripts), the last saved list is
+  shown with its date; with none, every outstanding tranche is listed **without
+  a price** — never a guessed one. Tranche details (series, issue date, issue
+  price, maturity = issue + 8 years, early redemption from year 5) are bundled
+  from public tranche tables; 33 of the 44 issue dates were checked against
+  RBI press releases, and RBI moves a maturity a day or two earlier when it
+  falls on a holiday.
+  Their NSE symbols come from a public list and are only shown when NSE's own
+  list is unavailable. No new SGBs have been issued since February 2024.
+- **Yields**: CCIL's [tenor-wise indicative yields](https://www.ccilindia.com/tenorwise-indicative-yields),
+  end of day, cached for 6 hours; when CCIL can't be reached, the five
+  benchmark G-sec yields and T-bill cut-offs on the [RBI home page](https://www.rbi.org.in/).
+  CCIL and RBI data are for personal, non-commercial use.
+- **Outstanding G-secs**: RBI's [list of Government of India securities](https://www.rbi.org.in/scripts/bs_viewcontent.aspx?Id=1956),
+  cached for a day.
+- **Prices of individual G-secs and T-bills** are not shown: neither CCIL nor
+  RBI publishes them as a plain page, and NSE's live debt quotes have no
+  documented API. Enter the price your broker shows into `bonds calc`.
+- **Bond math**: half-yearly coupons on the maturity date's day, 30/360
+  (European) day count, yield compounded half-yearly, simple interest in the
+  final coupon period — the G-sec convention. T-bill yield =
+  `(100 − price) / price × 365 / days`. Floating-rate bonds (FRBs) are not
+  supported.
 
 ## Strategies & bots
 
@@ -555,8 +624,14 @@ stockwise mf screen flexi cap -s ter --json | jq '.[] | {name, ter, return_3y}'
 | Command | `--json` | `--csv` — one row per |
 |---------|----------|-----------------------|
 | `quote` | `[quote]` — Yahoo's quote fields, plus `dataSource` when another provider supplied the price, and `deliveryPercent`, `lowerCircuit`, `upperCircuit` when NSE did ([data-providers.md](data-providers.md#nse-and-bse)) | quote: `symbol, name, currency, price, change, change_percent, open, day_low, day_high, year_low, year_high, volume, avg_volume_3m, market_cap, pe_ttm, eps_ttm, dividend_yield, delivery_percent, lower_circuit, upper_circuit` (the last three empty unless NSE answered) |
-| `markets` | `[{region, symbol, name, price, change, change_percent, currency}]` — `region` is `Indian Markets`, `US Markets`, `Crypto` or `FX` | index |
+| `markets` | `[{region, symbol, name, price, change, change_percent, currency}]` — `region` is `Indian Markets`, `US Markets`, `Crypto`, `FX`, `Commodities`, a country (`United Kingdom`, `Germany`, `Japan`, `Hong Kong`, `Singapore`, `Canada`, `Australia`) or `Global`. The India 10-year yield is the row with `symbol` `IN10Y`: `price` is the yield in percent, `currency` and `change` are null | index |
 | `search` | `[hit]` — Yahoo's search fields | hit: `symbol, name, quote_type, exchange` |
+| `commodity` / `commodity spot` | `[{metal, unit, price, currency, change_percent, source}]` — `metal` is `gold` or `silver`; `unit` is `USD/oz`, `INR/g`, `INR/10g` or `INR/kg` | row |
+| `commodity futures`, `commodity etfs` | `[{symbol, metal, name, contract, price, change, change_percent, volume, currency}]` — `contract` is Yahoo's short name (the front month for futures) | instrument |
+| `commodity sgb` | `[{symbol, isin, series, issue_date, issue_price, maturity, early_redemption_from, years_to_maturity, price, change_percent, volume, gold_value, premium_percent, interest_per_year, current_yield_percent}]` — `price` is ₹ per unit (1 g) and null when NSE gave none; `gold_value` is 1 g at the international spot price; `maturity` is nominal (issue + 8 years); NSE's notes go to stderr | tranche |
+| `bonds` / `bonds yields` | `[{date, tenor, kind, security, ytm, source}]` — `kind` is `tbill`, `gsec` or `sdl`; `source` is `CCIL` or `RBI`; `ytm` in percent, null when the page shows none | yield |
+| `bonds list` | `[{isin, name, coupon, issue_date, maturity, outstanding_cr}]` — `coupon` is null for floating-rate bonds; `outstanding_cr` in ₹ crore | security |
+| `bonds calc` | `{security, isin, kind, coupon, maturity, settlement, days_to_maturity, clean_price, accrued_interest, dirty_price, ytm, current_yield, macaulay_duration, modified_duration, next_coupon, coupons_left}` — `kind` is `gsec` or `tbill`; prices per ₹100 face value, yields in percent | — |
 | `history` | `{symbol, currency, period, interval, bars: [{time, open, high, low, close, volume}]}` | bar |
 | `technical` | `{symbol, currency, period, interval, bars, price, sma_10, sma_20, sma_50, sma_100, sma_200, ema_12, ema_26, rsi_14, rsi_signal, macd: {line, signal, histogram, trend}, bollinger: {upper, middle, lower, position}, atr_14, atr_percent, vwap, bias: {verdict, bullish, bearish}}` — `position` is `above_upper`, `below_lower` or `within`; `verdict` is `bullish`, `bearish` or `neutral` | — |
 | `risk` | `{symbol, currency, period, interval, bars, price, return_percent, volatility_percent, risk_level, sharpe, sortino, calmar, max_drawdown: {percent, peak_price, trough_price, trading_days}, var_95_percent, var_99_percent}` — `risk_level` is `low`, `moderate`, `high` or `very_high` | — |
@@ -676,7 +751,7 @@ on Linux (`$XDG_CONFIG_HOME`), `%APPDATA%\stockwise\` on Windows — or the
 file named by `STOCKWISE_CONFIG`.
 
 ```toml
-market = "us"                       # in | us | crypto | fx
+market = "us"                       # in | us | crypto | fx | commodity | uk | de | jp | hk | sg | ca | au
 lang = "hi"                         # en | hi
 quote_currency = "inr"              # BTC → BTC-INR with -m crypto
 portfolio = "long-term"             # a named portfolio

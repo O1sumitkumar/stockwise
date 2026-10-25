@@ -3,8 +3,16 @@ use crate::market::{self, AssetClass};
 use colored::Colorize;
 
 pub fn format_price(val: f64, currency: Option<&str>) -> String {
-    let sym = market::currency_symbol(currency);
-    format!("{}{:.2}", sym, val)
+    with_currency(val, currency, 2)
+}
+
+/// `val` with `dp` decimals and its currency: `₹1350.75`, `HK$142.50`, or
+/// `118.20p` for London prices quoted in pence (`GBp`).
+fn with_currency(val: f64, currency: Option<&str>, dp: usize) -> String {
+    if currency.and_then(market::minor_unit).is_some() {
+        return format!("{:.*}p", dp, val);
+    }
+    format!("{}{:.*}", market::currency_symbol(currency), dp, val)
 }
 
 /// Decimal places for a price: stocks and indices use 2, FX pairs 4, and
@@ -25,7 +33,7 @@ pub fn price_decimals(class: AssetClass, price: f64) -> usize {
 /// (`USDINR=X` → ₹84.1234, `DOGE-USD` → $0.1234).
 pub fn format_asset_price(val: f64, currency: Option<&str>, symbol: &str) -> String {
     let dp = price_decimals(AssetClass::of(symbol), val);
-    format!("{}{:.*}", market::currency_symbol(currency), dp, val)
+    with_currency(val, currency, dp)
 }
 
 pub fn format_change(val: f64, pct: f64) -> String {
@@ -79,7 +87,11 @@ pub fn pad_start(text: &str, width: usize) -> String {
     format!("{}{}", " ".repeat(fill), text)
 }
 
+/// Market caps and other large amounts. Yahoo reports those of London
+/// listings in pounds even though their prices are in pence, so `GBp` is
+/// shown with `£` here.
 pub fn format_large_number(val: f64, currency: Option<&str>) -> String {
+    let currency = currency.map(|c| market::minor_unit(c).map_or(c, |(major, _)| major));
     let sym = market::currency_symbol(currency);
     if market::is_inr(currency) {
         format_large_number_inr(val, sym)
@@ -444,6 +456,25 @@ mod tests {
             format_asset_price(150.25, Some("JPY"), "USDJPY=X"),
             "\u{00A5}150.2500"
         );
+    }
+
+    #[test]
+    fn london_pence_and_other_currencies() {
+        // London prices are in pence (GBp): 118.20p, not £118.20.
+        assert_eq!(format_price(118.2, Some("GBp")), "118.20p");
+        assert_eq!(format_asset_price(118.2, Some("GBp"), "VOD.L"), "118.20p");
+        assert_eq!(format_price(1.182, Some("GBP")), "\u{00A3}1.18");
+        // Market caps of London listings come in pounds.
+        assert_eq!(
+            format_large_number(27_383_695_360.0, Some("GBp")),
+            "\u{00A3}27.38B"
+        );
+        assert_eq!(format_price(142.5, Some("HKD")), "HK$142.50");
+        assert_eq!(format_price(74.44, Some("SGD")), "S$74.44");
+        assert_eq!(format_price(281.77, Some("CAD")), "C$281.77");
+        assert_eq!(format_price(55.05, Some("AUD")), "A$55.05");
+        assert_eq!(format_price(3105.0, Some("JPY")), "\u{00A5}3105.00");
+        assert_eq!(format_price(214.4, Some("EUR")), "\u{20AC}214.40");
     }
 
     #[test]

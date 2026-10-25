@@ -136,11 +136,11 @@ fn bse_index(upper: &str) -> Option<(&'static str, u32)> {
 }
 
 /// Indian market → NSE (`RELIANCE`, `RELIANCE.NS`, `^NSEI` → `NIFTY`), except
-/// BSE's indices (`SENSEX`, `BANKEX`) and `.BO` stocks → BSE; US market or
-/// another suffix → Yahoo.
+/// BSE's indices (`SENSEX`, `BANKEX`) and `.BO` stocks → BSE; the US market,
+/// a global exchange or another suffix → Yahoo.
 pub fn route(symbol: &str, market: Market) -> Route {
     let upper = symbol.trim().to_uppercase();
-    if market == Market::Us {
+    if matches!(market, Market::Us | Market::Global(_)) {
         return Route::Yahoo(market::resolve_symbol(&upper, market));
     }
     if let Some((name, code)) = bse_index(&upper) {

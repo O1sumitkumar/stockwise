@@ -221,7 +221,14 @@ impl Metrics {
             "gauge",
             "1 if the market's intraday daemon saved its state in the last 45 minutes.",
         );
-        for market in crate::daemon_status::MARKETS {
+        // India and the US always; a global exchange once its daemon has run.
+        let mut markets: Vec<&str> = crate::daemon_status::MARKETS.to_vec();
+        for d in daemons {
+            if !markets.contains(&d.market.as_str()) {
+                markets.push(&d.market);
+            }
+        }
+        for market in markets {
             let fresh = daemons
                 .iter()
                 .any(|d| d.market == market && d.is_fresh(now));

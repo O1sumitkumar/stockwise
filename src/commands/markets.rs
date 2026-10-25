@@ -176,7 +176,7 @@ impl CsvRow for SectorRow {
 }
 
 pub async fn cmd_sectors(market: Market, fmt: Format) -> Result<()> {
-    market.require_stocks("sectors")?;
+    market.require_sectors("sectors")?;
     let client = YahooClient::new().await?;
     let sectors = market.sectors();
     let title = format!("{} Sector Performance", market.label());
@@ -1055,7 +1055,7 @@ pub async fn cmd_earnings(_market: Market) -> Result<()> {
 // ── Long-Term Wealth Bot ──
 
 pub async fn cmd_rotation(market: Market) -> Result<()> {
-    market.require_stocks("rotation")?;
+    market.require_sectors("rotation")?;
     let client = YahooClient::new().await?;
     let sectors = market.sectors();
     let title = format!("{} Sector Rotation", market.label());
@@ -1314,7 +1314,7 @@ pub async fn cmd_heatmap(market: Market, universe: Option<market::Universe>) -> 
 // ── Patterns (candlestick pattern detection) ──
 
 pub async fn cmd_sectorcmp(sector1: &str, sector2: &str, market: Market) -> Result<()> {
-    market.require_stocks("sectorcmp")?;
+    market.require_sectors("sectorcmp")?;
     let client = YahooClient::new().await?;
     let sectors = market.sectors();
     let find = |name: &str| -> Option<&str> {

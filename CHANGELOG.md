@@ -166,6 +166,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to scan an NSE index's current members (from NSE, whichever provider is set)
   instead of the built-in 30 large caps, which stay as the offline fallback.
 - `doctor` checks NSE and BSE separately in `exchange` mode.
+- Global exchanges from one market table: `-m uk`, `de`, `jp`, `hk`, `sg`,
+  `ca`, `au` resolve bare tickers with the exchange's Yahoo suffix (`-m uk
+  VOD` → `VOD.L`, `-m jp 7203` → `7203.T`, `-m hk 5` → `0005.HK`). Each
+  exchange brings its currency (London prices in pence print as `118.20p`;
+  `£`, `€`, `¥`, `HK$`, `S$`, `C$`, `A$`), benchmark indices, sector indices or
+  ETFs where Yahoo has them (Japan, Hong Kong, Canada, Australia), a large-cap
+  universe for `movers`/`screen`, trading hours with lunch breaks and half
+  days, and 2026–27 holiday tables from the exchanges' own calendars (weekday
+  fallback with a warning for years not bundled). `tax` names listings it has
+  no rules for (rules exist for India, the US and the UK). See
+  [docs/markets.md](docs/markets.md).
+- `markets --global`: one row per exchange's main index — NIFTY 50, S&P 500,
+  FTSE 100, DAX, Nikkei 225, Hang Seng, Straits Times, S&P/TSX, S&P/ASX 200 —
+  with whether it is open now and its local time.
+- `markets` shows the India 10-year G-sec yield (CCIL, RBI fallback; `IN10Y`
+  in `--json`/`--csv`).
+- `stockwise commodity [spot|futures|etfs|sgb]` and `-m commodity`: gold and
+  silver in ₹ per g / 10 g / kg and USD per ounce (COMEX front month at
+  USD/INR, before import duty and GST — clearly noted), COMEX futures with the
+  front contract month (MCX has no free feed), NSE gold and silver ETFs, and
+  Sovereign Gold Bonds with price, premium to gold spot, 2.5% interest yield
+  and maturity from NSE's SGB list — or, when NSE refuses, the outstanding
+  tranches without prices. With `-m commodity`, `GOLD`/`SILVER` resolve to
+  `GC=F`/`SI=F` for `history`, `chart`, `technical` and alerts. `--json`/`--csv`.
+- `stockwise bonds [yields|list|calc]`: T-bill, G-sec and SDL benchmark yields
+  from CCIL's tenor-wise indicative yields (RBI's benchmarks as fallback;
+  cached 6 hours), RBI's list of outstanding Government of India securities,
+  and a calculator for price ↔ yield to maturity, accrued interest, dirty
+  price, duration and T-bill discount yields, looking securities up by NSE
+  symbol (`718GS2033`), name or ISIN. Individual bond prices are not shown:
+  no public source publishes them. See
+  [docs/commands.md](docs/commands.md#commodities--bonds).
 - **WASM strategy plugins** (experimental, cargo feature `wasm-plugins`, off by
   default): `backtest SYMBOL -s wasm:path/to/strategy.wasm` runs a
   WebAssembly strategy in single, portfolio and walk-forward backtests, with
