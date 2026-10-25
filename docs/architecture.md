@@ -12,8 +12,8 @@ src/
     fundamentals.rs  analyze, compare, peers, dividends, insider, deep
     technicals.rs    technical, history, chart, timeframes, patterns, support, fibs, volume, gaps, stoploss
     risk.rs          risk, correlate, returns, forecast, options moves
-    funds.rs         mf search, nav, history, sip, screen, overlap
-    fno.rs           options chain, pcr, maxpain
+    funds.rs         mf search, nav, history, sip, screen, overlap (TER in nav/history/screen)
+    fno.rs           options chain, pcr, maxpain, payoff
     markets.rs       movers, sectors, news, sentiment, screen, picks, earnings, rotation, matrix, surprise, heatmap, sectorcmp, ipo
     backtests.rs     backtest (single, portfolio, walkforward, strategies)
     strategies.rs    sip, whatif, intraday, longterm, report
@@ -41,9 +41,12 @@ src/
   i18n.rs            Typed English/Hindi message catalog, --lang / STOCKWISE_LANG / locale detection
   brokers/           Broker trait + clients: angel (SmartAPI, TOTP), zerodha, upstox, dhan, fyers
                      (experimental), secrets.rs (OS keyring / owner-only file), mock.rs (test HTTP server)
-  funds.rs           AMFI NAV file + api.mfapi.in history (cached), returns, SIP, ETF holdings overlap
-  derivatives.rs     Option chains from NSE / Yahoo, PCR, max pain, per-contract IV and greeks
+  funds.rs           AMFI NAV file + api.mfapi.in history (cached), AMFI TER disclosure (cached a day),
+                     returns, SIP, ETF holdings overlap
+  xlsx.rs            Minimal .xlsx reader (zip via flate2 + sheet cells) for AMFI's TER export
+  derivatives.rs     Option chains from NSE / BSE / Yahoo, lot sizes, PCR, max pain, per-contract IV and greeks
   greeks.rs          Black-Scholes pricing, greeks, implied-volatility solver
+  payoff.rs          Multi-leg option payoffs: presets, max profit/loss, breakevens, probability of profit
   ai.rs              AI: Ollama (default) or opt-in OpenAI / Anthropic / Gemini; prompts, opt-in flag, model checks
   clock.rs           Exchange clock: IST / US Eastern, NSE + NYSE holidays, session phases
   daemon.rs          Worker state: positions, risk manager, daemon_state.json, shutdown, retry
@@ -60,7 +63,7 @@ src/
   longterm.rs        Long-term bot (6-pillar scoring, Monte Carlo, DRIP)
   simulator.rs       Paper-trading sessions and confidence rating
   insights.rs        Rule-based plain-English insights
-  charts.rs          Braille line charts, volume bars, gauges
+  charts.rs          Braille line charts, option payoff chart, volume bars, gauges
   display.rs         Currency- and asset-aware formatting (₹/$/€/£/¥, FX and crypto decimals), width-aware padding
   market.rs          Market enum (in/us/crypto/fx), asset classes, symbol resolution, index/sector/coin/pair lists
   watchlist.rs, alerts.rs, wealth.rs   Data models persisted via store.rs
@@ -87,8 +90,8 @@ config file > default.
 ```
 User Input → clap CLI → commands/* → views.rs → api.rs → Yahoo Finance
               tui/, server/ ───────────↗
-                                   → funds.rs → AMFI NAVAll.txt, api.mfapi.in
-                                   → derivatives.rs → NSE option chain (India), Yahoo (US)
+                                   → funds.rs → AMFI NAVAll.txt + TER disclosure, api.mfapi.in
+                                   → derivatives.rs → NSE / BSE option chains (India), Yahoo (US)
                                             → providers/* → Alpha Vantage / Massive / Twelve Data (opt-in)
                                    → brokers/* → Angel One, Kite, Upstox, Dhan, Fyers
                                    → ai.rs → Local Ollama (or opt-in OpenAI / Anthropic / Gemini)

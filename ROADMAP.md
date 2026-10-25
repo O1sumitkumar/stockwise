@@ -47,8 +47,10 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
   `portfolio`, `search`, `doctor`)
 - 📋 Broker integrations verified against live accounts — community testers wanted for
   Zerodha, Upstox, Dhan and Fyers before the "experimental" label comes off
-- 📋 BSE options in `options chain`
-- 📋 Expense ratios for Indian mutual funds (AMFI TER disclosures) in `mf screen`
+- ✅ BSE options in `options chain`, `pcr` and `maxpain` — SENSEX, BANKEX, SENSEX50 and `.BO`
+  stocks via BSE's public API; BSE sometimes refuses scripted requests (StockWise then says so)
+- ✅ Expense ratios for Indian mutual funds (AMFI TER disclosures) in `mf screen`, `mf nav` and
+  `mf history`, with `--sort ter` and `--max-ter`
 
 ## 📋 Next — planning and reporting (0.5)
 
@@ -65,7 +67,9 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - 💡 Broker-side GTT and order-status sync into the portfolio
 - 💡 A small web dashboard served by `stockwise serve`
 - 💡 WASM strategy plugins (TOML strategies cover most cases today)
-- 💡 Options strategy builder — payoff charts for spreads and straddles from the live chain
+- ✅ Options strategy builder — `options payoff`: legs or presets (spreads, straddle, strangle,
+  iron condor, butterfly, covered call) priced from the live chain, payoff chart, breakevens,
+  probability of profit, net greeks
 
 ## Non-goals
 
