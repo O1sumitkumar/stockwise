@@ -452,6 +452,14 @@
         group.node.append(el('span', { class: 'region', 'aria-hidden': 'true', text: SHORT_REGION[r.region] || r.region }));
         groups.push(group);
       }
+      if (r.symbol === 'IN10Y') {
+        // The India 10-year G-sec yield: a percentage with no chart behind it.
+        group.node.append(el('div', { class: 'tile' }, [
+          el('span', { class: 'name', text: r.name }),
+          el('span', { class: 'price num', text: isNum(r.price) ? r.price.toFixed(2) + '%' : DASH }),
+        ]));
+        continue;
+      }
       group.node.append(el('button', {
         type: 'button',
         class: 'tile',
