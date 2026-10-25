@@ -422,7 +422,7 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 
 ## Roadmap & contributing
 
-Next up: Hindi and more Indian languages, live-tested brokers, custom rebalancing and income tracking — see the
+Next up: mutual fund and SGB portfolio valuation, direct `.xlsx` imports, live-tested brokers, more global markets (`kr`, `tw`, `fr`, `nl`, `ch`, `cn`, `br`) and commodities, custom rebalancing, lot-level tax harvesting, and full net-worth tracking — see the
 [ROADMAP](ROADMAP.md). Ideas and bug reports are
 welcome in [Discussions](https://github.com/iamsaquib8/stockwise/discussions) and
 [Issues](https://github.com/iamsaquib8/stockwise/issues); start with
