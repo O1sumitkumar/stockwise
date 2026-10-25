@@ -28,9 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses).
 
 ### Changed
-- `alert list --json` adds `period` and `description`; `alert check --json`
-  adds `period`, `description`, `value`, `reference` and the status
-  `no_data`. Existing `alerts.json` files load unchanged.
+- `alert list --json/--csv` adds `period` and `description`; `alert check
+  --json/--csv` adds `period`, `description`, `value`, `reference` and the
+  status `no_data` (new CSV columns come after the old ones). Existing
+  `alerts.json` files load unchanged. Quotes carry Yahoo's
+  `regularMarketTime`.
 
 ## [0.4.0] - 2026-10-21
 

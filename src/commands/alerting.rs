@@ -32,8 +32,26 @@ struct WatchState {
 impl WatchState {
     /// Whether an alert whose condition is `hit` should notify now. An alert
     /// notifies when its condition becomes true, re-arms once the condition
-    /// has been false, and notifies at most once a day.
+    /// has been false, and notifies at most once a day. A `per_session`
+    /// condition (today's change or volume) also re-arms with each new
+    /// session, since nothing checks it between the close and the next open.
     fn should_notify(&mut self, key: &str, hit: bool, today: NaiveDate) -> bool {
+        self.should_notify_with(key, hit, today, false)
+    }
+
+    fn should_notify_with(
+        &mut self,
+        key: &str,
+        hit: bool,
+        today: NaiveDate,
+        per_session: bool,
+    ) -> bool {
+        if per_session
+            && let Some(f) = self.fired.get_mut(key)
+            && f.last != today
+        {
+            f.armed = true;
+        }
         match (hit, self.fired.get_mut(key)) {
             (true, None) => {
                 self.fired.insert(
@@ -210,7 +228,14 @@ async fn check_alerts(
     for alert in due {
         let d = data.get(&alert.symbol).cloned().unwrap_or_default();
         let condition = alert.describe(crate::i18n::Lang::En);
+        let today = clock::session_date(alert_market(&alert.symbol).unwrap_or(market), now);
+        let key = alert_key(alert);
         let Some(reading) = alert.evaluate(&d) else {
+            // Past results with the next date not known yet: re-arm, so the
+            // next quarter's date notifies again.
+            if alert.needs_results() {
+                state.should_notify(&key, false, today);
+            }
             if verbose {
                 let why = if alert.condition.is_price() {
                     "no live price"
@@ -236,10 +261,8 @@ async fn check_alerts(
             .or_else(|| d.bars.as_ref().and_then(|b| b.close.last().copied()));
         let currency = d.currency.clone();
         let reading_text = alert.reading_text(&reading);
-        let today = clock::session_date(alert_market(&alert.symbol).unwrap_or(market), now);
-        let key = alert_key(alert);
         let previous = state.fired.get(&key).copied();
-        let fire = state.should_notify(&key, hit, today);
+        let fire = state.should_notify_with(&key, hit, today, alert.condition.per_session());
         if verbose {
             let status = if fire {
                 "TRIGGERED".red().bold().to_string()
@@ -545,6 +568,20 @@ mod tests {
         assert!(s.should_notify("a", true, day(23)));
         assert!(!s.should_notify("a", false, day(23)));
         assert!(!s.should_notify("a", true, day(23)));
+    }
+
+    #[test]
+    fn per_session_alerts_rearm_each_session() {
+        let mut s = WatchState::default();
+        // +3% all of day 21: one notification.
+        assert!(s.should_notify_with("c", true, day(21), true));
+        assert!(!s.should_notify_with("c", true, day(21), true));
+        // Up 3% again on the 22nd, never seen false in between: notifies.
+        assert!(s.should_notify_with("c", true, day(22), true));
+        assert!(!s.should_notify_with("c", true, day(22), true));
+        // A level alert in the same spot stays quiet until it re-arms.
+        assert!(s.should_notify("l", true, day(21)));
+        assert!(!s.should_notify("l", true, day(22)));
     }
 
     #[test]

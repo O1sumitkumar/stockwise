@@ -128,6 +128,15 @@ impl AlertCondition {
         }
     }
 
+    /// Conditions about one session (today's change or volume): each new
+    /// session may notify again, even if the last one ended triggered.
+    pub fn per_session(self) -> bool {
+        matches!(
+            self,
+            AlertCondition::ChangeAbove | AlertCondition::ChangeBelow | AlertCondition::VolumeSpike
+        )
+    }
+
     /// Price alerts need only the live quote.
     pub fn is_price(self) -> bool {
         matches!(
@@ -433,10 +442,18 @@ pub fn chart_range(bars: usize) -> &'static str {
 }
 
 /// Bring the last daily bar up to the live quote. Yahoo's chart is cached
-/// for minutes and sometimes leaves out the live bar, so a quote from
-/// today's `session` either updates today's bar or, while the market is
-/// `open`, becomes it.
-pub fn patch_live_bar(bars: &mut Bars, quote: &crate::api::Quote, session: NaiveDate, open: bool) {
+/// for minutes and sometimes leaves out the live bar. `quote_day` is the
+/// exchange date of the quote's last trade: a quote from the last bar's
+/// session updates it, a quote from a later session becomes a new bar, and
+/// an older quote changes nothing. Without a trade time, only a bar already
+/// dated `session` (today) is updated — never a bar invented from a quote
+/// that may be yesterday's close.
+pub fn patch_live_bar(
+    bars: &mut Bars,
+    quote: &crate::api::Quote,
+    session: NaiveDate,
+    quote_day: Option<NaiveDate>,
+) {
     let Some(price) = quote.regular_market_price.filter(valid) else {
         return;
     };
@@ -452,15 +469,16 @@ pub fn patch_live_bar(bars: &mut Bars, quote: &crate::api::Quote, session: Naive
         .min(price);
     let volume = quote.regular_market_volume.unwrap_or(0);
     let last_day = bars.time.last().map(|&t| bar_date(t));
-    if last_day == Some(session) {
+    let day = quote_day.unwrap_or(session);
+    if last_day == Some(day) {
         let i = bars.len() - 1;
         bars.close[i] = price;
         bars.high[i] = bars.high[i].max(high);
         bars.low[i] = bars.low[i].min(low);
         bars.volume[i] = bars.volume[i].max(volume);
-    } else if open && last_day.is_none_or(|d| d < session) {
+    } else if quote_day.is_some() && last_day.is_none_or(|d| d < day) {
         let open_price = quote.regular_market_open.filter(valid).unwrap_or(price);
-        let t = session
+        let t = day
             .and_hms_opt(0, 0, 0)
             .map_or(0, |d| d.and_utc().timestamp());
         bars.time.push(t);
@@ -485,7 +503,14 @@ fn bar_date(t: i64) -> NaiveDate {
 /// trade around the clock (crypto, FX) and other exchanges' listings.
 pub fn alert_market(symbol: &str) -> Option<Market> {
     let s = symbol.to_uppercase();
-    if s.ends_with("-USD") || s.ends_with("-INR") || s.contains('=') {
+    if s.ends_with("-USD")
+        || s.ends_with("-INR")
+        || s.contains('=')
+        || matches!(
+            crate::market::AssetClass::of(&s),
+            crate::market::AssetClass::Crypto | crate::market::AssetClass::Fx
+        )
+    {
         None
     } else if s.ends_with(".NS")
         || s.ends_with(".BO")
@@ -1045,27 +1070,67 @@ mod tests {
             regular_market_volume: Some(5000),
             ..Default::default()
         };
-        // Same session: the last bar takes the live price.
+        // A quote from the last bar's session updates it.
         let mut same = bars.clone();
-        patch_live_bar(&mut same, &quote, d("2024-01-02"), true);
+        patch_live_bar(&mut same, &quote, d("2024-01-02"), Some(d("2024-01-02")));
         assert_eq!(same.len(), 2);
         assert_eq!(same.close[1], 105.0);
         assert_eq!(same.high[1], 106.0);
         assert_eq!(same.volume[1], 5000);
-        // A new session while the market is open: a new bar.
+        // A quote from a newer session becomes that session's bar.
         let mut next = bars.clone();
-        patch_live_bar(&mut next, &quote, d("2024-01-03"), true);
+        patch_live_bar(&mut next, &quote, d("2024-01-03"), Some(d("2024-01-03")));
         assert_eq!(next.len(), 3);
         assert_eq!(next.close[2], 105.0);
         assert_eq!(bar_date(next.time[2]), d("2024-01-03"));
-        // Before the open, the quote is the last close: bars unchanged.
+        // Before the open (or on a weekend or an unlisted holiday) the quote
+        // is still the last session's: no phantom bar for today.
         let mut early = bars.clone();
-        patch_live_bar(&mut early, &quote, d("2024-01-03"), false);
-        assert_eq!(early.close, vec![100.0, 101.0]);
+        patch_live_bar(&mut early, &quote, d("2024-01-03"), Some(d("2024-01-02")));
+        assert_eq!(early.len(), 2);
+        assert_eq!(early.close[1], 105.0);
+        // A quote older than the chart changes nothing.
+        let mut old = bars.clone();
+        patch_live_bar(&mut old, &quote, d("2024-01-02"), Some(d("2024-01-01")));
+        assert_eq!(old.close, vec![100.0, 101.0]);
+        // No trade time: today's bar is updated, but none is invented.
+        let mut untimed = bars.clone();
+        patch_live_bar(&mut untimed, &quote, d("2024-01-03"), None);
+        assert_eq!(untimed.close, vec![100.0, 101.0]);
+        patch_live_bar(&mut untimed, &quote, d("2024-01-02"), None);
+        assert_eq!(untimed.close, vec![100.0, 105.0]);
         // No live price: nothing to patch.
         let mut none = bars.clone();
-        patch_live_bar(&mut none, &Quote::default(), d("2024-01-02"), true);
+        patch_live_bar(
+            &mut none,
+            &Quote::default(),
+            d("2024-01-02"),
+            Some(d("2024-01-02")),
+        );
         assert_eq!(none.close, vec![100.0, 101.0]);
+    }
+
+    #[test]
+    fn a_weekend_quote_does_not_fake_a_cross() {
+        // The review's case: Friday's close sits above a falling 5-day SMA
+        // only if Friday's bar is counted twice.
+        use crate::api::Quote;
+        let mut bars = Bars::from_closes(&[100.0, 110.0, 100.0, 100.0, 100.0, 101.0]);
+        let friday = bar_date(*bars.time.last().unwrap());
+        let a = alert(AlertCondition::CrossAboveSma, 5.0);
+        let data = |b: &Bars| MarketData {
+            bars: Some(b.clone()),
+            ..Default::default()
+        };
+        assert!(!hit(&a, &data(&bars)));
+        let quote = Quote {
+            regular_market_price: Some(101.0),
+            ..Default::default()
+        };
+        let saturday = friday.succ_opt().unwrap();
+        patch_live_bar(&mut bars, &quote, saturday, Some(friday));
+        assert_eq!(bars.len(), 6);
+        assert!(!hit(&a, &data(&bars)));
     }
 
     #[test]
@@ -1097,6 +1162,10 @@ mod tests {
         assert_eq!(alert_market("AAPL"), Some(Market::Us));
         assert_eq!(alert_market("^GSPC"), Some(Market::Us));
         assert_eq!(alert_market("BTC-USD"), None);
+        assert_eq!(alert_market("BTC-EUR"), None);
+        assert_eq!(alert_market("ETH-USDT"), None);
         assert_eq!(alert_market("USDINR=X"), None);
+        assert_eq!(alert_market("BRK-B"), Some(Market::Us));
+        assert_eq!(alert_market("BAJAJ-AUTO.NS"), Some(Market::In));
     }
 }

@@ -219,9 +219,9 @@ pub(crate) struct AlertRow {
     pub(crate) symbol: String,
     pub(crate) condition: String,
     pub(crate) target: f64,
+    pub(crate) created_at: String,
     pub(crate) period: Option<usize>,
     pub(crate) description: String,
-    pub(crate) created_at: String,
 }
 
 impl CsvRow for AlertRow {
@@ -230,9 +230,9 @@ impl CsvRow for AlertRow {
         "symbol",
         "condition",
         "target",
+        "created_at",
         "period",
         "description",
-        "created_at",
     ];
 }
 
@@ -296,13 +296,13 @@ pub(crate) struct AlertCheckRow {
     pub(crate) symbol: String,
     pub(crate) condition: String,
     pub(crate) target: f64,
-    pub(crate) period: Option<usize>,
-    pub(crate) description: String,
     pub(crate) price: Option<f64>,
     pub(crate) currency: Option<String>,
+    pub(crate) status: &'static str,
+    pub(crate) period: Option<usize>,
+    pub(crate) description: String,
     pub(crate) value: Option<f64>,
     pub(crate) reference: Option<f64>,
-    pub(crate) status: &'static str,
 }
 
 impl CsvRow for AlertCheckRow {
@@ -311,13 +311,13 @@ impl CsvRow for AlertCheckRow {
         "symbol",
         "condition",
         "target",
-        "period",
-        "description",
         "price",
         "currency",
+        "status",
+        "period",
+        "description",
         "value",
         "reference",
-        "status",
     ];
 }
 

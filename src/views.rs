@@ -520,7 +520,6 @@ pub async fn alert_data(
         let symbol = alert.symbol.as_str();
         let on_symbol = || alerts.iter().filter(|a| a.symbol == symbol);
         let quote = find_quote(quotes, symbol);
-        let market = crate::alerts::alert_market(symbol);
         let today = crate::calendar::exchange_today(symbol, now);
         let mut d = MarketData {
             price: quote.and_then(|q| q.regular_market_price),
@@ -537,8 +536,11 @@ pub async fn alert_data(
         {
             let mut bars = crate::backtest::Bars::from_chart(&chart);
             if let Some(q) = quote {
-                let open = market.is_none_or(|m| crate::clock::is_open(m, now));
-                crate::alerts::patch_live_bar(&mut bars, q, today, open);
+                let traded = q
+                    .regular_market_time
+                    .and_then(|t| DateTime::from_timestamp(t, 0))
+                    .map(|t| crate::calendar::exchange_today(symbol, t));
+                crate::alerts::patch_live_bar(&mut bars, q, today, traded);
             }
             d.bars = Some(bars);
         }

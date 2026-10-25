@@ -309,9 +309,24 @@ pub fn upcoming(
             || !official.contains(&(e.symbol.clone(), e.kind))
     });
     // NSE first among duplicates, which `dedup_by` then drops.
-    let key = |e: &Event| (e.date, e.symbol.clone(), e.kind, e.source != Source::Nse);
+    let key = |e: &Event| {
+        (
+            e.date,
+            e.symbol.clone(),
+            e.kind,
+            e.source != Source::Nse,
+            e.detail.clone(),
+        )
+    };
     window.sort_by_key(key);
-    window.dedup_by(|a, b| a.date == b.date && a.symbol == b.symbol && a.kind == b.kind);
+    // The same event from both sources goes; two filings of one kind on one
+    // day (an interim and a special dividend) stay.
+    window.dedup_by(|a, b| {
+        a.date == b.date
+            && a.symbol == b.symbol
+            && a.kind == b.kind
+            && (a.source != b.source || a.detail == b.detail)
+    });
     window
 }
 
@@ -393,6 +408,8 @@ pub fn exchange_today(symbol: &str, now: DateTime<Utc>) -> NaiveDate {
 // ── Fetching and the day cache ──
 
 const CACHE_FILE: &str = "calendar_cache.json";
+/// Cache key of NSE's last refusal.
+const NSE_BLOCKED: &str = "nse:blocked";
 /// How long an answer is reused.
 const FRESH_SECS: i64 = 24 * 3600;
 /// How long a failure is remembered before asking again.
@@ -467,6 +484,12 @@ impl<'a> Calendar<'a> {
         }
         let now = Utc::now().timestamp();
         let mut events = Vec::new();
+        // A refusal recorded by any run in the last hour (see `store`).
+        if self.nse_blocked.is_none()
+            && let Some(e) = self.cached(NSE_BLOCKED, now)
+        {
+            self.nse_blocked = e.error;
+        }
 
         let key = format!("yahoo:{symbol}");
         let entry = match self.cached(&key, now) {
@@ -536,6 +559,20 @@ impl<'a> Calendar<'a> {
     }
 
     fn store(&mut self, key: String, now: i64, fetched: Result<Vec<Event>>) -> Entry {
+        // NSE refusing or unreachable holds for every symbol: remember it once
+        // for an hour, so other runs and `results-in` lookups don't each try.
+        if key.starts_with("nse:")
+            && let Err(e) = &fetched
+        {
+            self.cache.entries.insert(
+                NSE_BLOCKED.to_string(),
+                Entry {
+                    fetched_at: now,
+                    error: Some(format!("{e:#}")),
+                    events: Vec::new(),
+                },
+            );
+        }
         let entry = match fetched {
             Ok(events) => Entry {
                 fetched_at: now,
@@ -963,6 +1000,25 @@ mod tests {
             Some(d("2027-01-09"))
         );
         assert_eq!(next_results_in(&events, d("2027-02-01")), None);
+    }
+
+    #[test]
+    fn distinct_filings_on_one_day_both_stay() {
+        let today = d("2026-10-01");
+        let action = |subject: &str| Event {
+            symbol: "ITC.NS".into(),
+            date: d("2026-10-10"),
+            kind: EventKind::ExDividend,
+            detail: subject.into(),
+            source: Source::Nse,
+            estimate: false,
+        };
+        let events = vec![
+            action("Interim Dividend - Rs 6 Per Share"),
+            action("Special Dividend - Rs 2 Per Share"),
+            action("Interim Dividend - Rs 6 Per Share"),
+        ];
+        assert_eq!(upcoming(events, 30, |_| today).len(), 2);
     }
 
     #[test]

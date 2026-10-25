@@ -242,6 +242,13 @@ pub struct Quote {
     pub regular_market_day_low: Option<f64>,
     #[serde(rename = "regularMarketPreviousClose")]
     pub regular_market_previous_close: Option<f64>,
+    /// When the price was last updated (Unix seconds).
+    #[serde(
+        rename = "regularMarketTime",
+        default,
+        deserialize_with = "lenient_unix_time"
+    )]
+    pub regular_market_time: Option<i64>,
     #[serde(rename = "fiftyDayAverage")]
     pub fifty_day_average: Option<f64>,
     #[serde(rename = "twoHundredDayAverage")]
@@ -305,6 +312,17 @@ pub struct Quote {
     /// (`STOCKWISE_DATA_PROVIDER`); omitted from JSON otherwise.
     #[serde(rename = "dataSource", skip_serializing_if = "Option::is_none")]
     pub data_source: Option<String>,
+}
+
+/// Unix seconds as a number or Yahoo's `{raw, fmt}`; anything else is None
+/// rather than a failed quote.
+fn lenient_unix_time<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(v.and_then(|v| {
+        v.as_i64()
+            .or_else(|| v.as_f64().map(|f| f as i64))
+            .or_else(|| v.get("raw").and_then(serde_json::Value::as_i64))
+    }))
 }
 
 #[derive(Debug, Deserialize)]
