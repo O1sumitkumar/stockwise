@@ -190,8 +190,11 @@ stockwise backtest walkforward RELIANCE -s rsi --train 1y --test 3mo -p 10y
 
    `stockwise backtest strategies` prints the folder it uses.
 
-   Built-in names win over files of the same name.
+   Built-in names win over files of the same name. A `NAME.wasm` plugin in
+   the folder is found too (after `NAME.toml`).
 3. A path: `-s file:path/to/rules.toml` (or any path ending in `.toml`).
+4. A WASM plugin: `-s wasm:path/to/strategy.wasm` — see
+   [WASM plugins](#wasm-plugins). Needs a build with `--features wasm-plugins`.
 
 The built-ins live in [`examples/strategies/`](../examples/strategies/) next to
 two more examples (`trend_pullback`, `breakout`) — copy one to start.
@@ -284,6 +287,144 @@ strategy list.
 
 Not yet: `daemon intraday` and `sim start` don't take `-s`.
 
+## WASM plugins
+
+**Experimental.** When a strategy needs state or logic that TOML conditions
+can't express — a custom indicator, a regime filter, a model — write it in
+any language that compiles to WebAssembly and load it with `-s wasm:PATH`:
+
+```bash
+cargo install stockwise --features wasm-plugins
+
+cd examples/wasm-strategy-rsi
+cargo build --target wasm32-unknown-unknown --release   # rustup target add wasm32-unknown-unknown
+cd -
+
+P=examples/wasm-strategy-rsi/target/wasm32-unknown-unknown/release/wasm_strategy_rsi.wasm
+stockwise backtest RELIANCE -s wasm:$P -P oversold=25
+stockwise backtest portfolio TCS INFY HDFCBANK -s wasm:$P
+stockwise backtest walkforward TCS -s wasm:$P
+stockwise intraday 50000 1.5 -s wasm:$P
+stockwise backtest strategies $P        # check a plugin: name, ABI, parameters
+```
+
+A plugin works everywhere a TOML strategy does: single, portfolio and
+walk-forward backtests, `-P` overrides, `[grid]`-style tuning, and the
+intraday bot's extra vote. Copy it into your strategies folder as
+`NAME.wasm` to run it as `-s NAME`; `backtest strategies` lists it with its
+declared name and ABI version. `-s wasm:FILE.wat` also loads WebAssembly
+text, handy for tiny experiments.
+
+[`examples/wasm-strategy-rsi`](../examples/wasm-strategy-rsi/) is a complete
+plugin in Rust with no dependencies: RSI mean reversion with exactly the
+built-in `rsi` strategy's signals (a test checks every grid combination).
+[`src/backtest/fixtures/level.wat`](../src/backtest/fixtures/level.wat) is the
+smallest complete one, in WebAssembly text.
+
+### Sandbox
+
+- **No imports.** A plugin gets no host functions: no WASI, files, network,
+  clock or randomness. A module that imports anything is refused at load
+  (build for `wasm32-unknown-unknown`, not `wasm32-wasip1`).
+- **Fuel.** Each call runs on a budget of about one unit per instruction:
+  10 million for a `stockwise_on_bar` call, 50 million for instantiation
+  and each setup call. An endless loop stops with an error at the first bar.
+- **Memory.** 64 MB of linear memory per instance, one memory, plugin files
+  up to 16 MB, wasmi's strict limits on module size.
+- **Errors, not crashes.** A trap (a Rust panic, an out-of-bounds access,
+  division by zero, stack overflow), running out of fuel or memory, or a
+  return value outside the ABI ends the command with exit code 1 and a
+  message naming the plugin, the call and the bar:
+
+  ```
+  Error: loop.wasm: `stockwise_on_bar` on bar 1 of 496 (2024-10-23): ran past its budget of 10000000 instructions for one call — an endless loop?
+  Error: src/backtest/fixtures/level.wat: the plugin rejected {"level":0.0} (`stockwise_init` returned 1): level must be a whole number above 0
+  ```
+- **No look-ahead.** The plugin sees bars one at a time, oldest first, so a
+  signal can only depend on the bars before it — the same guarantee as TOML
+  rules. Signals take effect as usual: at the next bar's open by default.
+
+### ABI (version 1)
+
+A plugin is a WebAssembly module with these exports. Integers are `i32` /
+`i64`; strings cross as UTF-8 in the plugin's exported `memory`, returned as
+one `i64` packing `(pointer << 32) | length`.
+
+| Export | Signature | |
+|--------|-----------|---|
+| `stockwise_abi_version` | `() -> i32` | Required. Returns `1` |
+| `stockwise_on_bar` | `(time: i64, open: f64, high: f64, low: f64, close: f64, volume: f64) -> i32` | Required. One call per daily bar, oldest first; returns the signal at that bar's close |
+| `memory` | memory | Required by the exports below |
+| `stockwise_meta` | `() -> i64` | Optional. Packed pointer/length of the metadata JSON |
+| `stockwise_alloc` | `(len: i32) -> i32` | With `stockwise_init`. A buffer of `len` bytes for the parameters |
+| `stockwise_init` | `(ptr: i32, len: i32) -> i32` | Optional; required when `params` are declared. Receives the parameters; returns `0`, or anything else to refuse them |
+| `stockwise_error` | `() -> i64` | Optional. Packed pointer/length of a message explaining the last refusal or error |
+
+**Signals.** `stockwise_on_bar` returns `0` (nothing), `1` (entry), `2`
+(exit) or `3` (both: an exit while holding, nothing when flat — as when a TOML
+strategy's entry and exit rules both hold). A negative value is an error
+reported by the plugin (with `stockwise_error`'s message); anything else is
+refused as bad output. `time` is the bar's start in Unix seconds (UTC);
+`volume` may be 0.
+
+**Lifecycle.** At load, StockWise instantiates the module once to check the
+exports and their signatures, call `stockwise_abi_version` and read
+`stockwise_meta`. Then every price series — each symbol, each parameter set
+in walk-forward, each stock the intraday bot scans — gets a **fresh
+instance**: `stockwise_alloc(len)`, the parameters written there,
+`stockwise_init(ptr, len)`, then `stockwise_on_bar` for each bar. Keep state
+in globals; it never leaks between series. Parameter defaults and every
+`grid` combination are tried through `stockwise_init` at load, so a plugin
+can refuse values up front.
+
+**Metadata** (`stockwise_meta`), every key optional, unknown keys refused:
+
+```json
+{
+  "name": "rsi-wasm",
+  "description": "RSI(14) mean reversion as a WASM plugin",
+  "params": { "period": 14, "oversold": 30, "overbought": 70 },
+  "grid": { "oversold": [25, 30, 35], "overbought": [65, 70, 75] },
+  "lookback": 15,
+  "stop_loss_pct": 8,
+  "take_profit_pct": 15
+}
+```
+
+`name` defaults to the file name. `params` and `grid` follow the TOML rules
+(names of letters, digits and `_`; at most 500 grid combinations); `-P` sets
+a parameter and fixes it for walk-forward. `lookback` (default 0, at most
+10,000) is how many bars the plugin needs before its first signal: backtests
+refuse shorter histories and the intraday bot fetches enough.
+`stop_loss_pct` and `take_profit_pct` work as in TOML.
+
+**Parameters** reach `stockwise_init` as compact JSON: one flat object of
+every parameter, names sorted, numbers as JSON numbers —
+`{"overbought":70.0,"oversold":25.0,"period":14.0}`. Keys never contain
+`,` `:` or quotes, so a small hand-written reader is enough (the example
+does this).
+
+### Runtime
+
+Plugins run in [wasmi](https://github.com/wasmi-labs/wasmi) 2.x, a pure-Rust
+WebAssembly interpreter. It was chosen over wasmtime because:
+
+- **Size and build time.** wasmi adds about 1 MB to the release binary and
+  compiles in seconds; wasmtime (with Cranelift) adds several MB and minutes
+  of compile time and a much larger dependency tree.
+- **MSRV.** wasmi 2.0 builds on Rust 1.86, inside StockWise's 1.88; the
+  current wasmtime needs a newer compiler than the project supports.
+- **Limits.** wasmi meters fuel deterministically per instruction and
+  enforces memory, table and module-size limits — what a plugin sandbox
+  needs. wasmtime's extra features (JIT speed, epoch interruption, WASI) are
+  unneeded: a plugin does a few hundred instructions per bar, and has no
+  host access.
+- **No unsafe host surface.** No imports are linked, the module is validated
+  before it runs, and an interpreter cannot jump to plugin-generated machine
+  code.
+
+The feature is off by default, so default builds and binaries are unchanged.
+
 ## JSON output
 
 `--json` prints one object. Percentages end in `_percent`; money is in the
@@ -312,7 +453,13 @@ stock's currency.
   out_of_sample_annualised_percent, in_sample_annualised_percent,
   in_sample_sharpe, efficiency, verdict, verdict_reason, trades, equity`.
 - **`backtest strategies`**: `{builtin: [{aliases, strategy}], directory,
-  user: [{path, ok, strategy | error}]}`.
+  user: [{path, ok, strategy | error}], skipped_plugins: [path]}`.
+  `skipped_plugins` lists `.wasm` files a build without `wasm-plugins` did
+  not load.
+
+For a WASM plugin, `rules` (and `strategy` above) has empty `entry` and
+`exit`, the plugin's `params` and `grid`, and `plugin: {abi_version,
+lookback}`.
 
 ```bash
 for s in rsi macd sma bb vwap mr; do
@@ -327,8 +474,5 @@ done
   positions are still held from one daily bar to another.
 - Dividends are not credited; symbols that were delisted are not in Yahoo's
   data (survivorship bias).
-- **WASM strategy plugins** were considered and left out for now: a WASM
-  runtime (wasmtime) would add megabytes and minutes of compile time to every
-  build, and plugins would need a stable data ABI. TOML rules cover
-  threshold and crossover strategies; if you need stateful logic, open an
-  issue with the strategy you want to express.
+- WASM plugins are **experimental** and opt-in (`--features wasm-plugins`);
+  the ABI may change in a later version, which bumps `abi_version`.

@@ -432,7 +432,7 @@ stockwise options TCS                     expected moves (same as `options moves
         /// Target return for the day, in percent (e.g. 1.5)
         target: f64,
         /// Add a strategy's entry/exit rule as an extra signal: a built-in, a file in your
-        /// strategies folder, or file:PATH.toml (as in `backtest -s`)
+        /// strategies folder, file:PATH.toml or wasm:PATH.wasm (as in `backtest -s`)
         #[arg(short, long)]
         strategy: Option<String>,
     },
@@ -1190,7 +1190,8 @@ enum BacktestCmd {
 /// Options shared by every form of `backtest`.
 #[derive(Args, Clone)]
 struct BacktestFlags {
-    /// Strategy: rsi, macd, sma, bb, vwap, mr, a file in your strategies folder, or file:PATH.toml
+    /// Strategy: rsi, macd, sma, bb, vwap, mr, a file in your strategies folder, file:PATH.toml,
+    /// or wasm:PATH.wasm (a plugin; needs the wasm-plugins feature)
     #[arg(short, long, default_value = "rsi")]
     strategy: String,
     /// Set a strategy parameter, e.g. -P oversold=25 (repeatable)

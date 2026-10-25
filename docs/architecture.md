@@ -56,6 +56,7 @@ src/
     costs.rs         Indian delivery/intraday and US cost models, slippage
     engine.rs        Simulator (single symbol or portfolio, fills, stops, rebalancing) and metrics
     walkforward.rs   Rolling train/test optimisation and the overfitting verdict
+    plugin.rs        WASM strategy plugins: wasmi sandbox, ABI v1 (`wasm-plugins` feature)
   intraday.rs        Intraday bot (9 strategies, regime detection, Kelly sizing)
   longterm.rs        Long-term bot (6-pillar scoring, Monte Carlo, DRIP)
   simulator.rs       Paper-trading sessions and confidence rating
@@ -174,9 +175,11 @@ the OS keyring when one is available (`STOCKWISE_KEYRING=off` keeps them in the 
 | `notify-rust` | Desktop notifications (optional `desktop-notify` feature) |
 | `ratatui` | Terminal UI for `tui` (re-exports crossterm; `tui` feature) |
 | `axum` | HTTP server for `serve` (`server` feature) |
+| `wasmi` | WebAssembly interpreter for strategy plugins (optional `wasm-plugins` feature) |
 
-Both features are on by default; `cargo build --no-default-features` leaves
-them out. CI-style checks should run clippy for both builds.
+`tui` and `server` are on by default; `cargo build --no-default-features`
+leaves them out. `wasm-plugins` is off by default. CI-style checks should run
+clippy for all three builds.
 
 ## Releases and packaging
 

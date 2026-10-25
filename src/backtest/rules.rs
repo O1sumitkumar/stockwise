@@ -24,9 +24,13 @@
 //! and parentheses. Values are numbers, `$params`, price fields, the
 //! indicators of `technical.rs`, and `+ - * /` between them. The six
 //! built-in strategies are bundled from `examples/strategies/`.
+//!
+//! A WASM plugin (`-s wasm:PATH`, see [`super::plugin`]) is a strategy too:
+//! it declares its parameters and grid, and computes the signals itself.
 
 use super::Bars;
 use super::indicators::{self, Series};
+use super::plugin::{self, Plugin};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -147,6 +151,9 @@ pub struct StrategyDef {
     pub take_profit_pct: Option<f64>,
     pub params: BTreeMap<String, f64>,
     pub grid: BTreeMap<String, Vec<f64>>,
+    /// Set for a WASM plugin, whose signals replace `entry` and `exit`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<Plugin>,
     #[serde(skip)]
     entry_ast: Vec<BoolExpr>,
     #[serde(skip)]
@@ -168,16 +175,7 @@ impl StrategyDef {
         if entry.is_empty() {
             bail!("{source}: `entry` needs at least one condition");
         }
-        if let Some(sl) = file.stop_loss_pct
-            && !(sl > 0.0 && sl < 100.0)
-        {
-            bail!("{source}: `stop_loss_pct` must be between 0 and 100, got {sl}");
-        }
-        if let Some(tp) = file.take_profit_pct
-            && !(tp > 0.0 && tp.is_finite())
-        {
-            bail!("{source}: `take_profit_pct` must be above 0, got {tp}");
-        }
+        check_stops(source, file.stop_loss_pct, file.take_profit_pct)?;
 
         let parse_all = |label: &str, conds: &[String]| -> Result<Vec<BoolExpr>> {
             conds
@@ -194,14 +192,7 @@ impl StrategyDef {
             );
         }
 
-        for (k, v) in &file.params {
-            if !is_identifier(k) {
-                bail!("{source}: parameter name `{k}` must be letters, digits and _");
-            }
-            if !v.is_finite() {
-                bail!("{source}: parameter `{k}` must be a number");
-            }
-        }
+        check_params(source, &file.params, &file.grid)?;
         let mut used = Vec::new();
         for e in entry_ast.iter().chain(&exit_ast) {
             e.params(&mut used);
@@ -211,21 +202,8 @@ impl StrategyDef {
                 bail!("{source}: `${p}` is used in a condition but not defined under [params]");
             }
         }
-        let mut combos = 1usize;
-        for (k, values) in &file.grid {
-            if !file.params.contains_key(k) {
-                bail!("{source}: [grid] `{k}` is not a parameter — add a default under [params]");
-            }
-            if values.is_empty() {
-                bail!("{source}: [grid] `{k}` needs at least one value");
-            }
-            combos = combos.saturating_mul(values.len());
-        }
-        if combos > MAX_GRID {
-            bail!("{source}: [grid] expands to {combos} combinations; keep it under {MAX_GRID}");
-        }
 
-        let def = StrategyDef {
+        StrategyDef {
             name,
             description: file.description.unwrap_or_default(),
             source: source.to_string(),
@@ -235,15 +213,54 @@ impl StrategyDef {
             take_profit_pct: file.take_profit_pct,
             params: file.params,
             grid: file.grid,
+            plugin: None,
             entry_ast,
             exit_ast,
-        };
-        def.compile()?;
-        for combo in def.grid_combos() {
-            def.compile_with(&combo)
+        }
+        .checked()
+    }
+
+    /// A WASM plugin as a strategy, from what it declares about itself.
+    /// The plugin is started with the defaults and every grid combination,
+    /// so it can refuse values up front.
+    pub fn from_plugin(
+        meta: plugin::Meta,
+        plugin: Plugin,
+        default_name: &str,
+        source: &str,
+    ) -> Result<StrategyDef> {
+        let name = meta
+            .name
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| default_name.to_string());
+        check_stops(source, meta.stop_loss_pct, meta.take_profit_pct)?;
+        check_params(source, &meta.params, &meta.grid)?;
+        StrategyDef {
+            name,
+            description: meta.description.unwrap_or_default(),
+            source: source.to_string(),
+            entry: Vec::new(),
+            exit: Vec::new(),
+            stop_loss_pct: meta.stop_loss_pct,
+            take_profit_pct: meta.take_profit_pct,
+            params: meta.params,
+            grid: meta.grid,
+            plugin: Some(plugin),
+            entry_ast: Vec::new(),
+            exit_ast: Vec::new(),
+        }
+        .checked()
+    }
+
+    /// `self`, once the defaults and each grid combination compile.
+    fn checked(self) -> Result<StrategyDef> {
+        self.compile()?;
+        for combo in self.grid_combos() {
+            self.compile_with(&combo)
                 .with_context(|| format!("[grid] combination {}", format_params(&combo)))?;
         }
-        Ok(def)
+        Ok(self)
     }
 
     /// The same strategy with some default parameters replaced. A replaced
@@ -292,8 +309,21 @@ impl StrategyDef {
         self.compile_with(&self.params)
     }
 
-    /// Bind `params` into the conditions.
+    /// Bind `params` into the conditions, or start the plugin with them.
     pub fn compile_with(&self, params: &BTreeMap<String, f64>) -> Result<Strategy> {
+        if let Some(p) = &self.plugin {
+            p.check(params)?;
+            return Ok(Strategy {
+                name: self.name.clone(),
+                params: params.clone(),
+                stop_loss_pct: self.stop_loss_pct,
+                take_profit_pct: self.take_profit_pct,
+                inds: Vec::new(),
+                entry: Vec::new(),
+                exit: Vec::new(),
+                plugin: Some(p.clone()),
+            });
+        }
         let mut inds = Vec::new();
         let mut bind_all = |label: &str, src: &[String], asts: &[BoolExpr]| -> Result<Vec<Cond>> {
             src.iter()
@@ -314,8 +344,55 @@ impl StrategyDef {
             inds,
             entry,
             exit,
+            plugin: None,
         })
     }
+}
+
+/// `stop_loss_pct` and `take_profit_pct`, when set, are sensible.
+fn check_stops(source: &str, stop_loss: Option<f64>, take_profit: Option<f64>) -> Result<()> {
+    if let Some(sl) = stop_loss
+        && !(sl > 0.0 && sl < 100.0)
+    {
+        bail!("{source}: `stop_loss_pct` must be between 0 and 100, got {sl}");
+    }
+    if let Some(tp) = take_profit
+        && !(tp > 0.0 && tp.is_finite())
+    {
+        bail!("{source}: `take_profit_pct` must be above 0, got {tp}");
+    }
+    Ok(())
+}
+
+/// Parameter names and defaults, and a grid over known parameters that
+/// stays under [`MAX_GRID`] combinations.
+fn check_params(
+    source: &str,
+    params: &BTreeMap<String, f64>,
+    grid: &BTreeMap<String, Vec<f64>>,
+) -> Result<()> {
+    for (k, v) in params {
+        if !is_identifier(k) {
+            bail!("{source}: parameter name `{k}` must be letters, digits and _");
+        }
+        if !v.is_finite() {
+            bail!("{source}: parameter `{k}` must be a number");
+        }
+    }
+    let mut combos = 1usize;
+    for (k, values) in grid {
+        if !params.contains_key(k) {
+            bail!("{source}: [grid] `{k}` is not a parameter — add a default under [params]");
+        }
+        if values.is_empty() {
+            bail!("{source}: [grid] `{k}` needs at least one value");
+        }
+        combos = combos.saturating_mul(values.len());
+    }
+    if combos > MAX_GRID {
+        bail!("{source}: [grid] expands to {combos} combinations; keep it under {MAX_GRID}");
+    }
+    Ok(())
 }
 
 /// A condition with its `$params` replaced by their values, for display:
@@ -407,8 +484,9 @@ fn builtin(spec: &str) -> Option<(&'static str, &'static str)> {
         .map(|(n, _, text)| (*n, *text))
 }
 
-/// Resolve `-s`: a built-in name, `file:PATH`, a path to a `.toml` file, or
-/// the name of a file in [`strategies_dir`].
+/// Resolve `-s`: a built-in name, `file:PATH`, `wasm:PATH`, a path to a
+/// `.toml` or `.wasm` file, or the name of a file in [`strategies_dir`]
+/// (`NAME.toml`, else `NAME.wasm`).
 pub fn load(spec: &str) -> Result<StrategyDef> {
     let spec = spec.trim();
     if let Some((name, text)) = builtin(spec) {
@@ -417,14 +495,23 @@ pub fn load(spec: &str) -> Result<StrategyDef> {
     if let Some(path) = spec.strip_prefix("file:") {
         return load_file(Path::new(path));
     }
-    if spec.ends_with(".toml") || spec.contains('/') || spec.contains('\\') {
+    if let Some(path) = spec.strip_prefix("wasm:") {
+        return load_plugin(&plugin_path(path));
+    }
+    if spec.ends_with(".toml")
+        || spec.ends_with(".wasm")
+        || spec.contains('/')
+        || spec.contains('\\')
+    {
         return load_file(Path::new(spec));
     }
     let dir = strategies_dir();
     if let Some(dir) = &dir {
-        let path = dir.join(format!("{spec}.toml"));
-        if path.is_file() {
-            return load_file(&path);
+        for ext in ["toml", "wasm"] {
+            let path = dir.join(format!("{spec}.{ext}"));
+            if path.is_file() {
+                return load_file(&path);
+            }
         }
     }
     let mut msg = format!(
@@ -443,25 +530,60 @@ pub fn load(spec: &str) -> Result<StrategyDef> {
         }
     }
     msg.push_str(". Or pass -s file:path/to/strategy.toml");
+    if plugin::SUPPORTED {
+        msg.push_str(" or -s wasm:path/to/plugin.wasm");
+    }
     bail!(msg)
 }
 
+/// A strategy file: TOML rules, or a WASM plugin (`.wasm`, or `.wat` text).
 pub fn load_file(path: &Path) -> Result<StrategyDef> {
+    if is_plugin_file(path) {
+        return load_plugin(path);
+    }
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("Cannot read strategy file {}", path.display()))?;
-    let stem = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "custom".into());
-    StrategyDef::parse(&text, &stem, &path.display().to_string())
+    StrategyDef::parse(&text, &file_stem(path), &path.display().to_string())
 }
 
-/// `*.toml` files in `dir`, sorted. A missing directory has none.
+fn load_plugin(path: &Path) -> Result<StrategyDef> {
+    let (meta, plugin) = plugin::load(path)?;
+    StrategyDef::from_plugin(meta, plugin, &file_stem(path), &path.display().to_string())
+}
+
+/// `wasm:NAME` is `NAME.wasm` in [`strategies_dir`] when no file `NAME`
+/// exists here.
+fn plugin_path(spec: &str) -> PathBuf {
+    let path = PathBuf::from(spec);
+    if path.exists() || path.extension().is_some() || path.components().count() != 1 {
+        return path;
+    }
+    strategies_dir()
+        .map(|d| d.join(format!("{spec}.wasm")))
+        .filter(|p| p.is_file())
+        .unwrap_or(path)
+}
+
+pub fn is_plugin_file(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|x| x.eq_ignore_ascii_case("wasm") || x.eq_ignore_ascii_case("wat"))
+}
+
+fn file_stem(path: &Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "custom".into())
+}
+
+/// `*.toml` strategy files and `*.wasm` plugins in `dir`, sorted. A missing
+/// directory has none.
 pub fn user_strategy_files(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .map(|rd| {
             rd.filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| p.extension().is_some_and(|x| x == "toml") && p.is_file())
+                .filter(|p| {
+                    p.extension().is_some_and(|x| x == "toml" || x == "wasm") && p.is_file()
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -502,25 +624,33 @@ pub struct Strategy {
     inds: Vec<Ind>,
     entry: Vec<Cond>,
     exit: Vec<Cond>,
+    plugin: Option<Plugin>,
 }
 
 impl Strategy {
     /// Evaluate entry and exit at every bar. A condition is false while any
-    /// indicator it uses is still warming up.
-    pub fn signals(&self, bars: &Bars) -> Signals {
+    /// indicator it uses is still warming up. Only a plugin can fail.
+    pub fn signals(&self, bars: &Bars) -> Result<Signals> {
+        if let Some(p) = &self.plugin {
+            return p.signals(&self.params, bars);
+        }
         let data: Vec<Series> = self.inds.iter().map(|i| i.compute(bars)).collect();
         let all = |conds: &[Cond], i: usize| {
             !conds.is_empty() && conds.iter().all(|c| c.eval(i, &data) == Some(true))
         };
         let n = bars.len();
-        Signals {
+        Ok(Signals {
             entry: (0..n).map(|i| all(&self.entry, i)).collect(),
             exit: (0..n).map(|i| all(&self.exit, i)).collect(),
-        }
+        })
     }
 
-    /// Bars of history the slowest indicator needs before its first value.
+    /// Bars of history the slowest indicator (or the plugin) needs before
+    /// its first value.
     pub fn lookback(&self) -> usize {
+        if let Some(p) = &self.plugin {
+            return p.lookback();
+        }
         self.inds.iter().map(Ind::lookback).max().unwrap_or(0)
     }
 }
@@ -1296,7 +1426,9 @@ mod tests {
         .unwrap()
         .compile()
         .unwrap();
-        let sig = s.signals(&bars(&[9.0, 11.0, 12.0, 9.0, 10.0, 10.5]));
+        let sig = s
+            .signals(&bars(&[9.0, 11.0, 12.0, 9.0, 10.0, 10.5]))
+            .unwrap();
         assert_eq!(sig.entry, vec![false, true, false, false, false, true]);
         assert_eq!(sig.exit, vec![false, false, false, true, false, false]);
     }
@@ -1308,7 +1440,7 @@ mod tests {
         .unwrap()
         .compile()
         .unwrap();
-        let sig = s.signals(&bars(&[1.0, 2.0, 3.0, 4.0]));
+        let sig = s.signals(&bars(&[1.0, 2.0, 3.0, 4.0])).unwrap();
         assert_eq!(sig.entry, vec![false, false, true, true]);
         assert!(sig.exit.iter().all(|e| !e));
         assert_eq!(s.lookback(), 3);
@@ -1473,7 +1605,7 @@ mod tests {
             ("mr", legacy::mr(&closes), 20),
         ];
         for (name, expected, from) in cases {
-            let sig = load(name).unwrap().compile().unwrap().signals(&b);
+            let sig = load(name).unwrap().compile().unwrap().signals(&b).unwrap();
             let mut signals = 0;
             for i in from..closes.len() {
                 let got = if sig.entry[i] && !sig.exit[i] {

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **WASM strategy plugins** (experimental, cargo feature `wasm-plugins`, off by
+  default): `backtest SYMBOL -s wasm:path/to/strategy.wasm` runs a
+  WebAssembly strategy in single, portfolio and walk-forward backtests, with
+  `-P name=value` and grid tuning, and `intraday -s wasm:...` uses it as an
+  extra vote. A plugin exports a small versioned ABI (`stockwise_abi_version`,
+  `stockwise_on_bar`, optional `stockwise_meta` / `stockwise_init`) and runs
+  in the wasmi interpreter with no imports (no WASI, files or network), a
+  64 MB memory cap and a fuel budget per call: a trap, an endless loop or bad
+  output is an error naming the bar, never a hang or a crash.
+  `backtest strategies` lists `.wasm` plugins in the strategies folder with
+  their name and ABI version. Example plugin (RSI mean reversion, identical
+  to the built-in `rsi`) in `examples/wasm-strategy-rsi/`; ABI and limits in
+  docs/backtesting.md ("WASM plugins").
+
 ## [0.4.0] - 2026-10-21
 
 Everything on the 0.3 roadmap: new markets and asset classes, a lot-based

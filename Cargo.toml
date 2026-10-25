@@ -54,6 +54,9 @@ keyring = "4"
 sha2 = "0.10"
 flate2 = "1"
 rpassword = "7"
+# `wasm-plugins` feature: sandboxed WASM strategy plugins. wasmi is a pure-Rust
+# interpreter with fuel metering; `wat` lets plugins and tests be WAT text.
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "stable", "auto-dispatch", "wat"], optional = true }
 
 [features]
 default = ["tui", "server"]
@@ -61,6 +64,8 @@ tui = ["dep:ratatui"]
 server = ["dep:axum"]
 # `cargo install stockwise --features desktop-notify` for desktop notifications.
 desktop-notify = ["dep:notify-rust"]
+# `cargo install stockwise --features wasm-plugins` for `backtest -s wasm:PATH`.
+wasm-plugins = ["dep:wasmi"]
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

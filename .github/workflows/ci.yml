@@ -63,6 +63,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-targets
 
+  wasm-plugins:
+    name: wasm plugins (feature + example)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo +stable clippy --all-targets --features wasm-plugins -- -D warnings
+      - run: cargo +stable test --features wasm-plugins
+      - name: msrv (1.88) with the feature
+        run: cargo +1.88 check --all-targets --features wasm-plugins
+      - name: Build the example plugin
+        run: cargo +stable build --release --target wasm32-unknown-unknown --manifest-path examples/wasm-strategy-rsi/Cargo.toml
+      - name: Example plugin matches the built-in rsi
+        run: cargo +stable test --features wasm-plugins example_rsi_plugin -- --ignored
+
   installer:
     name: install.sh (shellcheck)
     runs-on: ubuntu-latest

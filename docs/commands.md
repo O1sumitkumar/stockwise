@@ -180,7 +180,7 @@ Every `backtest` form also takes:
 
 | Option | Default | |
 |--------|---------|---|
-| `-s, --strategy` | `rsi` | A built-in, a file in your strategies folder, or `file:PATH.toml` |
+| `-s, --strategy` | `rsi` | A built-in, a file in your strategies folder, `file:PATH.toml`, or `wasm:PATH.wasm` (a [WASM plugin](backtesting.md#wasm-plugins); `--features wasm-plugins` builds) |
 | `-P, --param NAME=VALUE` | | Override a strategy parameter (repeatable) |
 | `--costs` | `auto` | `auto`, `in-delivery`, `in-intraday`, `us`, `crypto`, `fx`, `none`. `auto` = crypto/FX models for coins and pairs, India delivery for INR stocks, US otherwise |
 | `--brokerage` | preset | Per order: `20` (flat), `0.03%`, or `20,0.03%` (whichever is lower) |

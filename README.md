@@ -180,7 +180,10 @@ stockwise backtest TCS -s file:my_rules.toml       # your own TOML rules
 
 Strategies are TOML files of entry and exit rules over RSI, MACD, moving
 averages, Bollinger Bands, ATR and VWAP — see
-[docs/backtesting.md](docs/backtesting.md).
+[docs/backtesting.md](docs/backtesting.md). For logic rules can't express,
+an experimental build (`--features wasm-plugins`) runs sandboxed WebAssembly
+strategies: `-s wasm:strategy.wasm`
+([example](examples/wasm-strategy-rsi/)).
 
 ### Watch it live
 
