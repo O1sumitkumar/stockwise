@@ -67,7 +67,7 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 ## 💡 Later — exploring (0.6+)
 
 - 💡 Broker-side GTT and order-status sync into the portfolio
-- 💡 A small web dashboard served by `stockwise serve`
+- ✅ A small web dashboard served by `stockwise serve` (`serve --open`)
 - 💡 WASM strategy plugins (TOML strategies cover most cases today)
 - 💡 Options strategy builder — payoff charts for spreads and straddles from the live chain
 

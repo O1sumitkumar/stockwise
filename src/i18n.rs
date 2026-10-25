@@ -316,6 +316,10 @@ messages! {
     DoctorAngelStopGttOn => "SL/SL-M and GTT enabled", "SL/SL-M और GTT चालू";
     DoctorMarketDataDown => "Market data is unreachable", "मार्केट डेटा तक पहुँच नहीं हो पा रही";
 
+    // ── Web dashboard (`serve`) ──
+    ServeDashboard => "Dashboard", "डैशबोर्ड";
+    ServeOpenFailed => "Could not open a browser ({0}); open {1} yourself", "ब्राउज़र नहीं खुल सका ({0}); {1} खुद खोलें";
+
     // ── Errors ──
     ErrorPrefix => "Error:", "त्रुटि:";
 }
