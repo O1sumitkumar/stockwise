@@ -715,7 +715,7 @@ fn write_atomic(path: &Path, data: &str) -> Result<()> {
 
 /// Cached copy of `url` if younger than `max_age`; otherwise download it.
 /// When the download fails, a stale copy is used with a warning on stderr.
-async fn cached_text(
+pub(crate) async fn cached_text(
     client: &reqwest::Client,
     name: &str,
     url: &str,

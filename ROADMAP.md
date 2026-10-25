@@ -57,9 +57,11 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
   for `--universe`. Shipped; still to do: check the parsers against live NSE/BSE responses (the
   test fixtures are modelled on the endpoints' known shapes) and add SENSEX from BSE. The
   endpoints are unofficial — licensed exchange feeds remain out of scope
-- 📋 Tax export: capital-gains schedule (ITR Schedule CG–ready CSV) from realized lots
-- 📋 Benchmark comparison and attribution — portfolio vs NIFTY 50 / S&P 500, by holding and sector
-- 📋 Goal planner — SIP needed for a target corpus, retirement and education calculators
+- ✅ Tax export: capital-gains schedule (ITR Schedule CG–ready CSV) from realized lots
+  (`tax export in`, Form 8949 with `tax export us`)
+- ✅ Benchmark comparison and attribution — portfolio vs NIFTY 50 / S&P 500, by holding and sector
+  (`portfolio benchmark`)
+- ✅ Goal planner — SIP needed for a target corpus, retirement and education calculators (`goal`)
 - ✅ Technical alerts — RSI, SMA/EMA crosses, N-day breakouts, day-change and volume-spike
   alerts next to price levels, plus `results-in N` before a results date
 - ✅ Results and corporate calendar for holdings (`stockwise calendar`) — Yahoo earnings and

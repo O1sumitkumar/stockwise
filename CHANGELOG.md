@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `stockwise tax export [in|us] [--fy 2025-26] [--out FILE] [--json]` — the
+  capital-gains schedule of a tax year's realized sales. India: one row per
+  lot sold, laid out for ITR Schedule CG / Schedule 112A (section 111A/112A,
+  ISIN from NSE's equity list or AMFI, scrip, quantity, sale value, cost, days
+  held, gain), then the summary — STCG, LTCG, set-off, the ₹1.25 lakh
+  exemption, estimated tax, carry-forward. US: a Form 8949 worksheet (Part I /
+  Part II) with Schedule D totals and the $3,000 loss deduction. Labelled an
+  estimate to verify against your broker's tax P&L; flags grandfathered
+  (pre-Feb-2018) shares, pre-23-Jul-2024 sales and estimated purchase dates.
+- `stockwise portfolio benchmark [NIFTY|SENSEX|SP500|symbol] [-p 1y]` — the
+  portfolio's time-weighted return against an index, rebuilt from the lots held
+  at each close; alpha, beta, tracking error, information ratio and correlation
+  from daily returns; attribution by holding and by sector (Carino-linked, so
+  contributions add up to the totals); a growth-of-100 chart; other currencies
+  converted at daily exchange rates; holdings with partial history flagged.
+  `--json` / `--csv`.
+- `stockwise goal sip|retire|education` — goal planner: the monthly SIP for a
+  target corpus (with a yearly step-up and existing savings), the retirement
+  corpus for today's monthly expenses and the SIP that builds it, and an
+  education cost grown by inflation. Amounts in Indian units (`50k`, `25L`,
+  `1cr`), results in lakhs and crores; `--json`. New **Planning** help group.
+
 ### Changed
 - Minimum supported Rust version is now **1.97** (was 1.88). StockWise
   supports the latest stable Rust and the two releases before it. Prebuilt

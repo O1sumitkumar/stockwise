@@ -50,7 +50,8 @@ stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR
   macOS, Linux and Windows. `stockwise doctor` checks everything.
 - **65+ commands, one muscle memory.** Fundamentals, technicals, risk, screeners,
   sector rotation, mutual funds, options greeks, backtests, SIP/what-if
-  calculators, alerts, tax estimates — in English or Hindi (`--lang hi`).
+  calculators, goal planning, alerts, tax estimates and ITR-ready capital-gains
+  exports — in English or Hindi (`--lang hi`).
 - **Backtests that count costs.** STT, brokerage, stamp duty and slippage;
   next-day fills; portfolios and walk-forward; strategies as small TOML files.
 - **Scriptable.** `--json` on 21 data commands and `--csv` on their tables, a
@@ -135,6 +136,7 @@ Homebrew, AUR and Nix install the man pages and completions for you.
 | **Funds & F&O** | `mf` (search, nav, history, sip, screen, overlap), `options` (chain, pcr, maxpain, moves) |
 | **Strategies & bots** | `backtest`, `sip`, `whatif`, `intraday`, `longterm`, `daemon`, `sim`, `report` |
 | **Portfolio** | `portfolio`, `watch`, `alert`, `calendar`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
+| **Planning** | `goal` (sip, retire, education) |
 | **Interfaces** | `tui`, `serve` |
 | **Live trading** | `trade` (Angel One; Zerodha, Upstox, Dhan, Fyers experimental) |
 
@@ -149,6 +151,8 @@ stockwise portfolio                              # live P&L, XIRR + allocation
 stockwise portfolio sell TCS 5 3900              # FIFO sale, realized P&L kept for tax
 stockwise portfolio actions --apply              # splits, bonuses and dividends since you bought
 stockwise tax in                                 # LTCG/STCG per lot, set-off, realized vs unrealized
+stockwise tax export in --fy 2025-26 > cg.csv    # ITR Schedule CG / 112A CSV of your sales
+stockwise portfolio benchmark NIFTY -p 1y        # time-weighted return vs the index, alpha/beta, attribution
 stockwise --portfolio us portfolio add AAPL 3 190 -m us   # a second, named portfolio
 stockwise dashboard                              # indices + portfolio + watchlist + alerts
 ```
@@ -156,6 +160,14 @@ stockwise dashboard                              # indices + portfolio + watchli
 Every purchase is a lot with its own date, so holding periods, FIFO sales and
 XIRR are exact. Holdings in INR and USD are totalled in one currency
 (`portfolio --base usd`) at the live `USDINR=X` rate.
+
+### Plan a goal
+
+```bash
+stockwise goal sip --target 1cr --years 15 --step-up 10       # SIP for ₹1 crore, rising 10% a year
+stockwise goal retire --monthly-expense 80k --years-to-retire 20 --years-in-retirement 30
+stockwise goal education --cost 25L --years 10                # cost after 8% education inflation
+```
 
 ### Mutual funds and options
 
@@ -361,7 +373,7 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 
 ## Roadmap & contributing
 
-Next up: Hindi for every command, live-tested broker integrations, tax exports and goal planning — see the
+Next up: Hindi for every command and live-tested broker integrations — see the
 [ROADMAP](ROADMAP.md). Ideas and bug reports are
 welcome in [Discussions](https://github.com/iamsaquib8/stockwise/discussions) and
 [Issues](https://github.com/iamsaquib8/stockwise/issues); start with

@@ -18,6 +18,7 @@ src/
     backtests.rs     backtest (single, portfolio, walkforward, strategies)
     strategies.rs    sip, whatif, intraday, longterm, report
     portfolio.rs     portfolio (show, add, sell, lots, actions, list) and valuation in a base currency
+    planning.rs      tax export, portfolio benchmark (history, FX, sectors), goal sip/retire/education
     holdings.rs      watch, alert, import, export, wealth, rebalance, harvest, tax, divcal, pcorr
     imports.rs       Groww / Upstox CSV and CAS (casparser JSON/CSV) import parsers
     sim.rs           paper-trading simulator (settle replays intraday bars)
@@ -37,6 +38,9 @@ src/
   output.rs          --json / --csv rendering (Format, CsvRow, RFC 4180 quoting)
   portfolio.rs       Lots, FIFO sales, splits/dividends, XIRR cash flows, FX, named portfolios
   tax.rs             Capital-gains rules: holding periods, tax years, set-off (India/US/UK)
+  tax_export.rs      ITR Schedule CG / 112A and Form 8949 schedules from realized sales, as CSV/JSON
+  benchmark.rs       Daily time-weighted return vs an index, alpha/beta/tracking error, Carino attribution
+  goals.rs           SIP / step-up, retirement and education math; Indian amounts (1cr, 25L, 50k)
   api.rs             Yahoo Finance client (session, quotes, charts, search, cache, retries); routes to a provider
   providers/         MarketData trait + opt-in Alpha Vantage, Massive (Polygon), Twelve Data; Yahoo fills gaps
     nse.rs, bse.rs   NSE / BSE website JSON (quotes, intraday + daily bars, search, NIFTY index members)

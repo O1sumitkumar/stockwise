@@ -214,6 +214,7 @@ Data lives in the directory shown by `stockwise doctor`.
 | `portfolio lots <SYMBOL> [--lot N --date YYYY-MM-DD]` | Lots, sales, dividends and XIRR of one holding; `--lot N --date` corrects a purchase date |
 | `portfolio actions [SYMBOL] [--apply]` | Splits, bonuses and dividends since your purchases, including positions you have sold (from Yahoo). Shows them; `--apply` adjusts lots and records dividends, and is safe to repeat |
 | `portfolio list` | Your portfolios: the default one and every named one |
+| `portfolio benchmark [NIFTY\|SENSEX\|SP500\|...] [-p 1y] [--base inr\|usd] [--json\|--csv]` | Time-weighted return against an index over the period, from the lots held each day: alpha, beta, tracking error, and attribution by holding and sector (see [below](#benchmark-and-attribution)) |
 | `portfolio remove <SYMBOL>` | Remove a holding and its lots without recording a sale |
 | `watch [show] [--json\|--csv]` / `watch add <SYMBOLS...>` / `watch remove <SYMBOLS...>` (`w`) | Watchlist |
 | `alert [list] [--json\|--csv]` / `alert add <SYMBOL> <CONDITION> <NUMBER> [--period N]` / `alert check [--json\|--csv]` / `alert remove <N>` | Price and technical alerts — conditions below; `alert list` shows each condition in words |
@@ -225,6 +226,7 @@ Data lives in the directory shown by `stockwise doctor`.
 | `rebalance` | Trades to reach equal weight |
 | `harvest` | Tax-loss harvesting candidates |
 | `tax <in\|us\|uk> [--json\|--csv]` | Capital-gains estimate for the current tax year: realized sales and unrealized lots, each with its own holding period (see below) |
+| `tax export [in\|us] [--fy 2025-26] [--out FILE] [--json]` | Capital-gains schedule of a tax year's sales: an ITR Schedule CG / 112A CSV for India, a Form 8949 worksheet for the US (see [below](#tax-export)) |
 | `divcal` | Dividend ranking and income for portfolio + watchlist |
 | `pcorr` | Correlation between holdings, diversification warnings |
 
@@ -245,6 +247,77 @@ and STCG is taxed at 20%, LTCG at 12.5%. Losses left over are shown as carry
 forward. Holdings in another currency (e.g. US shares in `tax in`) are listed
 but not included. It is an estimate — no cess, surcharge, grandfathering or
 brought-forward losses.
+
+### Tax export
+
+`tax export in` writes the realized sales of an Indian financial year as a
+spreadsheet laid out for ITR Schedule CG and Schedule 112A: one row per lot
+sold with section (111A short-term, 112A long-term), ISIN, scrip, quantity,
+sale date and value, purchase date and cost, days held and the gain, then a
+summary block — gains and losses of each kind, the short-term loss set off
+against LTCG, the ₹1.25 lakh LTCG exemption, taxable STCG/LTCG, the estimated
+tax and losses to carry forward. ISINs come from NSE's equity list (shares)
+and AMFI's NAV file (funds imported from a CAS), both cached for 12 hours;
+one that can't be found is left blank and named. `tax export us` writes a
+Form 8949 worksheet instead: Part I (held one year or less) and Part II rows
+with description, dates (MM/DD/YYYY), proceeds, cost basis and gain, then the
+Schedule D totals, the $3,000 loss deduction and the carryover.
+
+```bash
+stockwise tax export in --fy 2025-26 --out cg-2025-26.csv   # file + summary on screen
+stockwise tax export in --fy AY2026-27 > cg.csv            # same year, by assessment year
+stockwise tax export us --fy 2025 --json | jq '.summary'
+```
+
+`--fy` takes `2025-26`, `2025-2026` or `AY2026-27` (India) and `2025` (US);
+the default is the current tax year. Without `--out` the CSV (or `--json`)
+goes to stdout. It is an **estimate — verify it with your broker's tax P&L**:
+it only knows sales StockWise recorded (`portfolio sell`, tradebook and CAS
+imports) at their recorded prices, without brokerage or STT. Shares bought on
+or before 31 Jan 2018 are flagged — Schedule 112A lets you use that day's
+fair market value as the cost, which StockWise doesn't apply; sales before
+23 Jul 2024 are noted because they had the old rates (15% / 10%); mutual fund
+rows are noted because only equity-oriented funds belong in 111A/112A; sales
+in another currency (US shares for `in`) and crypto (taxed at 30% under
+section 115BBH, Schedule VDA) are listed but left out. Years before FY 2024-25
+are noted too: their LTCG exemption was ₹1 lakh.
+
+### Benchmark and attribution
+
+`portfolio benchmark` rebuilds what you held at each close of the period
+from your lots and sales (in today's share count, so splits don't break the
+history), and compares the portfolio's time-weighted return with an index
+over the same days.
+
+```bash
+stockwise portfolio benchmark                  # vs NIFTY 50 over 1 year (S&P 500 with -m us)
+stockwise portfolio benchmark SENSEX -p 2y
+stockwise portfolio benchmark SP500 --base inr # S&P 500 converted to rupees day by day
+stockwise portfolio benchmark NIFTYBEES -p 6mo --csv
+```
+
+- Benchmarks by name: `NIFTY`, `SENSEX`, `BANKNIFTY`, `NIFTY500`, `SP500`,
+  `NASDAQ`, `NASDAQ100`, `DOW`; or an index symbol (`^NSEI`) or any ticker.
+  Periods: `1mo`, `3mo`, `6mo`, `ytd`, `1y` (default), `2y`, `5y`, `10y`, `max`.
+- The period starts at the first close where something was held. Returns come
+  from daily closes: a purchase or sale counts at that day's close, so the
+  figure measures the holdings, not your fill prices. Dividends are left out
+  on both sides (NIFTY 50 and the S&P 500 on Yahoo are price indices).
+- Alpha (annualized, risk-free rate 0), beta, tracking error, information
+  ratio and correlation come from the daily returns and need 20 of them.
+- Attribution: each holding's average weight, its return while held, its
+  contribution to the portfolio return and to the return over the index, in
+  percentage points (linked with Carino's method, so they add up exactly to
+  the totals); the same by sector, from Yahoo's asset profile ("Unknown" when
+  Yahoo has none, "Mutual fund" for funds imported from a CAS, valued from
+  their NAV history).
+- Holdings in another currency are converted into the base currency (`--base`,
+  else the holdings' one currency, else the market's) at each day's exchange
+  rate; an index in another currency is converted too.
+- Flagged under *Partial history*: holdings with no price history (left out),
+  days held before a holding's price history starts (left out of those days),
+  and purchases inside the period with an estimated date (the shares may have
+  been held earlier than the history shows).
 
 XIRR (in `portfolio` and `portfolio lots`) is the money-weighted annual return
 from each lot's purchase, each sale, recorded dividends and today's value. It
@@ -289,6 +362,30 @@ the quantity is synced. See [brokers.md](brokers.md#importing-holdings).
 **Upgrading.** Portfolios saved before lot tracking are upgraded on first
 load: each holding becomes one lot dated when it was added, and the original
 file is kept once as `portfolio.json.bak`.
+
+## Planning
+
+| Command | Description |
+|---------|-------------|
+| `goal sip --target AMOUNT --years N [--return 12] [--step-up PCT] [--savings AMOUNT] [--json]` | Monthly SIP that reaches the target, with an optional yearly step-up; total invested, gains, the lump sum that would do instead, and a year-by-year table |
+| `goal retire --monthly-expense AMOUNT --years-to-retire N --years-in-retirement N [--inflation 6] [--return-pre 12] [--return-post 7] [--step-up PCT] [--savings AMOUNT] [--json]` | Corpus needed on the day you retire to pay today's expenses (grown by inflation) for every month of retirement, and the SIP that builds it |
+| `goal education --cost AMOUNT --years N [--inflation 8] [--return 12] [--step-up PCT] [--savings AMOUNT] [--json]` | Today's cost after N years of education inflation, and the SIP that pays it |
+
+```bash
+stockwise goal sip --target 1cr --years 15                  # ₹19,819 a month at 12%
+stockwise goal sip --target 1cr --years 15 --step-up 10     # ₹11,516 a month, rising 10% a year
+stockwise goal retire --monthly-expense 80k --years-to-retire 20 --years-in-retirement 30
+stockwise goal education --cost 25L --years 10 --savings 3L
+```
+
+Amounts take Indian units — `50k`, `25L` / `25 lakh`, `1cr` / `1.5 crore`,
+`2,50,000` — and results print in lakhs and crores (dollars with `-m us`).
+The math, as Indian SIP calculators do it: the monthly rate is the annual
+return ÷ 12 and SIPs are paid at the start of each month; a step-up raises
+the SIP once a year; `--savings` already invested grows at the same return
+and lowers the SIP. In retirement the expense rises with inflation once a
+year and the corpus earns `--return-post` until it runs out at the end of the
+last year. Returns are assumptions, not promises.
 
 ## Interfaces
 
@@ -340,6 +437,9 @@ stockwise history TCS -p 1y --csv > tcs.csv               # every daily bar
 stockwise alert check --json | jq -r '.[] | select(.status == "triggered") | .symbol'
 stockwise screen dividend --csv | column -s, -t
 stockwise tax in --json | jq '.summary.total_tax'
+stockwise tax export in --fy 2025-26 --json | jq '.summary.taxable_ltcg'
+stockwise portfolio benchmark --json | jq '{portfolio_return, benchmark_return, beta: .metrics.beta}'
+stockwise goal sip --target 1cr --years 15 --json | jq '.monthly_sip'
 for s in rsi macd sma bb vwap mr; do
   stockwise backtest INFY -s "$s" --json | jq -r '"\(.strategy)\t\(.total_return_percent)"'
 done
@@ -401,6 +501,11 @@ stockwise options chain NIFTY -n 2 --json | jq '.rows[] | {strike, delta: .call.
 | `alert list` | `[{index, symbol, condition, target, created_at, period, description}]` — `index` is what `alert remove` takes; `condition` is the CLI name (`above`, `rsi-below`, ...), `period` the RSI or volume-average length (else null), `description` the condition in English words | alert |
 | `alert check` | `[{index, symbol, condition, target, price, currency, status, period, description, value, reference}]` — `status` is `triggered`, `waiting`, `no_price` (price alert without a live price) or `no_data` (too little history, or no results date); `value` is what the condition compared (price, RSI, day change %, volume multiple, days to results; the close for crosses and breakouts) and `reference` the moving average, previous high/low or average volume | alert |
 | `calendar` | `[{date, days_until, when, symbol, event, detail, source, estimate}]` — `when` is `today`, `tomorrow`, `this_week` (within 7 days) or `later`; `event` is `results`, `board_meeting`, `ex_dividend`, `dividend_paid`, `split`, `bonus`, `rights` or `other`; `source` is `yahoo` or `nse`; `estimate` marks Yahoo's unconfirmed earnings dates. Notes (e.g. NSE refused) go to stderr | event |
+| `portfolio benchmark` | `{benchmark: {symbol, name, currency, converted_to_base}, base_currency, period, start, end, trading_days, portfolio_return, benchmark_return, excess_return, portfolio_annualized, benchmark_annualized, metrics: {observations, alpha, beta, tracking_error, information_ratio, correlation}, holdings: [holding], sectors: [{sector, holdings, avg_weight, end_weight, return_pct, contribution, active_contribution}], flagged: [{symbol, reason}], series: [{date, portfolio, benchmark}]}`, holding = `{symbol, sector, avg_weight, end_weight, return_pct, contribution, active_contribution, days_held, days_unpriced, flag}` — returns, weights, `alpha` and `tracking_error` are percentages, contributions are percentage points; annualized returns only for periods over about 13 months; `series` is growth of 100; figures are null when nothing was held | holding |
+| `tax export` | `{country, tax_year, period_start, period_end, currency, disclaimer, sales: [sale], summary, other_currency: [symbol], virtual_digital_assets: [symbol], notes: [text]}` (`virtual_digital_assets` for India only) — India: sale = `{section, term, isin, scrip, symbol, quantity, sale_date, sale_price, sale_value, purchase_date, purchase_price, cost, holding_days, gain, grandfathered, purchase_date_estimated}`, summary = `{stcg_111a_sale_value, stcg_111a_cost, stcg_gains, stcg_losses, ltcg_112a_sale_value, ltcg_112a_cost, ltcg_gains, ltcg_losses, st_loss_set_off_against_ltcg, taxable_stcg, ltcg_after_set_off, ltcg_exemption, taxable_ltcg, stcg_tax, ltcg_tax, total_tax, st_loss_carried_forward, lt_loss_carried_forward}`; US: sale = `{part, description, symbol, quantity, date_acquired, date_sold, proceeds, cost_basis, gain_or_loss, date_acquired_estimated}`, summary = `{short_term_proceeds, short_term_cost, short_term_gain, long_term_proceeds, long_term_cost, long_term_gain, net_gain, taxable_short_term, taxable_long_term, loss_deductible_this_year, loss_carryover, short_term_tax, long_term_tax, total_tax}` | — (the CSV is the schedule itself, see [Tax export](#tax-export)) |
+| `goal sip` | `{target, years, annual_return_pct, step_up_pct, savings, savings_future_value, monthly_sip, final_monthly_sip, total_invested, gains, lump_sum_today, schedule: [{year, monthly_sip, invested, value}], goal, currency}` — `goal` is `sip`, `retire` or `education` | — |
+| `goal retire` | `{monthly_expense_today, years_to_retire, years_in_retirement, inflation_pct, return_pre_pct, return_post_pct, monthly_expense_at_retirement, corpus, sip: plan, goal, currency}` — `plan` is the `goal sip` object without `goal`/`currency` | — |
+| `goal education` | `{cost_today, years, inflation_pct, future_cost, sip: plan, goal, currency}` | — |
 | `tax` | `{country, tax_year, currency, sales: [{symbol, qty, bought, bought_estimated, sold, gain, term}], holdings: [{symbol, cost, value, short_term_gain, long_term_gain, estimated_dates}], realized: estimate, if_sold_today: estimate, ltcg_exemption_left, unpriced: [symbol], other_currency: [symbol]}`, estimate = `{short_term_gains, short_term_losses, long_term_gains, long_term_losses, taxable_short_term, taxable_long_term, exemption_used, short_term_tax, long_term_tax, total_tax, loss_carried_forward}` — `term` is `short`, `long`, or null (UK); `ltcg_exemption_left` is India only | open holding |
 | `sim history` | `{stats: {days, winning_days, day_win_rate_percent, total_pnl, avg_daily_pnl, best_day, worst_day, trades, winning_trades, losing_trades, trade_win_rate_percent, sharpe, max_win_streak, max_loss_streak}, confidence, sessions: [{date, market, capital, target_percent, settled, trades, pnl, pnl_percent, wins, losses}]}` — `confidence` is `high`, `moderate`, `low`, or null before 5 settled days | — |
 | `config show` | `{path, status, error, settings: [{key, value, source}]}` — `status` is `loaded`, `missing` or `invalid`; `source` is `flag`, `env`, `file` or `default` | — |
