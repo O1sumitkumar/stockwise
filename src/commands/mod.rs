@@ -46,6 +46,7 @@ fn resolve_symbols(symbols: &[String], market: Market) -> Vec<String> {
 
 mod alerting;
 mod backtests;
+mod calendar;
 mod fno;
 mod fundamentals;
 mod funds;
@@ -69,6 +70,7 @@ mod output_tests;
 
 pub use alerting::*;
 pub use backtests::*;
+pub use calendar::*;
 pub use fno::*;
 pub use fundamentals::*;
 pub use funds::*;

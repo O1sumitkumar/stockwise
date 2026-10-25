@@ -34,6 +34,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Minimum supported Rust version is now **1.97** (was 1.88). StockWise
   supports the latest stable Rust and the two releases before it. Prebuilt
   binaries, Docker and Nix are unaffected.
+- `alert list --json/--csv` adds `period` and `description`; `alert check
+  --json/--csv` adds `period`, `description`, `value`, `reference` and the
+  status `no_data` (new CSV columns come after the old ones). Existing
+  `alerts.json` files load unchanged. Quotes carry Yahoo's
+  `regularMarketTime`.
+
+### Added
+- Web dashboard at `/` of `stockwise serve`: indices, watchlist, portfolio
+  (P&L, XIRR, allocation, INR/USD totals, sortable columns), alerts, symbol
+  search and a price chart with period buttons and a keyboard-readable
+  crosshair. Refreshes every 30 seconds while visible; works at phone width;
+  follows the system light/dark theme; amounts in lakhs and crores for INR.
+  Plain HTML/CSS/JavaScript compiled into the binary — no build step or CDN.
+  Read-only. See [docs/server.md](docs/server.md#web-dashboard).
+- `stockwise serve --open` opens the dashboard in your browser; the startup
+  log prints its address.
+- Technical alerts: `alert add SYMBOL rsi-below|rsi-above LEVEL [--period N]`,
+  `cross-above-sma|cross-below-sma|cross-above-ema|cross-below-ema DAYS`,
+  `breakout-high|breakdown-low DAYS`, `change-above|change-below PCT`,
+  `volume-spike MULTIPLE [--period N]` and `results-in DAYS`. They are
+  evaluated on daily bars (one chart request per symbol per check, updated
+  with the live quote) by `alert check`, `alert watch`, `dashboard`, the
+  `tui`, `serve` (`/api/alerts`) and `daemon longterm`; crosses fire only on
+  the crossing session, and `alert watch` notifies once per trading day.
+  `alert list` shows each condition in words. See
+  [docs/commands.md](docs/commands.md#alert-conditions).
+- `stockwise calendar [SYMBOLS] [--days 30] [--holdings|--watchlist]` —
+  upcoming results, ex-dividend and payment dates, splits and bonus issues
+  for holdings and the watchlist, sorted by date with today and the next
+  7 days marked; `--json` / `--csv`. Yahoo Finance supplies earnings and
+  dividend dates for US and Indian stocks; for `.NS` / `.BO` stocks NSE board
+  meetings and corporate actions add filed results dates, splits and bonus
+  issues (one polite session per run, cached for a day, Yahoo-only when NSE
+  refuses).
+- Data providers that read the exchanges' own websites, no API key needed:
+  `STOCKWISE_DATA_PROVIDER=nse` (or `data_provider = "nse"`), `bse`, and
+  `exchange` (NSE for `.NS` and NSE indices, BSE for `.BO`, Yahoo for the
+  rest). NSE serves quotes with circuit limits and delivery %, NSE index
+  quotes, today's intraday bars, up to five years of daily bars and search;
+  BSE serves quotes, intraday and daily bars and search by scrip id, code or
+  name. These are unofficial website endpoints: StockWise keeps one session per
+  site, at most three requests a second with jitter, retries timeouts and 5xx
+  with backoff, caches answers, and stops asking (with one notice) as soon as a
+  site refuses — Yahoo answers instead. See
+  [docs/data-providers.md](docs/data-providers.md#nse-and-bse) and
+  [docs/exchange-responses.md](docs/exchange-responses.md).
+- `quote` shows **Circuit Limits** and **Delivery** when NSE answered;
+  `--json` adds `deliveryPercent`, `lowerCircuit`, `upperCircuit`, `--csv`
+  adds `delivery_percent`, `lower_circuit`, `upper_circuit` (empty otherwise).
+- `movers`, `heatmap` and `screen` take `--universe nifty50|niftynext50|nifty100|banknifty|niftyit`
+  to scan an NSE index's current members (from NSE, whichever provider is set)
+  instead of the built-in 30 large caps, which stay as the offline fallback.
+- `doctor` checks NSE and BSE separately in `exchange` mode.
+
+### Changed
+- Minimum supported Rust version is now **1.97** (was 1.88). StockWise
+  supports the latest stable Rust and the two releases before it. Prebuilt
+  binaries, Docker and Nix are unaffected.
+- In the Indian market a bare BSE scrip code resolves to BSE: `quote 500325`
+  is `500325.BO` (it used to become the invalid `500325.NS`).
+
+### Security
+- `serve` sends a strict Content-Security-Policy (no inline code, same-origin
+  only, Trusted Types), `X-Frame-Options: DENY`, `Referrer-Policy:
+  no-referrer` and same-origin COOP/CORP headers on every response, and
+  answers 403 to `/api/*` and `/metrics` requests a browser marks as
+  cross-origin (`Sec-Fetch-Site`). There is still no CORS. With
+  `STOCKWISE_API_TOKEN` set, the dashboard asks for the token and keeps it in
+  session storage, sending it only as an `Authorization` header.
 
 ## [0.4.0] - 2026-10-21
 

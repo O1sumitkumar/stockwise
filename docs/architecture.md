@@ -30,7 +30,8 @@ src/
                      shared by the CLI printers, the TUI and the server; `DataSource` trait
   tui/               `stockwise tui`: app.rs (state + key handling, no I/O), ui.rs (ratatui
                      drawing), mod.rs (event loop, fetches)
-  server/            `stockwise serve`: axum routes, bearer auth, Prometheus metrics
+  server/            `stockwise serve`: axum routes, bearer auth, Prometheus metrics; web.rs serves
+                     the dashboard (web/, embedded with include_str!) and sets CSP/security headers
   daemon_status.rs   Reads the intraday daemon's daemon_state.json for /metrics
   store.rs           Atomic JSON persistence, data directory (STOCKWISE_HOME)
   config.rs          Optional config.toml: defaults for market, AI, cache, data dir, periods
@@ -42,6 +43,8 @@ src/
   goals.rs           SIP / step-up, retirement and education math; Indian amounts (1cr, 25L, 50k)
   api.rs             Yahoo Finance client (session, quotes, charts, search, cache, retries); routes to a provider
   providers/         MarketData trait + opt-in Alpha Vantage, Massive (Polygon), Twelve Data; Yahoo fills gaps
+    nse.rs, bse.rs   NSE / BSE website JSON (quotes, intraday + daily bars, search, NIFTY index members)
+    session.rs       Polite exchange HTTP: one cookie session per site, ≤3 req/s with jitter, retries, refusal = stop
   i18n.rs            Typed English/Hindi message catalog, --lang / STOCKWISE_LANG / locale detection
   brokers/           Broker trait + clients: angel (SmartAPI, TOTP), zerodha, upstox, dhan, fyers
                      (experimental), secrets.rs (OS keyring / owner-only file), mock.rs (test HTTP server)
@@ -67,7 +70,11 @@ src/
   charts.rs          Braille line charts, volume bars, gauges
   display.rs         Currency- and asset-aware formatting (₹/$/€/£/¥, FX and crypto decimals), width-aware padding
   market.rs          Market enum (in/us/crypto/fx), asset classes, symbol resolution, index/sector/coin/pair lists
-  watchlist.rs, alerts.rs, wealth.rs   Data models persisted via store.rs
+  alerts.rs          Alert conditions (price, RSI, MA crosses, breakouts, day change, volume, results)
+                     and their evaluation on quotes / daily bars; persisted via store.rs
+  calendar.rs        Results, dividend and split dates: Yahoo calendarEvents + NSE board meetings and
+                     corporate actions (one rate-limited session), day cache in calendar_cache.json
+  watchlist.rs, wealth.rs   Data models persisted via store.rs
 ```
 
 Adding a command: define it in `Commands` in `main.rs` (and in the `GROUPS`
@@ -93,7 +100,7 @@ User Input → clap CLI → commands/* → views.rs → api.rs → Yahoo Finance
               tui/, server/ ───────────↗
                                    → funds.rs → AMFI NAVAll.txt, api.mfapi.in
                                    → derivatives.rs → NSE option chain (India), Yahoo (US)
-                                            → providers/* → Alpha Vantage / Massive / Twelve Data (opt-in)
+                                            → providers/* → Alpha Vantage / Massive / Twelve Data / NSE / BSE (opt-in)
                                    → brokers/* → Angel One, Kite, Upstox, Dhan, Fyers
                                    → ai.rs → Local Ollama (or opt-in OpenAI / Anthropic / Gemini)
                                    → technical.rs (indicators)

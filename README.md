@@ -57,8 +57,9 @@ stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR
 - **Scriptable.** `--json` on 21 data commands and `--csv` on their tables, a
   config file for your defaults, real exit codes, shell completions, and a
   read-only JSON API with Prometheus metrics (`stockwise serve`).
-- **Live dashboard.** `stockwise tui` keeps indices, watchlist, portfolio P&L,
-  alerts and a chart on one refreshing screen.
+- **Live dashboards.** `stockwise tui` keeps indices, watchlist, portfolio P&L,
+  alerts and a chart on one refreshing screen; `stockwise serve --open` shows
+  the same in your browser.
 - **Practice before money.** A paper-trading simulator and an intraday paper
   daemon with risk controls and notifications. Optional live orders via Angel
   One (Zerodha, Upstox, Dhan and Fyers experimental), always behind a preview
@@ -134,7 +135,7 @@ Homebrew, AUR and Nix install the man pages and completions for you.
 | **Market** | `movers`, `sectors`, `heatmap`, `sentiment`, `news`, `rotation`, `sectorcmp`, `peers`, `insider`, `ipo`, `earnings`, `surprise`, `matrix`, `picks`, `screen`, `dividends` |
 | **Funds & F&O** | `mf` (search, nav, history, sip, screen, overlap), `options` (chain, pcr, maxpain, moves) |
 | **Strategies & bots** | `backtest`, `sip`, `whatif`, `intraday`, `longterm`, `daemon`, `sim`, `report` |
-| **Portfolio** | `portfolio`, `watch`, `alert`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
+| **Portfolio** | `portfolio`, `watch`, `alert`, `calendar`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
 | **Planning** | `goal` (sip, retire, education) |
 | **Interfaces** | `tui`, `serve` |
 | **Live trading** | `trade` (Angel One; Zerodha, Upstox, Dhan, Fyers experimental) |
@@ -206,6 +207,20 @@ stockwise tui                # ↑↓ select · 1-6 chart period · / add to wat
 
 Read-only: the TUI never places orders. See [docs/tui.md](docs/tui.md).
 
+Prefer a browser? `stockwise serve --open` serves the same view as a web page —
+indices, a chart with period buttons, watchlist, portfolio with allocation and
+XIRR, alerts and search — refreshing every 30 seconds, on a phone too.
+
+<p align="center">
+  <img src="assets/web-dashboard.png" alt="StockWise web dashboard in a browser: indices, a price chart, watchlist, portfolio and alerts" width="760">
+</p>
+
+```bash
+stockwise serve --open       # http://127.0.0.1:8787/ — read-only, localhost only
+```
+
+See [docs/server.md](docs/server.md#web-dashboard).
+
 ### Script it
 
 `--json` works on the data commands (`portfolio`, `watch`, `alert`, `technical`,
@@ -251,6 +266,9 @@ it decides.
 
 ```bash
 stockwise alert add TCS above 4200
+stockwise alert add INFY rsi-below 30         # also: SMA/EMA crosses, breakouts, volume spikes
+stockwise alert add TCS results-in 7          # results due within a week
+stockwise calendar                  # results, ex-dividend dates and splits for your holdings
 export STOCKWISE_TELEGRAM_TOKEN=... STOCKWISE_TELEGRAM_CHAT_ID=...
 stockwise notify test               # Telegram, Slack, Discord, email or desktop
 stockwise alert watch               # checks during market hours, notifies once per trigger
@@ -322,7 +340,7 @@ Precedence: **flag > environment variable > config file > built-in default.**
 | `lang` | `STOCKWISE_LANG` | `--lang` | Output language: `en` or `hi` (Hindi). Default: your locale (`LANG=hi_IN…` picks Hindi) |
 | `home` | `STOCKWISE_HOME` | | Where portfolio, watchlist, alerts and history are stored |
 | `portfolio` | `STOCKWISE_PORTFOLIO` | `--portfolio` | Named portfolio to use |
-| `data_provider` | `STOCKWISE_DATA_PROVIDER` | | Opt-in data provider: `alphavantage`, `massive` (Polygon) or `twelvedata`, with its API key in the environment — see [docs/data-providers.md](docs/data-providers.md) |
+| `data_provider` | `STOCKWISE_DATA_PROVIDER` | | Opt-in data provider: `alphavantage`, `massive` (Polygon) or `twelvedata` with its API key in the environment, or the exchanges' own websites — `nse`, `bse` or `exchange` (no key) — see [docs/data-providers.md](docs/data-providers.md) |
 | `ai` | `STOCKWISE_AI` | `--ai` / `--no-ai` | Add AI sections by default |
 | `ai_provider` | `STOCKWISE_AI_PROVIDER` | | `ollama` (default, local), or opt-in cloud: `openai`, `anthropic`, `gemini` with `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` in the environment — see [docs/ai.md](docs/ai.md) |
 | `model` | `STOCKWISE_MODEL` | | AI model (Ollama default `qwen3:14b`) |
@@ -346,7 +364,7 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 ## Docs
 
 - [Commands reference](docs/commands.md)
-- [Terminal dashboard](docs/tui.md) and [HTTP API & metrics](docs/server.md)
+- [Terminal dashboard](docs/tui.md) and [web dashboard, HTTP API & metrics](docs/server.md)
 - [Trading bots](docs/bots.md) and [bot design](docs/bot-design.md)
 - [Brokers: live trading, keyring, imports](docs/brokers.md)
 - [AI: Ollama and cloud providers](docs/ai.md)

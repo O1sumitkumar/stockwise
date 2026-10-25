@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>StockWise</title>
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/app.css">
+<script src="/assets/app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="brand">
+    <img src="/assets/favicon.svg" alt="" width="24" height="24">
+    <span>StockWise</span>
+    <span class="tag" title="This page cannot place orders or change your data">read-only</span>
+  </div>
+  <form id="search-form" class="search" role="search" autocomplete="off" method="dialog">
+    <label for="search" class="sr-only">Search a company or ticker</label>
+    <input id="search" type="search" placeholder="Search a company or ticker" maxlength="100"
+           spellcheck="false" autocapitalize="off" role="combobox" aria-autocomplete="list"
+           aria-expanded="false" aria-controls="search-results">
+    <ul id="search-results" class="search-results" role="listbox" aria-label="Search results" hidden></ul>
+  </form>
+  <div class="status">
+    <span id="updated" class="muted">Loading…</span>
+    <button id="refresh" type="button">Refresh</button>
+    <button id="signout" type="button" hidden>Sign out</button>
+  </div>
+</header>
+
+<div id="banner" class="banner" role="alert" hidden>
+  <span id="banner-text"></span>
+  <button id="banner-signin" type="button" hidden>Sign in</button>
+</div>
+
+<section id="indices" class="strip" aria-label="Market indices" aria-busy="true"></section>
+
+<main id="main" class="grid" tabindex="-1">
+  <section id="chart-card" class="card chart-card" aria-labelledby="chart-title">
+    <div class="card-head">
+      <div>
+        <h2 id="chart-title">Chart</h2>
+        <p id="chart-name" class="muted small"></p>
+      </div>
+      <div id="chart-quote" class="quote" aria-live="polite"></div>
+    </div>
+    <div id="periods" class="periods" role="group" aria-label="Chart period"></div>
+    <div id="chart" class="chart" tabindex="0" role="group" aria-label="Price chart" aria-describedby="chart-help">
+      <p class="empty">Pick a symbol from the watchlist, the portfolio or search.</p>
+    </div>
+    <p id="chart-readout" class="sr-only" aria-live="polite"></p>
+    <p id="chart-help" class="muted small">Hover the chart, or focus it and use the arrow keys, to read prices.</p>
+  </section>
+
+  <section class="card" aria-labelledby="watch-title">
+    <div class="card-head"><h2 id="watch-title">Watchlist</h2></div>
+    <div id="watchlist" aria-busy="true"></div>
+  </section>
+
+  <section class="card wide" aria-labelledby="portfolio-title">
+    <div class="card-head">
+      <h2 id="portfolio-title">Portfolio</h2>
+      <label class="base small">Totals in
+        <select id="base">
+          <option value="">holdings' currency</option>
+          <option value="inr">INR</option>
+          <option value="usd">USD</option>
+        </select>
+      </label>
+    </div>
+    <div id="portfolio" aria-busy="true"></div>
+  </section>
+
+  <section class="card" aria-labelledby="alerts-title">
+    <div class="card-head"><h2 id="alerts-title">Alerts <span id="alerts-count" class="count" hidden></span></h2></div>
+    <div id="alerts" aria-busy="true"></div>
+  </section>
+</main>
+
+<footer class="foot muted small">
+  <p>Prices from Yahoo Finance, refreshed every 30 seconds while this tab is visible; they may be delayed.
+  Read-only: nothing on this page trades or changes your data. Not investment advice.</p>
+</footer>
+
+<dialog id="login" aria-labelledby="login-title">
+  <form id="login-form" method="dialog">
+    <h2 id="login-title">API token required</h2>
+    <p class="small">This server was started with <code>STOCKWISE_API_TOKEN</code>. Paste the token to read your data.
+    It is kept only in this tab (session storage) and sent as an <code>Authorization</code> header.</p>
+    <label for="token">API token</label>
+    <input id="token" type="password" autocomplete="off" spellcheck="false" required maxlength="512">
+    <p id="login-error" class="error small" role="alert"></p>
+    <div class="actions">
+      <button id="login-cancel" type="button">Cancel</button>
+      <button type="submit" class="primary">Sign in</button>
+    </div>
+  </form>
+</dialog>
+</body>
+</html>
