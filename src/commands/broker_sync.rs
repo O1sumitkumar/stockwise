@@ -21,34 +21,60 @@ pub(super) struct SkippedFill {
     pub reason: String,
 }
 
-/// The portfolio symbol for a broker's plain NSE/BSE symbol: the one the
-/// portfolio already holds (`.NS`, else `.BO`), or `.NS`. Shares are
-/// fungible across NSE and BSE, so a BSE fill joins an NSE holding.
-fn portfolio_symbol(portfolio: &Portfolio, plain: &str) -> String {
+/// The portfolio symbol for a broker's plain NSE/BSE symbol. Shares are
+/// fungible across NSE and BSE, so a fill joins the holding the portfolio
+/// already has (`.NS`, else `.BO`); a new holding takes the fill's own
+/// exchange (`.BO` for BSE, so a BSE-only scrip gets a ticker that prices).
+fn portfolio_symbol(portfolio: &Portfolio, plain: &str, exchange: Option<&str>) -> String {
     let ns = format!("{plain}.NS");
     let bo = format!("{plain}.BO");
-    if portfolio.holding(&ns).is_none() && portfolio.holding(&bo).is_some() {
+    if portfolio.holding(&ns).is_some() {
+        ns
+    } else if portfolio.holding(&bo).is_some() || exchange == Some("BSE") {
         bo
     } else {
         ns
     }
 }
 
+/// The trading day a fill with a time but no date belongs to (Angel One's
+/// trade book): today once the session has begun, else the previous NSE
+/// trading day — on weekends, holidays and before 09:00 IST the book still
+/// shows the last session's fills.
+pub(super) fn session_day(now: chrono::DateTime<chrono::FixedOffset>) -> chrono::NaiveDate {
+    let mut day = now.date_naive();
+    let open = chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("valid time");
+    if now.time() >= open && crate::clock::is_trading_day(Market::In, day) {
+        return day;
+    }
+    // Long holiday stretches are under two weeks.
+    for _ in 0..14 {
+        let Some(prev) = day.pred_opt() else { break };
+        day = prev;
+        if crate::clock::is_trading_day(Market::In, day) {
+            break;
+        }
+    }
+    day
+}
+
 /// Turn trade-book rows into portfolio fills. Only delivery (CNC) fills
 /// in NSE/BSE cash equity with a side, quantity and price are kept; fills
 /// before `since` are dropped silently. A fill without a date (Angel One
-/// gives a time only) is dated `today`.
+/// gives a time only) is dated `undated` (see [`session_day`]). All fills
+/// of one stock in a batch map to the same portfolio symbol.
 pub(super) fn to_fills(
     kind: BrokerKind,
     trades: &[Trade],
     since: Option<chrono::NaiveDate>,
-    today: chrono::NaiveDate,
+    undated: chrono::NaiveDate,
     portfolio: &Portfolio,
 ) -> (Vec<BrokerFill>, Vec<SkippedFill>) {
     let mut fills = Vec::new();
     let mut skipped = Vec::new();
+    let mut symbols: Vec<(String, String)> = Vec::new();
     for t in trades {
-        let date = t.date.unwrap_or(today);
+        let date = t.date.unwrap_or(undated);
         if since.is_some_and(|s| date < s) {
             continue;
         }
@@ -82,11 +108,19 @@ pub(super) fn to_fills(
                 t.time.as_deref().unwrap_or("")
             )
         });
+        let symbol = match symbols.iter().find(|(plain, _)| *plain == t.symbol) {
+            Some((_, s)) => s.clone(),
+            None => {
+                let s = portfolio_symbol(portfolio, &t.symbol, t.exchange.as_deref());
+                symbols.push((t.symbol.clone(), s.clone()));
+                s
+            }
+        };
         fills.push(BrokerFill {
             broker: kind.id().to_string(),
             order_id: t.order_id.clone(),
             fill_id,
-            symbol: portfolio_symbol(portfolio, &t.symbol),
+            symbol,
             sell: side == Side::Sell,
             qty: t.qty,
             price,
@@ -95,6 +129,71 @@ pub(super) fn to_fills(
         });
     }
     (fills, skipped)
+}
+
+/// Leave out the sells of symbols whose lots still wait for a split or
+/// bonus: their quantity and cost are in pre-split units, so a sale would
+/// be matched and priced wrongly. Buys stay (a lot bought before the split
+/// is adjusted by `portfolio actions --apply` like any other).
+pub(super) fn hold_back_sells(
+    fills: Vec<BrokerFill>,
+    blocked: &[(String, String)],
+) -> (Vec<BrokerFill>, Vec<SkippedFill>) {
+    let mut kept = Vec::new();
+    let mut held = Vec::new();
+    for f in fills {
+        match blocked
+            .iter()
+            .find(|(sym, _)| sym.eq_ignore_ascii_case(&f.symbol))
+        {
+            Some((_, reason)) if f.sell => held.push(SkippedFill {
+                order_id: f.order_id.clone(),
+                symbol: f.symbol.clone(),
+                reason: reason.clone(),
+            }),
+            _ => kept.push(f),
+        }
+    }
+    (kept, held)
+}
+
+/// Symbols with sells in `fills` whose lots have a split or bonus not yet
+/// applied (checked on Yahoo). `None` when that could not be checked.
+async fn pending_split_sells(
+    portfolio: &Portfolio,
+    fills: &[BrokerFill],
+) -> Option<Vec<(String, String)>> {
+    let mut symbols: Vec<&str> = Vec::new();
+    for f in fills.iter().filter(|f| f.sell) {
+        if portfolio.holding(&f.symbol).is_some() && !symbols.contains(&f.symbol.as_str()) {
+            symbols.push(&f.symbol);
+        }
+    }
+    if symbols.is_empty() {
+        return Some(Vec::new());
+    }
+    let client = YahooClient::new().await.ok()?;
+    let mut blocked = Vec::new();
+    for sym in symbols {
+        let splits = super::portfolio::pending_splits(&client, portfolio, sym)
+            .await
+            .ok()?;
+        if !splits.is_empty() {
+            let list: Vec<String> = splits
+                .iter()
+                .map(|s| format!("{}:{} on {}", s.numerator, s.denominator, s.date))
+                .collect();
+            blocked.push((
+                sym.to_string(),
+                format!(
+                    "split/bonus {} not applied to your lots yet — run `stockwise portfolio \
+                     actions {sym} --apply`, then sync again",
+                    list.join(", ")
+                ),
+            ));
+        }
+    }
+    Some(blocked)
 }
 
 /// An order still working at the broker (open, or partly filled).
@@ -259,8 +358,24 @@ pub async fn cmd_trade_sync(
         .unwrap_or_default();
 
     let portfolio = Portfolio::load()?;
-    let today = brokers::ist_now().date_naive();
-    let (fills, skipped) = to_fills(kind, &trades, since, today, &portfolio);
+    let now = brokers::ist_now();
+    let today = now.date_naive();
+    let (fills, mut skipped) = to_fills(kind, &trades, since, session_day(now), &portfolio);
+    let fills = match pending_split_sells(&portfolio, &fills).await {
+        Some(blocked) => {
+            let (kept, held) = hold_back_sells(fills, &blocked);
+            skipped.extend(held);
+            kept
+        }
+        None => {
+            notes.push(
+                "Could not check for splits or bonuses not yet applied to your lots (no \
+                 connection to Yahoo); check `stockwise portfolio actions` before --apply."
+                    .into(),
+            );
+            fills
+        }
+    };
     let mut after = portfolio.clone();
     let summary = after.apply_broker_fills(&fills);
     let open = open_orders(&orders);
@@ -277,13 +392,8 @@ pub async fn cmd_trade_sync(
         ));
     }
 
-    if apply {
-        if changed {
-            after.save()?;
-        }
-        if let Some(g) = &gtts {
-            gtt_watch::save(kind, g)?;
-        }
+    if apply && changed {
+        after.save()?;
     }
     let name = crate::portfolio::active().unwrap_or("default");
 
@@ -316,6 +426,7 @@ pub async fn cmd_trade_sync(
         );
     }
 
+    let mut delivered = true;
     if notify {
         if apply {
             let mut lines: Vec<String> = gtt_changes
@@ -331,7 +442,7 @@ pub async fn cmd_trade_sync(
             if synced > 0 {
                 lines.push(format!("{synced} order(s) synced into portfolio {name}"));
             }
-            send(kind, lines, format).await;
+            delivered = send(kind, lines, format).await;
         } else if format.is_table() {
             println!(
                 "  {}",
@@ -339,13 +450,22 @@ pub async fn cmd_trade_sync(
             );
         }
     }
+    // Remember the GTTs only once their changes were reported, so a
+    // notification that could not be sent is retried on the next run.
+    if apply
+        && delivered
+        && let Some(g) = &gtts
+    {
+        gtt_watch::save(kind, g)?;
+    }
     Ok(())
 }
 
 /// Send `lines` as one notification, saying so (or why not) in table mode.
-async fn send(kind: BrokerKind, lines: Vec<String>, format: Format) {
+/// False only when channels are configured and every one failed.
+async fn send(kind: BrokerKind, lines: Vec<String>, format: Format) -> bool {
     if lines.is_empty() {
-        return;
+        return true;
     }
     let notifier = crate::notify::Notifier::from_env();
     if !notifier.is_enabled() {
@@ -355,16 +475,24 @@ async fn send(kind: BrokerKind, lines: Vec<String>, format: Format) {
                 "!".yellow()
             );
         }
-        return;
+        return true;
     }
     let msg = crate::notify::Message::new(
         format!("StockWise: {} update", kind.label()),
         lines.join("\n"),
     );
     let delivered = notifier.send_logged(&msg).await;
-    if delivered && format.is_table() {
-        println!("  {} Notification sent.", "✓".green());
+    if format.is_table() {
+        if delivered {
+            println!("  {} Notification sent.", "✓".green());
+        } else {
+            println!(
+                "  {} Notification failed; the GTT changes will be reported again next time.",
+                "!".yellow()
+            );
+        }
     }
+    delivered
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -517,7 +645,6 @@ pub async fn cmd_trade_gtt_list(kind: BrokerKind, notify: bool, format: Format) 
     let gtts = broker.gtt_list().await?;
     let seen = gtt_watch::load(kind).unwrap_or_default();
     let changes = gtt_watch::changes(&seen, &gtts);
-    gtt_watch::save(kind, &gtts)?;
 
     if format == Format::Json {
         #[derive(Serialize)]
@@ -560,13 +687,19 @@ pub async fn cmd_trade_gtt_list(kind: BrokerKind, notify: bool, format: Format) 
             }
         }
     }
-    if notify {
+    let delivered = if notify {
         let lines = changes
             .iter()
             .filter(|c| c.notable())
             .map(GttChange::describe)
             .collect();
-        send(kind, lines, format).await;
+        send(kind, lines, format).await
+    } else {
+        true
+    };
+    // A notification that could not be sent is retried on the next look.
+    if delivered {
+        gtt_watch::save(kind, &gtts)?;
     }
     Ok(())
 }
@@ -628,6 +761,70 @@ mod tests {
         assert_eq!(a[0].date, "2026-10-25");
         assert!(a[0].sell);
         assert_eq!(a[0].fill_id, b[0].fill_id);
+    }
+
+    fn at(s: &str) -> chrono::DateTime<chrono::FixedOffset> {
+        chrono::DateTime::parse_from_rfc3339(s).unwrap()
+    }
+
+    #[test]
+    fn time_only_fills_belong_to_the_last_session() {
+        // During or after Wednesday's session: today.
+        assert_eq!(
+            session_day(at("2026-10-21T15:00:00+05:30")),
+            d("2026-10-21")
+        );
+        // Before Wednesday's open: Tuesday is Dussehra, so Monday.
+        assert_eq!(
+            session_day(at("2026-10-21T08:00:00+05:30")),
+            d("2026-10-19")
+        );
+        // Sunday: Friday.
+        assert_eq!(
+            session_day(at("2026-10-25T12:00:00+05:30")),
+            d("2026-10-23")
+        );
+    }
+
+    #[test]
+    fn sells_wait_for_pending_splits_but_buys_do_not() {
+        let p = Portfolio::default();
+        let trades = vec![
+            trade("B1", Some("T1"), Side::Buy, 5.0, 1500.0),
+            trade("S1", Some("T2"), Side::Sell, 5.0, 760.0),
+        ];
+        let (fills, _) = to_fills(BrokerKind::Zerodha, &trades, None, d("2026-10-25"), &p);
+        let blocked = vec![("INFY.NS".to_string(), "split 2:1 not applied".to_string())];
+        let (kept, held) = hold_back_sells(fills, &blocked);
+        assert_eq!(kept.len(), 1);
+        assert!(!kept[0].sell);
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].order_id, "S1");
+        assert!(held[0].reason.contains("split"));
+    }
+
+    #[test]
+    fn bse_fills_open_bse_holdings_unless_the_stock_is_held_already() {
+        let mut p = Portfolio::default();
+        let mut bse = trade("O1", Some("T1"), Side::Buy, 5.0, 100.0);
+        bse.exchange = Some("BSE".into());
+        // A later NSE sell of the same stock in the batch joins the same holding.
+        let nse_sell = trade("O2", Some("T2"), Side::Sell, 5.0, 101.0);
+        let (fills, _) = to_fills(
+            BrokerKind::Zerodha,
+            &[bse.clone(), nse_sell],
+            None,
+            d("2026-10-25"),
+            &p,
+        );
+        assert_eq!(fills[0].symbol, "INFY.BO");
+        assert_eq!(fills[1].symbol, "INFY.BO");
+        p.add_lot(
+            "INFY.NS",
+            crate::portfolio::Lot::new(1.0, 1.0, "2024-01-01", "manual"),
+        );
+        let (fills, _) = to_fills(BrokerKind::Zerodha, &[bse], None, d("2026-10-25"), &p);
+        assert_eq!(fills[0].symbol, "INFY.NS");
     }
 
     #[test]

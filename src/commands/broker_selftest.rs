@@ -3,16 +3,14 @@
 //! into a GitHub issue (see docs/brokers.md, "Help verify a broker").
 //!
 //! The session is wrapped in [`ReadOnly`], so no order, GTT or cancel can
-//! reach the broker whatever this file does. The dry-run order goes through
-//! the same checks as a real one ([`prepare_order`], [`check_cap`]) and
-//! stops before anything is sent.
+//! reach the broker whatever this file does — and this file never calls
+//! those methods. The dry-run order goes through the same checks as a real
+//! one ([`prepare_order`], [`check_cap`]) and stops before anything is sent.
 
 use super::trade::{Intent, check_cap, prepare_order};
 use super::*;
 use crate::brokers::readonly::ReadOnly;
-use crate::brokers::{
-    self, Broker, BrokerKind, Endpoint, GttRequest, OrderKind, OrderRequest, Side,
-};
+use crate::brokers::{self, Broker, BrokerKind, Endpoint, OrderKind, Side};
 
 /// Liquid NSE symbols every broker should resolve exactly. NIFTYBEES is
 /// the Nifty 50 ETF.
@@ -478,7 +476,6 @@ pub(super) async fn run_checks(
     }
 
     dry_run(&mut run, broker, &ctx).await;
-    guard_check(&mut run, broker).await;
 
     for ep in Endpoint::ALL {
         if ep == Endpoint::Gtts && !broker.supports_gtt() {
@@ -535,12 +532,13 @@ async fn dry_run(run: &mut Run, broker: &ReadOnly, ctx: &Context) {
     let prepared = prepare_order(broker, Side::Buy, symbol, 1, intent, ctx.last_price).await;
     match prepared {
         Ok(p) => {
+            // The cap's own message carries amounts; the report only says
+            // whether it would pass.
             let cap = match check_cap(broker.kind(), ctx.limits.max_order_value, p.est_value) {
-                Ok(()) if ctx.limits.max_order_value.is_some() => {
-                    "within max_order_value".to_string()
-                }
-                Ok(()) => "no max_order_value set".to_string(),
-                Err(e) => format!("would be refused: {e}"),
+                Ok(()) if ctx.limits.max_order_value.is_some() => "within max_order_value",
+                Ok(()) => "no max_order_value set",
+                Err(_) if p.est_value.is_some() => "would be refused: over max_order_value",
+                Err(_) => "would be refused: max_order_value can't be checked without a price",
             };
             let order = match kind {
                 OrderKind::Limit { price } => format!("LIMIT {}", run.red.money(Some(price))),
@@ -556,46 +554,6 @@ async fn dry_run(run: &mut Run, broker: &ReadOnly, ctx: &Context) {
             run.push("Dry-run order", Status::Pass, detail);
         }
         Err(e) => run.fail("Dry-run order", &e),
-    }
-}
-
-/// Show in the report that the session refused every order-changing call.
-async fn guard_check(run: &mut Run, broker: &ReadOnly) {
-    let instrument = brokers::Instrument {
-        symbol: SYMBOLS[0].into(),
-        tradingsymbol: SYMBOLS[0].into(),
-        token: "0".into(),
-        exchange: "NSE".into(),
-    };
-    let order = OrderRequest {
-        instrument: instrument.clone(),
-        side: Side::Buy,
-        qty: 1,
-        kind: OrderKind::Market,
-    };
-    let gtt = GttRequest {
-        instrument,
-        side: Side::Buy,
-        qty: 1,
-        trigger: 1.0,
-        limit: 1.0,
-        last_price: 2.0,
-    };
-    let refused = broker.place_order(&order).await.is_err()
-        && broker.gtt_create(&gtt).await.is_err()
-        && broker.gtt_cancel("0").await.is_err();
-    if refused {
-        run.push(
-            "Read-only guard",
-            Status::Pass,
-            "order, GTT and cancel calls are refused before they reach the broker",
-        );
-    } else {
-        run.push(
-            "Read-only guard",
-            Status::Fail,
-            "an order-changing call was not refused",
-        );
     }
 }
 
@@ -799,7 +757,10 @@ pub async fn cmd_trade_selftest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::brokers::{Gtt, Holding, Instrument, Order, OrderAck, Position, Profile, Trade};
+    use crate::brokers::{
+        Gtt, GttRequest, Holding, Instrument, Order, OrderAck, OrderRequest, Position, Profile,
+        Trade,
+    };
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 
@@ -974,8 +935,7 @@ mod tests {
                 "Trade book",
                 "GTT list",
                 "Instruments",
-                "Dry-run order",
-                "Read-only guard"
+                "Dry-run order"
             ]
         );
         assert_eq!(r.summary.fail, 0, "{:#?}", r.checks);
@@ -1038,6 +998,18 @@ mod tests {
         assert!(dry.detail.contains("MARKET"), "{}", dry.detail);
         // No price with a cap: the real flow would refuse, and the report says so.
         assert!(dry.detail.contains("would be refused"), "{}", dry.detail);
+    }
+
+    #[tokio::test]
+    async fn an_order_over_the_cap_is_reported_without_the_cap_amount() {
+        let r = report(&Account::default(), ctx(Some(1300.0), Some(1000.0)), false).await;
+        let dry = r.checks.iter().find(|c| c.name == "Dry-run order").unwrap();
+        assert!(
+            dry.detail.contains("over max_order_value"),
+            "{}",
+            dry.detail
+        );
+        assert!(!dry.detail.contains("1000"), "{}", dry.detail);
     }
 
     #[tokio::test]

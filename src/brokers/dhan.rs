@@ -251,10 +251,48 @@ fn plain_exchange(segment: Option<String>) -> Option<String> {
     })
 }
 
+/// The NSE equity trading symbol for a Dhan security id, from the scrip
+/// master. Used for trade-history rows, which carry a security id and a
+/// display name (`customSymbol`, never a ticker) but no trading symbol.
+fn symbol_for_id(csv: &str, security_id: &str) -> Option<String> {
+    let mut lines = csv.lines();
+    let header: Vec<String> = http::csv_fields(lines.next().unwrap_or_default())
+        .into_iter()
+        .map(|h| h.trim().to_string())
+        .collect();
+    let find = |names: &[&str]| {
+        names
+            .iter()
+            .find_map(|n| header.iter().position(|h| h == n))
+    };
+    let exch = find(&["EXCH_ID", "SEM_EXM_EXCH_ID"])?;
+    let seg = find(&["SEGMENT", "SEM_SEGMENT"])?;
+    let id = find(&["SECURITY_ID", "SEM_SMST_SECURITY_ID"])?;
+    let inst = find(&["INSTRUMENT", "SEM_INSTRUMENT_NAME"])?;
+    let sym = find(&["UNDERLYING_SYMBOL", "SEM_TRADING_SYMBOL"])?;
+    let mut hits = lines.map(http::csv_fields).filter(|f| {
+        let get = |i: usize| f.get(i).map(|s| s.trim()).unwrap_or("");
+        get(exch) == "NSE" && get(seg) == "E" && get(inst) == "EQUITY" && get(id) == security_id
+    });
+    let hit = hits.next()?;
+    if hits.next().is_some() {
+        return None;
+    }
+    Some(hit.get(sym)?.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// A trade row without a trading symbol that the scrip master can fill in.
+fn needs_symbol(t: &Value) -> Option<String> {
+    let missing = http::text(t.get("tradingSymbol")).is_none_or(|s| s.trim().is_empty());
+    let nse = http::text(t.get("exchangeSegment")).as_deref() == Some("NSE_EQ");
+    (missing && nse)
+        .then(|| http::text(t.get("securityId")))
+        .flatten()
+}
+
 fn trade(t: &Value) -> Option<Trade> {
-    let sym = http::text(t.get("tradingSymbol"))
-        .or_else(|| http::text(t.get("customSymbol")))
-        .unwrap_or_default();
+    // Never `customSymbol`: it is a display name ("Tata Motors"), not a ticker.
+    let sym = http::text(t.get("tradingSymbol")).unwrap_or_default();
     let stamp = http::text(
         t.get("exchangeTime")
             .filter(|v| !v.is_null())
@@ -322,7 +360,7 @@ fn shape(endpoint: Endpoint) -> Shape {
         },
         Endpoint::Trades => Shape {
             required: "orderId exchangeTradeId transactionType exchangeSegment productType \
-                tradingSymbol|customSymbol tradedQuantity tradedPrice exchangeTime|createTime",
+                tradingSymbol tradedQuantity tradedPrice exchangeTime|createTime",
             documented: "dhanClientId exchangeOrderId orderType securityId isin instrument \
                 sebiTax stt brokerageCharges serviceTax exchangeTransactionCharges stampDuty \
                 createTime updateTime exchangeTime drvExpiryDate drvOptionType drvStrikePrice",
@@ -404,24 +442,70 @@ impl DhanClient {
         })
     }
 
-    /// Trades from `from` to `to` (inclusive), page by page (from 0). An
-    /// empty page ends the walk; at most 50 pages are read.
+    /// Today's fills, plus the history from `since` up to the day before
+    /// `today`. History rows have no trading symbol; NSE ones get it from
+    /// the scrip master by security id (others are left without one, and
+    /// `trade sync` skips them).
+    async fn trades_until(
+        &self,
+        since: Option<chrono::NaiveDate>,
+        today: chrono::NaiveDate,
+    ) -> Result<Vec<Trade>> {
+        let mut raw = self.rows(Endpoint::Trades).await?;
+        if let (Some(from), Some(to)) = (since, today.pred_opt())
+            && from <= to
+        {
+            raw.extend(self.trade_history(from, to).await?);
+        }
+        if raw.iter().any(|t| needs_symbol(t).is_some())
+            && let Ok(csv) = self.scrip_master().await
+        {
+            for t in raw.iter_mut() {
+                if let Some(sym) = needs_symbol(t).and_then(|id| symbol_for_id(&csv, &id)) {
+                    t["tradingSymbol"] = Value::String(sym);
+                }
+            }
+        }
+        Ok(raw.iter().filter_map(trade).collect())
+    }
+
+    /// Trades from `from` to `to` (inclusive), page by page (from 0) until
+    /// an empty page. Refuses rather than stop short after 50 pages: a
+    /// partial history would leave buys out.
     async fn trade_history(
         &self,
         from: chrono::NaiveDate,
         to: chrono::NaiveDate,
     ) -> Result<Vec<Value>> {
+        const MAX_PAGES: u32 = 50;
         let mut all = Vec::new();
-        for page in 0..50 {
+        for page in 0..MAX_PAGES {
             let path = format!("/trades/{from}/{to}/{page}");
             let rows = self.list(&path, "trade history").await?;
-            let n = rows.len();
-            all.extend(rows);
-            if n == 0 {
-                break;
+            if rows.is_empty() {
+                return Ok(all);
             }
+            all.extend(rows);
         }
-        Ok(all)
+        bail!(
+            "Dhan's trade history from {from} has more than {MAX_PAGES} pages; \
+             use a later --since"
+        )
+    }
+
+    /// The NSE_EQ scrip master (CSV, gunzipped if needed).
+    async fn scrip_master(&self) -> Result<String> {
+        let resp = self
+            .http
+            .get(&self.instruments)
+            .send()
+            .await
+            .context("Could not download the Dhan scrip master")?;
+        if !resp.status().is_success() {
+            bail!("Dhan scrip master: HTTP {}", resp.status());
+        }
+        let raw = http::maybe_gunzip(&resp.bytes().await?)?;
+        Ok(String::from_utf8_lossy(&raw).into_owned())
     }
 
     async fn profile_client_id(&self) -> Result<Option<String>> {
@@ -499,15 +583,8 @@ impl Broker for DhanClient {
     /// Today's fills, plus Dhan's trade history from `since` when it is
     /// before today.
     async fn trades(&self, since: Option<chrono::NaiveDate>) -> Result<Vec<Trade>> {
-        let mut raw = self.rows(Endpoint::Trades).await?;
-        // History runs up to yesterday; today's fills come from /trades.
-        let yesterday = super::ist_now().date_naive().pred_opt();
-        if let (Some(from), Some(to)) = (since, yesterday)
-            && from <= to
-        {
-            raw.extend(self.trade_history(from, to).await?);
-        }
-        Ok(raw.iter().filter_map(trade).collect())
+        self.trades_until(since, super::ist_now().date_naive())
+            .await
     }
 
     async fn rows(&self, endpoint: Endpoint) -> Result<Vec<Value>> {
@@ -530,17 +607,7 @@ impl Broker for DhanClient {
         if exchange != "NSE" {
             bail!("Dhan orders support NSE only");
         }
-        let resp = self
-            .http
-            .get(&self.instruments)
-            .send()
-            .await
-            .context("Could not download the Dhan scrip master")?;
-        if !resp.status().is_success() {
-            bail!("Dhan scrip master: HTTP {}", resp.status());
-        }
-        let raw = http::maybe_gunzip(&resp.bytes().await?)?;
-        pick_equity(&String::from_utf8_lossy(&raw), symbol)
+        pick_equity(&self.scrip_master().await?, symbol)
     }
 
     async fn place_order(&self, o: &OrderRequest) -> Result<OrderAck> {
@@ -808,6 +875,14 @@ BSE,E,500180,EQUITY,0,HDFCBANK,1.0,HDFC Bank,,,,5.0000,NA,ES,A,HDFC BANK LTD\n";
                 include_str!("fixtures/dhan_trade_history.json"),
             ),
             Route::json("GET", "/trades/2026-10-15/2026-10-15/1", "[]"),
+            Route::bytes(
+                "GET",
+                "/instrument/NSE_EQ",
+                include_str!("fixtures/dhan_scrip_master.csv")
+                    .as_bytes()
+                    .to_vec(),
+                "text/csv",
+            ),
         ]
     }
 
@@ -830,21 +905,42 @@ BSE,E,500180,EQUITY,0,HDFCBANK,1.0,HDFC Bank,,,,5.0000,NA,ES,A,HDFC BANK LTD\n";
     }
 
     #[tokio::test]
-    async fn trade_history_pages_until_empty() {
+    async fn trade_history_maps_security_ids_never_display_names() {
         let (server, c) = client(read_routes()).await;
-        let rows = c
-            .trade_history(
-                chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap(),
-                chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap(),
-            )
+        let d = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        let t = c
+            .trades_until(Some(d("2026-10-15")), d("2026-10-16"))
             .await
             .unwrap();
-        assert_eq!(rows.len(), 1);
         assert_eq!(server.count("GET", "/trades/2026-10-15/2026-10-15/1"), 1);
-        let t = trade(&rows[0]).unwrap();
-        // "NA" create time: the exchange time is used.
-        assert_eq!(t.date, chrono::NaiveDate::from_ymd_opt(2026, 10, 15));
-        assert_eq!(t.symbol, "HDFCBANK");
+        assert_eq!(t.len(), 3);
+        let h = &t[2];
+        // tradingSymbol is null; customSymbol "HDFC Bank" must not become a ticker.
+        assert_eq!(h.symbol, "HDFCBANK");
+        assert_eq!(h.date, Some(d("2026-10-15")));
+        assert!(h.is_delivery_equity());
+        // Without the scrip master the row keeps no symbol (sync skips it).
+        let raw: Vec<Value> =
+            serde_json::from_str(include_str!("fixtures/dhan_trade_history.json")).unwrap();
+        assert_eq!(trade(&raw[0]).unwrap().symbol, "");
+        let csv = include_str!("fixtures/dhan_scrip_master.csv");
+        assert_eq!(symbol_for_id(csv, "1333").as_deref(), Some("HDFCBANK"));
+        assert_eq!(symbol_for_id(csv, "424242"), None);
+    }
+
+    #[tokio::test]
+    async fn trade_history_refuses_to_stop_short() {
+        let full = include_str!("fixtures/dhan_trade_history.json");
+        let routes: Vec<Route> = (0..50)
+            .map(|p| Route::json("GET", &format!("/trades/2026-10-01/2026-10-15/{p}"), full))
+            .collect();
+        let (_s, c) = client(routes).await;
+        let d = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        let err = c
+            .trade_history(d("2026-10-01"), d("2026-10-15"))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("more than 50 pages"), "{err}");
     }
 
     #[tokio::test]

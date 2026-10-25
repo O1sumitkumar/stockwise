@@ -27,9 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the broker's executed trades into the lot-based portfolio: delivery buys
   become dated lots (fill date, average fill price, broker order id), sells
   come out FIFO as realized sales. Previews by default; `--apply` writes.
-  Idempotent: applied fills are remembered by broker trade id, so re-running,
+  Idempotent: applied fills are remembered by broker, order and trade id, so re-running,
   or syncing the rest of a partly filled order, never double-counts. Intraday,
-  margin and F&O fills are skipped; open and partly filled orders are listed;
+  margin and F&O fills are skipped; sells wait while a split or bonus is not
+  yet applied to the lots; open and partly filled orders are listed;
   quantities are compared with the broker's holdings. Dhan reads older fills
   with `--since`; the other brokers return today's trades only.
 - `trade gtt list` shows what changed since the last look (triggered,

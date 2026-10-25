@@ -8,7 +8,7 @@
     "exchangeSegment": "NSE_EQ",
     "productType": "CNC",
     "orderType": "MARKET",
-    "tradingSymbol": "HDFCBANK",
+    "tradingSymbol": null,
     "customSymbol": "HDFC Bank",
     "securityId": "1333",
     "tradedQuantity": 5,

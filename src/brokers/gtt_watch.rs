@@ -98,10 +98,17 @@ impl GttChange {
         }
     }
 
-    /// Worth a notification: a status change or a GTT that went away (not
-    /// a new one — the user just made it).
+    /// Worth a notification: a GTT that went away, or whose normalised
+    /// state changed (`NEW` → `ACTIVE` is not news). Not a new GTT — the
+    /// user just made it.
     pub fn notable(&self) -> bool {
-        self.kind != ChangeKind::New
+        match self.kind {
+            ChangeKind::New => false,
+            ChangeKind::Gone => true,
+            ChangeKind::Status => {
+                GttState::of(self.from.as_deref()) != GttState::of(self.to.as_deref())
+            }
+        }
     }
 
     /// One line for the terminal or a notification.
@@ -263,6 +270,15 @@ mod tests {
         let msg = message(BrokerKind::Zerodha, &d).unwrap();
         assert!(msg.body.contains("GTT 2") && msg.body.contains("GTT 3"));
         assert!(!msg.body.contains("GTT 4"));
+    }
+
+    #[test]
+    fn a_status_spelling_change_is_shown_but_not_notified() {
+        // Angel One moves a fresh rule from NEW to ACTIVE.
+        let d = diff(&[g("1", "NEW")], &[g("1", "ACTIVE")]);
+        assert_eq!(d.len(), 1);
+        assert!(!d[0].notable());
+        assert!(message(BrokerKind::Angel, &d).is_none());
     }
 
     #[test]

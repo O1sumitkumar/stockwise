@@ -114,20 +114,27 @@ stockwise trade sync --apply --notify --json          # for cron: JSON on stdout
 
 - **Read-only at the broker.** Sync and `gtt list` run on a session that
   refuses any order, GTT or cancel request.
-- **Idempotent.** Every fill applied is remembered (broker + trade id) in the
+- **Idempotent.** Every fill applied is remembered (broker, order and trade id) in the
   portfolio file, and lots and sales keep the broker order id. Running sync
   twice, or after a partial fill completes, never counts a fill twice: the
   later part of a partly filled order becomes its own lot.
 - **Delivery equity only.** Intraday (MIS / INTRADAY), margin (MTF), F&O and
   commodity fills are listed as skipped, not turned into lots. NSE and BSE
-  fills of the same stock go to the same holding.
+  fills of a stock you already hold go to that holding; a new holding takes
+  the exchange of its fill (`.NS` or `.BO`).
 - **Sells need the shares.** A sell larger than the shares the portfolio held
   on that date is left out (and not marked as synced) until you add the
-  missing lots, e.g. with `portfolio add SYMBOL QTY PRICE --date`.
+  missing lots, e.g. with `portfolio add SYMBOL QTY PRICE --date`. Sells of a
+  stock whose lots still wait for a split or bonus are held back too — run
+  `portfolio actions SYMBOL --apply` first.
+- **Dates.** Fills are dated by the broker's timestamp. Angel One gives a time
+  only, so its fills are dated with the last NSE session (today once the
+  market has opened, else the previous trading day).
 - **Today only, mostly.** Angel One, Zerodha, Upstox and Fyers return today's
   trades only — run sync at the end of each trading day (or from cron). Dhan
-  keeps a trade history, so `--since` fetches older fills there. For older
-  history on other brokers, `stockwise import` a tradebook export.
+  keeps a trade history, so `--since` fetches older fills there (up to 50
+  pages; history rows get their NSE symbol from Dhan's scrip master). For
+  older history on other brokers, `stockwise import` a tradebook export.
 - **Open orders** (pending, partly filled) are listed; their fills sync once
   they appear in the trade book.
 - **Quantity check.** For each symbol it touched, sync compares the
@@ -144,7 +151,10 @@ stockwise trade sync --apply --notify --json          # for cron: JSON on stdout
 data directory) and shows what changed since the last look: GTTs that
 triggered, were cancelled or expired, or no longer appear (brokers drop old
 ones from the list). `--notify` sends those changes to your notification
-channels (Telegram, Slack, Discord, email — see `stockwise notify status`).
+channels (Telegram, Slack, Discord, email — see `stockwise notify status`);
+only real state changes and vanished GTTs are sent, not a status spelling
+change such as Angel One's `NEW` → `ACTIVE`. If every channel fails, the
+record is not updated, so the changes are reported again next time.
 `trade sync --apply` updates the same record and includes the changes;
 `trade sync --apply --notify` notifies about them and about synced orders.
 
@@ -320,7 +330,7 @@ the "experimental" label off in about five minutes, without placing an order.
    1-share LIMIT buy 5% below the market through every order check and stops
    before sending (like `--dry-run`), and compares the field names of each
    response with the documented ones. The session it uses refuses any order,
-   GTT or cancel in code — the report shows that check too.
+   GTT or cancel in code, and the self-test never calls those methods.
 3. Read the report, then paste it into a
    [broker test report](https://github.com/iamsaquib8/stockwise/issues/new?template=broker_test_report.yml).
    It contains no credentials, tokens, names, e-mail addresses or holdings
