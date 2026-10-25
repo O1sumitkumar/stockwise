@@ -119,18 +119,45 @@ and `niftyit`); `niftynext50` has no built-in list and fails with the reason.
 | Command | Description |
 |---------|-------------|
 | `mf search <QUERY...> [-n N] [--json]` | Find Indian mutual-fund schemes by words in the name, fund house, category or ISIN; add `direct growth` to narrow. Shows the AMFI scheme code the other `mf` commands take |
-| `mf nav <CODES...> [--json]` | Latest NAV and date, fund house, category, ISINs |
-| `mf history <CODE> [-p PERIOD] [--json]` | NAV chart for the period (default `1y`), trailing 1M–10Y returns (annualized from 1Y), since-inception CAGR, max drawdown. `--json` includes every NAV in the period |
+| `mf nav <CODES...> [--json]` | Latest NAV and date, fund house, category, ISINs, and the plan's expense ratio (TER) with the other plan's for comparison |
+| `mf history <CODE> [-p PERIOD] [--json]` | NAV chart for the period (default `1y`), expense ratio (TER), trailing 1M–10Y returns (annualized from 1Y), since-inception CAGR, max drawdown. `--json` includes every NAV in the period |
 | `mf sip <CODE> <AMOUNT> [-p PERIOD] [--json]` | Monthly SIP from NAV history (default `5y`): value-vs-invested chart, gain, units, and XIRR on the actual purchase dates |
-| `mf screen [CATEGORY...] [--plan direct\|regular\|all] [-s 1y\|3y\|5y] [-n N] [--max N] [--json]` | Bare: list categories with their active scheme counts. With words (`flexi cap`, `elss`, `liquid`, `equity etf`): rank the category's growth-option schemes by return (default 3Y CAGR, direct plans) |
+| `mf screen [CATEGORY...] [--plan direct\|regular\|all] [-s 1y\|3y\|5y\|ter] [--max-ter PERCENT] [-n N] [--max N] [--json]` | Bare: list categories with their active scheme counts. With words (`flexi cap`, `elss`, `liquid`, `equity etf`): rank the category's growth-option schemes by return (default 3Y CAGR, direct plans) or by expense ratio (`-s ter`, lowest first — with more matches than `--max`, the cheapest are screened), with a TER column. `--max-ter 1.0` keeps only funds whose disclosed TER is at most 1% |
 | `mf overlap <A> <B> [--json]` | Shared top holdings, holdings and sector overlap, and expense ratios of two funds or ETFs, e.g. `mf overlap SPY QQQ -m us` |
-| `options chain <SYMBOL> [-e DATE] [-n STRIKES] [--rate %] [--div-yield %] [--json]` | Calls and puts around the money: last price, open interest (and change on NSE), volume, IV, delta, gamma, theta, vega, rho. Default: nearest expiry, 10 strikes each side (`-n 0` for all) |
+| `options chain <SYMBOL> [-e DATE] [-n STRIKES] [--rate %] [--div-yield %] [--json]` | Calls and puts around the money: last price, open interest (and change on NSE/BSE), volume, IV, delta, gamma, theta, vega, rho, and the lot size. Default: nearest expiry, 10 strikes each side (`-n 0` for all) |
 | `options pcr <SYMBOL> [-e DATE] [--json]` | Put/call ratio by open interest and by volume, and the three strikes with the most call and put open interest |
 | `options maxpain <SYMBOL> [-e DATE] [--json]` (`max-pain`) | The settlement strike at which open options pay their holders least, with the payout curve around it |
+| `options payoff <SYMBOL> [--leg LEG]... [-s PRESET] [-w WIDTH] [-e DATE] [-l LOTS] [--lot-size N] [--rate %] [--div-yield %] [--iv %] [--today] [--json]` | A multi-leg position priced from the live chain: legs with price source, IV and delta; net debit/credit; max profit and loss (or "unlimited"); breakevens; probability of profit; position greeks; and a braille P/L chart at expiry (green/red), plus today's curve with `--today`. Analysis only — no orders |
 | `options <SYMBOL> [-p]` / `options moves <SYMBOL> [-p]` | Expected 1/5/10/30-day moves and OTM strike ideas from realized volatility |
 
 MF periods (`-p`) are `<n>mo`, `<n>y` or `max`, e.g. `6mo`, `3y`, `10y`. Expiries
 (`-e`) are `YYYY-MM-DD`.
+
+**`options payoff` legs and presets**
+
+- A leg is `buy|sell [QTY] call|put STRIKE [@PRICE]` or `buy|sell [QTY] stock [@PRICE]`:
+  `--leg "buy call 24500" --leg "sell call 24800"`, `--leg "sell 2 put atm-1"`,
+  `--leg "buy stock @2450"`. `STRIKE` is a listed strike, or `atm`, `atm+N`,
+  `atm-N` (N listed strikes from the money). An unlisted strike is an error that
+  names the nearest listed ones.
+- Prices: the bid/ask mid where both are quoted, else the last trade (flagged
+  `ltp` — it can be stale), else the leg needs `@PRICE`. A stock leg is priced at
+  the current underlying value (for an index that stands in for the future).
+- Presets around the at-the-money strike, `W` = `--width` (default two strike
+  steps; a strike that isn't listed snaps to the nearest one, with a note):
+  `bull-call` (buy ATM call, sell ATM+W), `bear-put` (buy ATM put, sell ATM−W),
+  `straddle` (buy ATM call and put), `strangle` (buy ATM−W put and ATM+W call),
+  `iron-condor` (sell ATM±W, buy ATM±2W wings — a credit), `butterfly` (buy
+  ATM±W calls, sell two ATM calls), `covered-call` (stock at spot, sell ATM+W
+  call). `--strategy` and `--leg` combine.
+- Sizes: every amount is per position — per-unit P/L × lot size × `--lots`. Lot
+  sizes come from the chain (NSE/BSE order-book quantities are whole lots; US
+  contracts are 100 shares). After hours BSE shows no order book: pass
+  `--lot-size`, otherwise amounts are per unit and the output says so.
+- Probability of profit: the chance the expiry price lands where P/L > 0 if the
+  price is lognormal with the at-the-money IV (or `--iv`) and risk-neutral drift.
+  It is a model, not a forecast. Costs (brokerage, STT, exchange charges) are not
+  included. StockWise never places orders from this command.
 
 **Where the data comes from, and what has none**
 
@@ -141,9 +168,22 @@ MF periods (`-p`) are `<n>mo`, `<n>y` or `max`, e.g. `6mo`, `3y`, `10y`. Expirie
   stale cached copy is used with a warning on stderr.
 - **Returns** are point-to-point NAV returns of the growth option, before tax
   and exit load. `mf sip` buys at the first NAV on or after each monthly due date.
-- **Expense ratios (TER)** of Indian schemes are not in AMFI's NAV file, so
-  `mf screen` cannot rank by them; compare TERs on the AMC's site. `mf overlap`
-  shows Yahoo's expense ratio for the funds it covers.
+- **Expense ratios (TER)**: AMFI's monthly TER disclosure
+  ([amfiindia.com/ter-of-mf-schemes](https://www.amfiindia.com/ter-of-mf-schemes)),
+  fetched from the API behind that page as one spreadsheet export for the month
+  (`/api/populate-te-rdata-revised?MF_ID=All&Month=MM-YYYY&strCat=-1&strType=-1&excel=true`,
+  ~3 MB; the previous month if the current one isn't published yet). It lists
+  each scheme's TER per day for the regular and direct plan — from April 2026
+  split into base expense ratio, brokerage, transaction costs and statutory
+  levies. StockWise keeps each scheme's latest day, caches the result in
+  `cache/amfi_ter.json` for a day, and uses a stale copy with a warning if AMFI
+  is unreachable. The disclosure has no AMFI scheme code, so schemes are joined
+  on their name (case and punctuation ignored); a plan the scheme doesn't offer
+  (AMFI writes 0) has no TER. When TERs can't be loaded, `mf nav`/`history`/`screen`
+  still print NAVs and returns with a note; `--sort ter` and `--max-ter` fail
+  instead. In JSON, `ter` holds `plan`, `total`, the breakdown, both plans'
+  totals and the disclosure `date`, as fractions (`null` when not disclosed).
+  `mf overlap` shows Yahoo's expense ratio for the funds it covers.
 - **Holdings** (`mf overlap`) come from Yahoo Finance, which publishes the top 10
   holdings and sector weights for US ETFs and mutual funds (SPY, QQQ, VTI,
   VFIAX, ... with `-m us`) and for some funds under Yahoo's `0P…` IDs. NSE-listed
@@ -155,8 +195,17 @@ MF periods (`-p`) are `<n>mo`, `<n>y` or `max`, e.g. `6mo`, `3y`, `10y`. Expirie
   NIFTYNXT50 (`^NSEI` and `^NSEBANK` work too) and NSE F&O stocks such as
   RELIANCE. NSE serves browser sessions only: StockWise loads its option-chain
   page once for cookies, makes two API calls, and stops with a clear error if NSE
-  refuses — wait a minute and retry. BSE options (SENSEX, BANKEX) are not
-  supported. With `-m us`, Yahoo Finance (delayed quotes) for US stocks and ETFs.
+  refuses — wait a minute and retry. `SENSEX`, `BANKEX` and `SENSEX50` (also
+  `^BSESN`, `BSE-BANK.BO`) and BSE stock options as `SYMBOL.BO` come from BSE's
+  derivatives API, the one behind bseindia.com's option-chain page: one session,
+  calls 400 ms apart, answers cached for a minute in `cache/`, no retries. BSE's
+  site sometimes refuses scripted requests (HTTP 403) — StockWise then says so;
+  wait and retry, or use the website. BSE stock options are rarely traded. With
+  `-m us`, Yahoo Finance (delayed quotes) for US stocks and ETFs.
+- **Lot sizes**: NSE and BSE quote order-book quantities in whole lots, so the
+  lot is their greatest common divisor across the chain (with at least five
+  quotes; a divisor of 1 counts as unknown); US contracts are 100 shares. `options chain` shows it and `--json`
+  has `lot_size` (`null` when unknown).
 - **IV and greeks**: Black-Scholes-Merton. IV is solved from the bid/ask mid
   (else the last trade) at the data timestamp; when that fails, the source's IV
   is shown (`iv_from` in JSON). Risk-free rate defaults to 6.5% (India) / 4.0%
@@ -452,6 +501,8 @@ stockwise quote TCS INFY --json | jq '.[] | {symbol, regularMarketPrice}'
 stockwise markets --json | jq '.[] | select(.change_percent < -1)'
 stockwise mf sip 122639 5000 -p 3y --json | jq '{invested, value, xirr}'
 stockwise options chain NIFTY -n 2 --json | jq '.rows[] | {strike, delta: .call.greeks.delta}'
+stockwise options payoff NIFTY -s straddle --json | jq '{breakevens, pop, max_loss}'
+stockwise mf screen flexi cap -s ter --json | jq '.[] | {name, ter, return_3y}'
 ```
 
 **Rules**
@@ -477,6 +528,17 @@ stockwise options chain NIFTY -n 2 --json | jq '.rows[] | {strike, delta: .call.
 - The `--ai` section is never part of JSON or CSV output.
 - `mf` and `options` have their own `--json` (no `--csv`); fractions there are
   decimals (`0.1234` = 12.34%), and missing values are `null`, never 0.
+- `options payoff --json` is `{symbol, source, underlying, currency, as_of, expiry,
+  days_to_expiry, strategy, width, lot_size, lot_size_from, lots, multiplier, rate,
+  div_yield, legs: [{side, qty, instrument, strike, price, price_from, iv, iv_from,
+  delta}], net_premium, net_premium_total, premium_type, max_profit, max_loss,
+  breakevens, profit_ranges: [{from, to}], pop, pop_iv, pop_iv_from, greeks: {delta,
+  gamma, theta, vega, rho}, notes, curve: [{price, expiry, today}]}`. `net_premium`
+  and leg prices are per unit (positive = debit); money totals, greeks and the
+  curve are for the whole position (`× multiplier` = lot size × lots).
+  `max_profit`/`max_loss` are `null` when unlimited; `max_loss` is negative;
+  `to: null` means "and above". `price_from` is `mid`, `ltp`, `manual` or `spot`.
+  Money values, prices and breakevens are rounded to 2 decimals.
 
 **Shapes** (`[...]` is an array; `row` is described next to it)
 

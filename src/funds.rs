@@ -4,6 +4,10 @@
 //!   `NAVAll.txt` (one file, ~1.5 MB), cached in the data directory.
 //! - NAV history comes from the free community API at api.mfapi.in, which
 //!   republishes AMFI data per scheme code.
+//! - Expense ratios (TER) come from AMFI's monthly TER disclosure, which it
+//!   publishes as a spreadsheet export of daily TERs per scheme (direct and
+//!   regular plan). It is keyed by scheme name and NSDL code, not by AMFI
+//!   scheme code, so schemes are joined on their normalized name.
 //! - Fund holdings (for overlap) come from Yahoo Finance's `topHoldings`
 //!   module: the top 10 positions and sector weights, published for US ETFs
 //!   and mutual funds (and some funds listed under Yahoo's `0P…` IDs). AMFI
@@ -11,16 +15,22 @@
 
 use crate::store;
 use anyhow::{Context, Result, bail};
-use chrono::{Months, NaiveDate};
-use serde::Serialize;
+use chrono::{Datelike, Months, NaiveDate};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const AMFI_NAV_URL: &str = "https://portal.amfiindia.com/spages/NAVAll.txt";
 pub const MFAPI_URL: &str = "https://api.mfapi.in/mf";
+/// AMFI's TER disclosure API behind amfiindia.com/ter-of-mf-schemes; with
+/// `excel=true` it returns the whole month as one `.xlsx` (about 3 MB).
+pub const AMFI_TER_URL: &str = "https://www.amfiindia.com/api/populate-te-rdata-revised";
 /// Cached AMFI and mfapi files are re-downloaded after this long.
 pub const CACHE_MAX_AGE: Duration = Duration::from_secs(12 * 3600);
+/// The TER table is re-downloaded once a day.
+pub const TER_CACHE_MAX_AGE: Duration = Duration::from_secs(24 * 3600);
 
 // ── AMFI NAVAll.txt ──
 
@@ -252,6 +262,375 @@ pub fn categories<'a>(schemes: impl IntoIterator<Item = &'a Scheme>) -> Vec<(Str
     let mut out: Vec<(String, usize)> = map.into_values().collect();
     out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     out
+}
+
+// ── Expense ratios (AMFI TER disclosure) ──
+
+/// One plan's expense ratio, as fractions of assets a year (0.0062 = 0.62%).
+/// From April 2026 AMFI splits the total into a base expense ratio,
+/// brokerage, transaction costs and statutory levies; before that only a
+/// base TER (where shown) and the total.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TerCosts {
+    pub total: f64,
+    pub base: Option<f64>,
+    pub brokerage: Option<f64>,
+    pub transaction: Option<f64>,
+    pub statutory_levies: Option<f64>,
+}
+
+/// A scheme's latest disclosed TER for its regular and direct plans. A plan
+/// the scheme does not offer (most ETFs have no direct plan) is `None`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TerRecord {
+    pub name: String,
+    pub nsdl_code: Option<String>,
+    pub category: Option<String>,
+    pub date: NaiveDate,
+    pub regular: Option<TerCosts>,
+    pub direct: Option<TerCosts>,
+}
+
+/// A scheme's TER for its own plan, with the other plan's for comparison.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SchemeTer {
+    /// `direct` or `regular`: the plan `total` and the breakdown are for.
+    pub plan: &'static str,
+    #[serde(flatten)]
+    pub costs: TerCosts,
+    pub direct: Option<f64>,
+    pub regular: Option<f64>,
+    /// Date of the disclosure row used.
+    pub date: NaiveDate,
+}
+
+/// Every scheme's latest TER in one disclosure month.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct TerTable {
+    /// Disclosure month as AMFI names it, `MM-YYYY`.
+    pub month: String,
+    pub records: Vec<TerRecord>,
+    #[serde(skip)]
+    index: HashMap<String, usize>,
+}
+
+/// Words that make up a plan/option suffix such as "Direct Plan - Growth".
+const PLAN_WORDS: &[&str] = &[
+    "direct",
+    "regular",
+    "plan",
+    "growth",
+    "idcw",
+    "dividend",
+    "payout",
+    "reinvestment",
+    "reinvest",
+    "option",
+    "bonus",
+    "daily",
+    "weekly",
+    "fortnightly",
+    "monthly",
+    "quarterly",
+    "half",
+    "yearly",
+    "annual",
+];
+
+/// Join key for scheme names: lower case, `&` as "and", punctuation and
+/// repeated spaces collapsed. AMFI's TER sheet and NAV file differ only in
+/// case and spacing ("360 ONE FLEXICAP FUND" vs "360 ONE Flexicap Fund").
+pub fn ter_key(name: &str) -> String {
+    let lower = name.to_lowercase().replace('&', " and ");
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Scheme name without trailing plan/option segments:
+/// "X Fund - Direct Plan - Growth" → "X Fund". Segments with any other word
+/// ("Monthly Interval Plan", "Series 2") are part of the name and stay.
+pub fn base_scheme_name(name: &str) -> &str {
+    let mut end = name.len();
+    while let Some(i) = name[..end].rfind('-') {
+        let words: Vec<String> = name[i + 1..end]
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_lowercase)
+            .collect();
+        if words.is_empty() || !words.iter().all(|w| PLAN_WORDS.contains(&w.as_str())) {
+            break;
+        }
+        end = i;
+    }
+    name[..end].trim_end()
+}
+
+/// A TER cell (in percent) as a fraction; blank and dashes are `None`.
+fn ter_component(s: &str) -> Option<f64> {
+    s.trim()
+        .trim_end_matches('%')
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .map(|v| v / 100.0)
+}
+
+/// A total-TER cell as a fraction. A total of 0 is AMFI's marker for a
+/// plan the scheme does not offer, so it is `None` too.
+fn ter_value(s: &str) -> Option<f64> {
+    ter_component(s).filter(|v| *v > 0.0)
+}
+
+/// Excel serial day numbers (the export's format) or ISO / `dd-mm-yyyy` /
+/// `dd-Mon-yyyy` text (the JSON API's).
+fn ter_date(s: &str) -> Option<NaiveDate> {
+    let s = s.trim();
+    if let Ok(serial) = s.parse::<f64>() {
+        // Excel's day 0 is 1899-12-30 (it counts a 29 Feb 1900 that never was).
+        return (20_000.0..90_000.0).contains(&serial).then(|| {
+            NaiveDate::from_ymd_opt(1899, 12, 30).expect("valid date")
+                + chrono::Days::new(serial as u64)
+        });
+    }
+    let day = s.get(..10).unwrap_or(s);
+    NaiveDate::parse_from_str(day, "%Y-%m-%d")
+        .or_else(|_| NaiveDate::parse_from_str(day, "%d-%m-%Y"))
+        .or_else(|_| NaiveDate::parse_from_str(s, "%d-%b-%Y"))
+        .ok()
+}
+
+/// Column positions in a TER sheet, found from the header text so the
+/// pre-April-2026 layout ("Base TER") and the current one ("BER", costs
+/// split out) both parse.
+struct TerColumns {
+    name: usize,
+    nsdl: Option<usize>,
+    category: Option<usize>,
+    date: usize,
+    plans: [PlanColumns; 2],
+}
+
+struct PlanColumns {
+    total: usize,
+    base: Option<usize>,
+    brokerage: Option<usize>,
+    transaction: Option<usize>,
+    levies: Option<usize>,
+}
+
+impl PlanColumns {
+    fn find(header: &[String], plan: &str) -> Option<Self> {
+        let col = |words: &[&str]| {
+            header.iter().position(|h| {
+                let h = h.to_lowercase();
+                h.starts_with(plan) && words.iter().any(|w| h.contains(w))
+            })
+        };
+        Some(Self {
+            total: col(&["total ter"])?,
+            base: col(&["base expense", "base ter"]),
+            brokerage: col(&["brokerage"]),
+            transaction: col(&["transaction"]),
+            levies: col(&["statutory"]),
+        })
+    }
+
+    fn costs(&self, row: &[String]) -> Option<TerCosts> {
+        let get = |i: Option<usize>| i.and_then(|i| row.get(i)).and_then(|s| ter_component(s));
+        Some(TerCosts {
+            total: row.get(self.total).and_then(|s| ter_value(s))?,
+            base: get(self.base),
+            brokerage: get(self.brokerage),
+            transaction: get(self.transaction),
+            statutory_levies: get(self.levies),
+        })
+    }
+}
+
+impl TerColumns {
+    fn from_header(header: &[String]) -> Option<Self> {
+        let find = |pred: &dyn Fn(&str) -> bool| {
+            header
+                .iter()
+                .position(|h| pred(h.trim().to_lowercase().as_str()))
+        };
+        Some(Self {
+            name: find(&|h| h == "scheme name")?,
+            nsdl: find(&|h| h.contains("nsdl")),
+            category: find(&|h| h == "scheme category"),
+            date: find(&|h| h == "ter date")?,
+            plans: [
+                PlanColumns::find(header, "regular plan")?,
+                PlanColumns::find(header, "direct plan")?,
+            ],
+        })
+    }
+}
+
+/// Parse the rows of AMFI's TER export: daily rows per scheme, reduced to
+/// each scheme's latest date. Notes under the table are skipped.
+pub fn parse_ter_rows(rows: &[Vec<String>]) -> Result<Vec<TerRecord>> {
+    let (header_at, cols) = rows
+        .iter()
+        .enumerate()
+        .take(20)
+        .find_map(|(i, r)| Some((i, TerColumns::from_header(r)?)))
+        .context("AMFI's TER sheet has an unexpected layout (no Scheme Name / TER Date / Total TER columns)")?;
+    let mut latest: HashMap<String, TerRecord> = HashMap::new();
+    for row in &rows[header_at + 1..] {
+        let cell = |i: usize| row.get(i).map(|s| s.trim()).unwrap_or("");
+        let name = cell(cols.name);
+        let Some(date) = ter_date(cell(cols.date)) else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        let record = TerRecord {
+            name: name.to_string(),
+            nsdl_code: cols
+                .nsdl
+                .map(cell)
+                .filter(|s| !s.is_empty())
+                .map(String::from),
+            category: cols
+                .category
+                .map(cell)
+                .filter(|s| !s.is_empty())
+                .map(String::from),
+            date,
+            regular: cols.plans[0].costs(row),
+            direct: cols.plans[1].costs(row),
+        };
+        if record.regular.is_none() && record.direct.is_none() {
+            continue;
+        }
+        let key = ter_key(name);
+        if latest.get(&key).is_none_or(|old| old.date <= date) {
+            latest.insert(key, record);
+        }
+    }
+    let mut out: Vec<TerRecord> = latest.into_values().collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+impl TerTable {
+    pub fn new(month: String, records: Vec<TerRecord>) -> Self {
+        let mut t = Self {
+            month,
+            records,
+            index: HashMap::new(),
+        };
+        t.reindex();
+        t
+    }
+
+    fn reindex(&mut self) {
+        self.index = self
+            .records
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (ter_key(&r.name), i))
+            .collect();
+    }
+
+    /// The record for a scheme name, with or without a plan/option suffix.
+    pub fn find(&self, name: &str) -> Option<&TerRecord> {
+        [name, base_scheme_name(name)]
+            .iter()
+            .find_map(|n| self.index.get(&ter_key(n)))
+            .map(|&i| &self.records[i])
+    }
+
+    /// TER of `scheme`'s own plan (direct or regular).
+    pub fn for_scheme(&self, scheme: &Scheme) -> Option<SchemeTer> {
+        self.for_name(&scheme.name, scheme.is_direct())
+    }
+
+    /// TER of the named scheme's direct or regular plan; `None` when the
+    /// scheme is not in the disclosure or the plan has no TER there.
+    pub fn for_name(&self, name: &str, direct: bool) -> Option<SchemeTer> {
+        let r = self.find(name)?;
+        let costs = if direct { &r.direct } else { &r.regular };
+        Some(SchemeTer {
+            plan: if direct { "direct" } else { "regular" },
+            costs: costs.clone()?,
+            direct: r.direct.as_ref().map(|c| c.total),
+            regular: r.regular.as_ref().map(|c| c.total),
+            date: r.date,
+        })
+    }
+}
+
+/// `MM-YYYY` for AMFI's `Month` parameter.
+fn ter_month(d: NaiveDate) -> String {
+    d.format("%m-%Y").to_string()
+}
+
+pub fn ter_export_url(month: &str) -> String {
+    format!("{AMFI_TER_URL}?MF_ID=All&Month={month}&strCat=-1&strType=-1&excel=true")
+}
+
+async fn download_ter(client: &reqwest::Client) -> Result<TerTable> {
+    let today = chrono::Utc::now()
+        .with_timezone(&crate::clock::ist())
+        .date_naive();
+    let this_month = today.with_day(1).expect("valid date");
+    let last_month = this_month - chrono::Days::new(1);
+    let mut tried = Vec::new();
+    // Early in a month AMFI may not have this month's sheet yet.
+    for month in [ter_month(this_month), ter_month(last_month)] {
+        let bytes = get_bytes(client, &ter_export_url(&month), "AMFI").await?;
+        let rows = crate::xlsx::read_first_sheet(&bytes)
+            .context("AMFI's TER export is not a readable spreadsheet")?;
+        let records = parse_ter_rows(&rows)?;
+        if !records.is_empty() {
+            return Ok(TerTable::new(month, records));
+        }
+        tried.push(month);
+    }
+    bail!("AMFI published no TER data for {}", tried.join(" or "))
+}
+
+/// Latest TER of every scheme (AMFI's disclosure, cached for a day). The
+/// first download of the day takes a while: AMFI builds a ~3 MB export.
+pub async fn load_ter() -> Result<TerTable> {
+    let path = cache_path("amfi_ter.json")?;
+    let cached = || -> Option<TerTable> {
+        let mut t: TerTable = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+        (!t.records.is_empty()).then(|| {
+            t.reindex();
+            t
+        })
+    };
+    if is_fresh(&path, TER_CACHE_MAX_AGE)
+        && let Some(t) = cached()
+    {
+        return Ok(t);
+    }
+    eprintln!("  Downloading AMFI's expense-ratio (TER) disclosure (once a day, ~3 MB)...");
+    match download_ter(&http_client()?).await {
+        Ok(t) => {
+            if let Ok(json) = serde_json::to_string(&t) {
+                let _ = write_atomic(&path, &json);
+            }
+            Ok(t)
+        }
+        Err(e) => match cached() {
+            Some(t) => {
+                eprintln!(
+                    "  Warning: {e:#}; using TERs cached from {}",
+                    path.display()
+                );
+                Ok(t)
+            }
+            None => Err(e),
+        },
+    }
 }
 
 // ── NAV history (api.mfapi.in) ──
@@ -667,20 +1046,15 @@ pub fn http_client() -> Result<reqwest::Client> {
         .context("Failed to build HTTP client")
 }
 
-/// GET `url` as text, retrying network errors and 5xx twice.
-async fn get_text(client: &reqwest::Client, url: &str, source: &str) -> Result<String> {
+/// GET `url`, retrying network errors and 5xx twice.
+async fn fetch(client: &reqwest::Client, url: &str, source: &str) -> Result<reqwest::Response> {
     let mut last_err = None;
     for attempt in 0..3u32 {
         if attempt > 0 {
             tokio::time::sleep(Duration::from_millis(500 * 2u64.pow(attempt))).await;
         }
         match client.get(url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                return resp
-                    .text()
-                    .await
-                    .with_context(|| format!("Failed to read the {source} response"));
-            }
+            Ok(resp) if resp.status().is_success() => return Ok(resp),
             Ok(resp) if resp.status().is_server_error() => {
                 last_err = Some(anyhow::anyhow!("{source} returned HTTP {}", resp.status()));
             }
@@ -691,14 +1065,33 @@ async fn get_text(client: &reqwest::Client, url: &str, source: &str) -> Result<S
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Cannot reach {source}")))
 }
 
-fn cache_path(name: &str) -> Result<PathBuf> {
+/// GET `url` as text (see [`fetch`]).
+async fn get_text(client: &reqwest::Client, url: &str, source: &str) -> Result<String> {
+    fetch(client, url, source)
+        .await?
+        .text()
+        .await
+        .with_context(|| format!("Failed to read the {source} response"))
+}
+
+/// GET `url` as bytes (see [`fetch`]).
+async fn get_bytes(client: &reqwest::Client, url: &str, source: &str) -> Result<Vec<u8>> {
+    Ok(fetch(client, url, source)
+        .await?
+        .bytes()
+        .await
+        .with_context(|| format!("Failed to read the {source} response"))?
+        .to_vec())
+}
+
+pub(crate) fn cache_path(name: &str) -> Result<PathBuf> {
     let dir = store::data_dir()?.join("cache");
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("Cannot create cache directory {}", dir.display()))?;
     Ok(dir.join(name))
 }
 
-fn is_fresh(path: &Path, max_age: Duration) -> bool {
+pub(crate) fn is_fresh(path: &Path, max_age: Duration) -> bool {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
@@ -707,7 +1100,7 @@ fn is_fresh(path: &Path, max_age: Duration) -> bool {
 }
 
 /// Write via a temp file and rename, so a crash never leaves half a cache.
-fn write_atomic(path: &Path, data: &str) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, data: &str) -> Result<()> {
     let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
     std::fs::write(&tmp, data).with_context(|| format!("Cannot write {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("Cannot replace {}", path.display()))
@@ -1050,5 +1443,217 @@ HDFC Mutual Fund
         )
         .unwrap();
         assert!(parse_fund_profile("X", &none).is_err());
+    }
+
+    fn ter_rows(rows: &[&[&str]]) -> Vec<Vec<String>> {
+        rows.iter()
+            .map(|r| r.iter().map(|c| c.to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn parses_amfi_ter_export_fixture() {
+        let rows =
+            crate::xlsx::read_first_sheet(include_bytes!("fixtures/amfi_ter_360one.xlsx")).unwrap();
+        let recs = parse_ter_rows(&rows).unwrap();
+        assert_eq!(recs.len(), 12, "daily rows reduce to one per scheme");
+        let bhf = recs
+            .iter()
+            .find(|r| r.name == "360 ONE Balanced Hybrid Fund")
+            .unwrap();
+        // The latest day in the sheet, not the first (0.62% on 1 Oct).
+        assert_eq!(bhf.date, d(2026, 10, 23));
+        let direct = bhf.direct.as_ref().unwrap();
+        assert!((direct.total - 0.0067).abs() < 1e-12, "{direct:?}");
+        assert!((direct.base.unwrap() - 0.0049).abs() < 1e-12);
+        assert_eq!(direct.transaction, Some(0.0), "zero costs are kept");
+        assert!((bhf.regular.as_ref().unwrap().total - 0.0219).abs() < 1e-12);
+        assert_eq!(bhf.nsdl_code.as_deref(), Some("360O/O/H/BHF/23/07/0007"));
+        assert_eq!(
+            bhf.category.as_deref(),
+            Some("Hybrid Schemes - Balanced Hybrid Fund")
+        );
+        // ETFs have no direct plan: AMFI writes 0, which is not a TER.
+        let gold = recs.iter().find(|r| r.name == "360 ONE GOLD ETF").unwrap();
+        assert!(gold.direct.is_none());
+        assert!((gold.regular.as_ref().unwrap().total - 0.0047).abs() < 1e-12);
+    }
+
+    #[test]
+    fn parses_older_ter_layout_and_keeps_the_latest_row() {
+        let rows = ter_rows(&[
+            &["Total Expense Ratio of Mutual Fund Schemes"],
+            &[
+                "Scheme Name",
+                "Scheme Type",
+                "Scheme Category",
+                "TER Date",
+                "Regular Plan - Base TER (%)",
+                "Regular Plan - Total TER (%)",
+                "Direct Plan - Base TER (%)",
+                "Direct Plan - Total TER (%)",
+            ],
+            &[
+                "Axis Large Cap Fund",
+                "Open Ended",
+                "Equity Scheme - Large Cap Fund",
+                "2025-03-03T00:00:00.000Z",
+                "1.40",
+                "1.60",
+                "0.50",
+                "0.70",
+            ],
+            &[
+                "AXIS  LARGE CAP FUND",
+                "Open Ended",
+                "Equity Scheme - Large Cap Fund",
+                "04-03-2025",
+                "1.40",
+                "1.58",
+                "0.50",
+                "0.68",
+            ],
+            &[
+                "Axis Large Cap Fund",
+                "Open Ended",
+                "Equity Scheme - Large Cap Fund",
+                "2025-03-01",
+                "1.40",
+                "1.99",
+                "0.50",
+                "0.99",
+            ],
+            &[
+                "Direct Only Index Fund",
+                "Open Ended",
+                "Index Funds",
+                "2025-03-04",
+                "-",
+                "0.00",
+                "",
+                "0.20",
+            ],
+            &[
+                "No Plans Fund",
+                "Open Ended",
+                "Other",
+                "2025-03-04",
+                "",
+                "",
+                "",
+                "",
+            ],
+            &["", "", "", "2025-03-04", "1", "1", "1", "1"],
+            &["Reference period: April 1 to March 31"],
+        ]);
+        let recs = parse_ter_rows(&rows).unwrap();
+        assert_eq!(recs.len(), 2);
+        let axis = &recs[0];
+        assert_eq!(axis.name, "AXIS  LARGE CAP FUND");
+        assert_eq!(axis.date, d(2025, 3, 4));
+        assert!((axis.direct.as_ref().unwrap().total - 0.0068).abs() < 1e-12);
+        assert!((axis.direct.as_ref().unwrap().base.unwrap() - 0.005).abs() < 1e-12);
+        assert_eq!(axis.direct.as_ref().unwrap().brokerage, None);
+        assert!(recs[1].regular.is_none(), "0.00 and '-' are not TERs");
+
+        let bad = ter_rows(&[&["Scheme Code", "Scheme Name", "NAV"]]);
+        assert!(parse_ter_rows(&bad).is_err());
+    }
+
+    #[test]
+    fn ter_dates_and_values() {
+        assert_eq!(ter_date("46296"), Some(d(2026, 10, 1)));
+        assert_eq!(ter_date("2026-10-01T00:00:00.000Z"), Some(d(2026, 10, 1)));
+        assert_eq!(ter_date("01-10-2026"), Some(d(2026, 10, 1)));
+        assert_eq!(ter_date("01-Oct-2026"), Some(d(2026, 10, 1)));
+        assert_eq!(ter_date("12"), None);
+        assert_eq!(ter_date("soon"), None);
+        assert_eq!(ter_value("0.62"), Some(0.0062));
+        assert_eq!(ter_value("2.5%"), Some(0.025));
+        assert_eq!(ter_value("0"), None);
+        assert_eq!(ter_component("0"), Some(0.0), "a zero cost is a value");
+        assert_eq!(ter_value("NA"), None);
+        assert_eq!(ter_month(d(2026, 1, 15)), "01-2026");
+        assert!(
+            ter_export_url("10-2026").ends_with("Month=10-2026&strCat=-1&strType=-1&excel=true")
+        );
+    }
+
+    #[test]
+    fn scheme_names_join_the_ter_table() {
+        assert_eq!(
+            ter_key("360 ONE FLEXICAP  FUND"),
+            ter_key("360 ONE Flexicap Fund")
+        );
+        assert_eq!(
+            ter_key("ICICI Pru. Banking & PSU"),
+            "icici pru banking and psu"
+        );
+        assert_eq!(
+            base_scheme_name("Parag Parikh Flexi Cap Fund - Direct Plan - Growth"),
+            "Parag Parikh Flexi Cap Fund"
+        );
+        assert_eq!(
+            base_scheme_name("HDFC Top 100 Fund -Direct Plan - Growth Option"),
+            "HDFC Top 100 Fund"
+        );
+        assert_eq!(
+            base_scheme_name("ICICI Prudential Interval Fund - Monthly Interval Plan - Direct"),
+            "ICICI Prudential Interval Fund - Monthly Interval Plan"
+        );
+        assert_eq!(
+            base_scheme_name("Nippon India ETF Nifty 50 BeES"),
+            "Nippon India ETF Nifty 50 BeES"
+        );
+        assert_eq!(
+            base_scheme_name("ABSL CRISIL-IBX 60:40 SDL Index Fund - Regular - IDCW"),
+            "ABSL CRISIL-IBX 60:40 SDL Index Fund"
+        );
+
+        let costs = |total: f64| TerCosts {
+            total,
+            base: None,
+            brokerage: None,
+            transaction: None,
+            statutory_levies: None,
+        };
+        let table = TerTable::new(
+            "10-2026".into(),
+            vec![TerRecord {
+                name: "PARAG PARIKH FLEXI CAP FUND".into(),
+                nsdl_code: None,
+                category: None,
+                date: d(2026, 10, 23),
+                regular: Some(costs(0.0128)),
+                direct: Some(costs(0.0063)),
+            }],
+        );
+        let schemes = parse_navall(NAVALL);
+        let direct = table.for_scheme(&schemes[0]).unwrap();
+        assert_eq!((direct.plan, direct.costs.total), ("direct", 0.0063));
+        assert_eq!(
+            (direct.direct, direct.regular),
+            (Some(0.0063), Some(0.0128))
+        );
+        assert_eq!(table.for_scheme(&schemes[2]).unwrap().plan, "regular");
+        assert!(
+            table.for_scheme(&schemes[3]).is_none(),
+            "Axis is not in the table"
+        );
+        // NAV-history names carry the plan; the base name still joins.
+        let h = table
+            .for_name("Parag Parikh Flexi Cap Fund - Direct Plan - Growth", true)
+            .unwrap();
+        assert_eq!(h.costs.total, 0.0063);
+
+        // Cached tables round-trip through JSON and are re-indexed.
+        let json = serde_json::to_string(&table).unwrap();
+        let mut back: TerTable = serde_json::from_str(&json).unwrap();
+        assert!(
+            back.find("Parag Parikh Flexi Cap Fund").is_none(),
+            "index is not serialized"
+        );
+        back.reindex();
+        assert!(back.find("Parag Parikh Flexi Cap Fund").is_some());
     }
 }

@@ -87,6 +87,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Read-only. See [docs/server.md](docs/server.md#web-dashboard).
 - `stockwise serve --open` opens the dashboard in your browser; the startup
   log prints its address.
+- Expense ratios for Indian mutual funds from AMFI's monthly TER disclosure:
+  `mf nav` and `mf history` show the plan's total expense ratio (and the
+  other plan's), `mf screen` adds a TER column, `--sort ter` (lowest first)
+  and `--max-ter PERCENT`. The disclosure is downloaded once a day (~3 MB
+  spreadsheet export) and cached in `cache/amfi_ter.json`; `--json` adds a
+  `ter` object with the April 2026 breakdown (base expense ratio, brokerage,
+  transaction costs, statutory levies). When AMFI can't be reached, NAVs and
+  returns still print with a note.
+- BSE options: `options chain|pcr|maxpain SENSEX` (also `BANKEX`, `SENSEX50`,
+  `^BSESN`) and BSE stock options as `SYMBOL.BO`, from BSE's public
+  derivatives API with one session, spaced calls, a one-minute cache and a
+  clear error when BSE refuses scripted requests. NSE indices and stocks stay
+  on NSE, `-m us` on Yahoo.
+- Lot sizes in option chains: inferred from NSE/BSE order-book quantities
+  (always whole lots), 100 for US contracts; `options chain` shows them and
+  adds `lot_size` to `--json`.
+- `options payoff SYMBOL` — a strategy builder on the live chain. Legs as
+  `--leg "buy call 24500" --leg "sell call 24800"` (`atm±N` strikes and
+  `@PRICE` overrides too) or presets `--strategy bull-call|bear-put|straddle|
+  strangle|iron-condor|butterfly|covered-call --width W`. Shows each leg's
+  price (bid/ask mid, else last trade, flagged), net debit or credit, max
+  profit and loss (or unlimited), breakevens, probability of profit from IV
+  (lognormal), position greeks, and a braille P/L chart at expiry with an
+  optional `--today` curve (Black-Scholes). Sized by `--lots` and the lot
+  size; `--json` for scripts. Read-only — it never places orders.
 - Technical alerts: `alert add SYMBOL rsi-below|rsi-above LEVEL [--period N]`,
   `cross-above-sma|cross-below-sma|cross-above-ema|cross-below-ema DAYS`,
   `breakout-high|breakdown-low DAYS`, `change-above|change-below PCT`,
