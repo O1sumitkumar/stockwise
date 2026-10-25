@@ -63,7 +63,11 @@ src/
   charts.rs          Braille line charts, volume bars, gauges
   display.rs         Currency- and asset-aware formatting (₹/$/€/£/¥, FX and crypto decimals), width-aware padding
   market.rs          Market enum (in/us/crypto/fx), asset classes, symbol resolution, index/sector/coin/pair lists
-  watchlist.rs, alerts.rs, wealth.rs   Data models persisted via store.rs
+  alerts.rs          Alert conditions (price, RSI, MA crosses, breakouts, day change, volume, results)
+                     and their evaluation on quotes / daily bars; persisted via store.rs
+  calendar.rs        Results, dividend and split dates: Yahoo calendarEvents + NSE board meetings and
+                     corporate actions (one rate-limited session), day cache in calendar_cache.json
+  watchlist.rs, wealth.rs   Data models persisted via store.rs
 ```
 
 Adding a command: define it in `Commands` in `main.rs` (and in the `GROUPS`

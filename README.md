@@ -133,7 +133,7 @@ Homebrew, AUR and Nix install the man pages and completions for you.
 | **Market** | `movers`, `sectors`, `heatmap`, `sentiment`, `news`, `rotation`, `sectorcmp`, `peers`, `insider`, `ipo`, `earnings`, `surprise`, `matrix`, `picks`, `screen`, `dividends` |
 | **Funds & F&O** | `mf` (search, nav, history, sip, screen, overlap), `options` (chain, pcr, maxpain, moves) |
 | **Strategies & bots** | `backtest`, `sip`, `whatif`, `intraday`, `longterm`, `daemon`, `sim`, `report` |
-| **Portfolio** | `portfolio`, `watch`, `alert`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
+| **Portfolio** | `portfolio`, `watch`, `alert`, `calendar`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
 | **Interfaces** | `tui`, `serve` |
 | **Live trading** | `trade` (Angel One; Zerodha, Upstox, Dhan, Fyers experimental) |
 
@@ -239,6 +239,9 @@ it decides.
 
 ```bash
 stockwise alert add TCS above 4200
+stockwise alert add INFY rsi-below 30         # also: SMA/EMA crosses, breakouts, volume spikes
+stockwise alert add TCS results-in 7          # results due within a week
+stockwise calendar                  # results, ex-dividend dates and splits for your holdings
 export STOCKWISE_TELEGRAM_TOKEN=... STOCKWISE_TELEGRAM_CHAT_ID=...
 stockwise notify test               # Telegram, Slack, Discord, email or desktop
 stockwise alert watch               # checks during market hours, notifies once per trigger

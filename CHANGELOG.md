@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Technical alerts: `alert add SYMBOL rsi-below|rsi-above LEVEL [--period N]`,
+  `cross-above-sma|cross-below-sma|cross-above-ema|cross-below-ema DAYS`,
+  `breakout-high|breakdown-low DAYS`, `change-above|change-below PCT`,
+  `volume-spike MULTIPLE [--period N]` and `results-in DAYS`. They are
+  evaluated on daily bars (one chart request per symbol per check, updated
+  with the live quote) by `alert check`, `alert watch`, `dashboard`, the
+  `tui`, `serve` (`/api/alerts`) and `daemon longterm`; crosses fire only on
+  the crossing session, and `alert watch` notifies once per trading day.
+  `alert list` shows each condition in words. See
+  [docs/commands.md](docs/commands.md#alert-conditions).
+- `stockwise calendar [SYMBOLS] [--days 30] [--holdings|--watchlist]` —
+  upcoming results, ex-dividend and payment dates, splits and bonus issues
+  for holdings and the watchlist, sorted by date with today and the next
+  7 days marked; `--json` / `--csv`. Yahoo Finance supplies earnings and
+  dividend dates for US and Indian stocks; for `.NS` / `.BO` stocks NSE board
+  meetings and corporate actions add filed results dates, splits and bonus
+  issues (one polite session per run, cached for a day, Yahoo-only when NSE
+  refuses).
+
+### Changed
+- `alert list --json` adds `period` and `description`; `alert check --json`
+  adds `period`, `description`, `value`, `reference` and the status
+  `no_data`. Existing `alerts.json` files load unchanged.
+
 ## [0.4.0] - 2026-10-21
 
 Everything on the 0.3 roadmap: new markets and asset classes, a lot-based

@@ -55,8 +55,11 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - 📋 Tax export: capital-gains schedule (ITR Schedule CG–ready CSV) from realized lots
 - 📋 Benchmark comparison and attribution — portfolio vs NIFTY 50 / S&P 500, by holding and sector
 - 📋 Goal planner — SIP needed for a target corpus, retirement and education calculators
-- 📋 Technical alerts — RSI, moving-average crosses and breakouts, not only price levels
-- 📋 Results and corporate-announcement calendar for holdings (NSE/BSE filings)
+- ✅ Technical alerts — RSI, SMA/EMA crosses, N-day breakouts, day-change and volume-spike
+  alerts next to price levels, plus `results-in N` before a results date
+- ✅ Results and corporate calendar for holdings (`stockwise calendar`) — Yahoo earnings and
+  dividend dates for US and Indian stocks; NSE board meetings and corporate actions (filed
+  results dates, splits, bonus) for Indian stocks. BSE filings and advance US splits are not covered
 - 📋 More Indian languages: Marathi, Tamil, Bengali
 
 ## 💡 Later — exploring (0.6+)

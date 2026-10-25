@@ -28,7 +28,7 @@ request.
 | `GET /api/search?q=tata motors` | Array of `{symbol, shortname, longname, quoteType, exchange}` | `search --json` |
 | `GET /api/portfolio?base=usd` | Holdings (lots, FIFO cost) valued at live prices, totals in one currency (below); `base` is `inr` or `usd` | `portfolio --json` |
 | `GET /api/watchlist` | Array of `{symbol, price, change, change_percent, volume, currency}` in watchlist order | `watch --json` |
-| `GET /api/alerts` | Array of `{index, symbol, condition, target, price, currency, status}`; `status` is `triggered`, `waiting` or `no_price` | `alert check --json` |
+| `GET /api/alerts` | Array of `{index, symbol, condition, target, period, description, price, currency, value, reference, status}`; `status` is `triggered`, `waiting`, `no_price` or `no_data` (technical alert with too little history) | `alert check --json` |
 | `GET /healthz` | `{"status": "ok", "version": "..."}` — never needs a token | |
 | `GET /metrics` | Prometheus text format (below) | |
 
@@ -56,7 +56,8 @@ One whose currency couldn't be converted is listed in `unconverted`. The
 server uses the active portfolio (`--portfolio` / `STOCKWISE_PORTFOLIO` when
 it was started).
 Likewise an alert without a price has `"price": null, "status": "no_price"`
-and never counts as triggered.
+and never counts as triggered; a technical alert without enough daily bars
+reads `"status": "no_data"`.
 
 Errors are `{"error": "..."}` with status 400 (bad parameter), 401 (missing
 or wrong token), 403 (request not addressed to localhost while no token is
