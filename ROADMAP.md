@@ -52,6 +52,11 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 
 ## 📋 Next — planning and reporting (0.5)
 
+- 🛠️ NSE / BSE data straight from the exchanges' websites (`STOCKWISE_DATA_PROVIDER=nse|bse|exchange`):
+  quotes with circuit limits and delivery %, intraday and daily bars, search, and NIFTY index members
+  for `--universe`. Shipped; still to do: check the parsers against live NSE/BSE responses (the
+  test fixtures are modelled on the endpoints' known shapes) and add SENSEX from BSE. The
+  endpoints are unofficial — licensed exchange feeds remain out of scope
 - 📋 Tax export: capital-gains schedule (ITR Schedule CG–ready CSV) from realized lots
 - 📋 Benchmark comparison and attribution — portfolio vs NIFTY 50 / S&P 500, by holding and sector
 - 📋 Goal planner — SIP needed for a target corpus, retirement and education calculators
@@ -69,7 +74,6 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 
 ## 💡 Later — exploring (0.6+)
 
-- 💡 Official NSE / BSE data feeds as a data provider
 - 💡 Broker-side GTT and order-status sync into the portfolio
 - ✅ A small web dashboard served by `stockwise serve` (`serve --open`)
 - 💡 WASM strategy plugins (TOML strategies cover most cases today)

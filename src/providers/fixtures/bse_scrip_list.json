@@ -1,0 +1,42 @@
+[
+  {
+    "SCRIP_CD": "500325",
+    "Scrip_Name": "Reliance Industries Ltd",
+    "Status": "Active",
+    "GROUP": "A ",
+    "FACE_VALUE": "10.00",
+    "ISIN_NUMBER": "INE002A01018",
+    "INDUSTRY": "Refineries & Marketing",
+    "scrip_id": "RELIANCE",
+    "Segment": "Equity",
+    "NSURL": "https://www.bseindia.com/stock-share-price/reliance-industries-ltd/reliance/500325/",
+    "Issuer_Name": "Reliance Industries Ltd",
+    "Mktcap": "1964352.23"
+  },
+  {
+    "SCRIP_CD": "532540",
+    "Scrip_Name": "Tata Consultancy Services Ltd",
+    "Status": "Active",
+    "GROUP": "A ",
+    "FACE_VALUE": "1.00",
+    "ISIN_NUMBER": "INE467B01029",
+    "INDUSTRY": "Computers - Software & Consulting",
+    "scrip_id": "TCS",
+    "Segment": "Equity",
+    "Issuer_Name": "Tata Consultancy Services Ltd",
+    "Mktcap": "1102345.67"
+  },
+  {
+    "SCRIP_CD": "500180",
+    "Scrip_Name": "HDFC Bank Ltd",
+    "Status": "Active",
+    "GROUP": "A ",
+    "FACE_VALUE": "1.00",
+    "ISIN_NUMBER": "INE040A01034",
+    "INDUSTRY": "Private Sector Bank",
+    "scrip_id": "HDFCBANK",
+    "Segment": "Equity",
+    "Issuer_Name": "HDFC Bank Ltd",
+    "Mktcap": "1543210.98"
+  }
+]

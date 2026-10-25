@@ -225,6 +225,9 @@ messages! {
     Ma50 => "50-Day MA", "50-दिन MA";
     Ma200 => "200-Day MA", "200-दिन MA";
     DividendYield => "Dividend Yield", "डिविडेंड यील्ड";
+    DeliveryPercent => "Delivery", "डिलीवरी";
+    UniverseFallback => "NSE's {0} member list is unavailable ({1}); scanning the built-in list of {2} stocks", "NSE की {0} सदस्य सूची उपलब्ध नहीं ({1}); {2} शेयरों की अंतर्निहित सूची देखी जा रही है";
+    CircuitLimits => "Circuit Limits", "सर्किट सीमा";
     Unknown => "Unknown", "अज्ञात";
     DataFrom => "Data: {0}", "डेटा: {0}";
     NoQuoteFor => "No quote for {0}{1}", "{0} का भाव नहीं मिला{1}";
@@ -294,7 +297,8 @@ messages! {
     DoctorProviderAnswered => "{0} answered for {1} ({2} ms); Yahoo fills missing fields", "{1} के लिए {0} ने जवाब दिया ({2} ms); बाकी फ़ील्ड Yahoo से";
     DoctorProviderFellBack => "{0} did not answer ({1}); using Yahoo instead", "{0} से जवाब नहीं मिला ({1}); Yahoo का उपयोग हो रहा है";
     DoctorProviderNoKey => "{0} selected but {1} is not set; using Yahoo", "{0} चुना गया पर {1} सेट नहीं है; Yahoo का उपयोग हो रहा है";
-    DoctorProviderUnknown => "unknown provider '{0}' — use yahoo, alphavantage, massive (polygon) or twelvedata", "अज्ञात प्रदाता '{0}' — yahoo, alphavantage, massive (polygon) या twelvedata चुनें";
+    DoctorProviderUnknown => "unknown provider '{0}' — use yahoo, alphavantage, massive (polygon), twelvedata, nse, bse or exchange", "अज्ञात प्रदाता '{0}' — yahoo, alphavantage, massive (polygon), twelvedata, nse, bse या exchange चुनें";
+    DoctorExchangeNote => "NSE/BSE website data is unofficial; when they refuse automated requests, Yahoo answers", "NSE/BSE वेबसाइट का डेटा अनौपचारिक है; जब वे स्वचालित अनुरोध रोकते हैं, तब Yahoo जवाब देता है";
     DoctorRedis => "Redis cache", "Redis कैश";
     DoctorConnected => "connected", "जुड़ा हुआ";
     DoctorRedisNotUsed => "not used (optional; in-memory cache instead)", "उपयोग में नहीं (वैकल्पिक; मेमोरी कैश चल रहा है)";

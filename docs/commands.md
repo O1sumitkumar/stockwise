@@ -87,9 +87,9 @@ network, invalid config file), `2` invalid arguments.
 
 | Command | Description |
 |---------|-------------|
-| `movers [--json\|--csv]` | Top gainers and losers among 30 large caps |
+| `movers [--universe INDEX] [--json\|--csv]` | Top gainers and losers among 30 large caps, or an NSE index's members (see below) |
 | `sectors [--json\|--csv]` | Sector ETF/index performance with bars |
-| `heatmap` | Heatmap of the 30-stock universe |
+| `heatmap [--universe INDEX]` | Heatmap of the 30-stock universe, or an NSE index's members |
 | `sentiment` | Fear & Greed style gauge from VIX, momentum and trend |
 | `news <SYMBOL>` | Headlines collated from Yahoo Finance and Google News |
 | `rotation` | Sector rotation vs 50-day average |
@@ -101,8 +101,18 @@ network, invalid config file), `2` invalid arguments.
 | `surprise` | Earnings momentum — accelerating vs decelerating |
 | `matrix` | Quality vs growth quadrants |
 | `picks` | Large caps ranked on 8 fundamental + technical factors |
-| `screen <CATEGORY> [--json\|--csv]` | `undervalued` (P/E<15), `growth` (forward EPS > trailing), `dividend` (yield>2%), `momentum` (top gainers), `bluechip` (>$100B / >₹5L Cr) |
+| `screen <CATEGORY> [--universe INDEX] [--json\|--csv]` | `undervalued` (P/E<15), `growth` (forward EPS > trailing), `dividend` (yield>2%), `momentum` (top gainers), `bluechip` (>$100B / >₹5L Cr) |
 | `dividends <SYMBOL> [--json]` | Yield, income projection, 10-year DRIP growth |
+
+**`--universe`** (Indian market): scan the current members of an NSE index
+instead of the built-in 30 large caps — `nifty50`, `niftynext50` (`next50`),
+`nifty100`, `banknifty` (`niftybank`) or `niftyit`. The member list comes from
+NSE's website (one request) whichever data provider you use; prices still come
+from your provider, and with `STOCKWISE_DATA_PROVIDER=nse` or `exchange` the
+members' prices arrive with that same request. When NSE can't be reached or
+refuses, StockWise says so on stderr and scans a built-in list instead (the 30
+large caps for `nifty50` / `nifty100`, a built-in member list for `banknifty`
+and `niftyit`); `niftynext50` has no built-in list and fails with the reason.
 
 ## Funds & F&O
 
@@ -370,7 +380,7 @@ stockwise options chain NIFTY -n 2 --json | jq '.rows[] | {strike, delta: .call.
 
 | Command | `--json` | `--csv` — one row per |
 |---------|----------|-----------------------|
-| `quote` | `[quote]` — Yahoo's quote fields, plus `dataSource` when another provider supplied the price | quote: `symbol, name, currency, price, change, change_percent, open, day_low, day_high, year_low, year_high, volume, avg_volume_3m, market_cap, pe_ttm, eps_ttm, dividend_yield` |
+| `quote` | `[quote]` — Yahoo's quote fields, plus `dataSource` when another provider supplied the price, and `deliveryPercent`, `lowerCircuit`, `upperCircuit` when NSE did ([data-providers.md](data-providers.md#nse-and-bse)) | quote: `symbol, name, currency, price, change, change_percent, open, day_low, day_high, year_low, year_high, volume, avg_volume_3m, market_cap, pe_ttm, eps_ttm, dividend_yield, delivery_percent, lower_circuit, upper_circuit` (the last three empty unless NSE answered) |
 | `markets` | `[{region, symbol, name, price, change, change_percent, currency}]` — `region` is `Indian Markets`, `US Markets`, `Crypto` or `FX` | index |
 | `search` | `[hit]` — Yahoo's search fields | hit: `symbol, name, quote_type, exchange` |
 | `history` | `{symbol, currency, period, interval, bars: [{time, open, high, low, close, volume}]}` | bar |
