@@ -5,6 +5,7 @@ use backtest::costs::{Brokerage, CostModel, CostPreset};
 use backtest::engine::{
     self, Asset, Fill, Metrics, Rebalance, SimConfig, SimResult, Trade, Weights,
 };
+use backtest::plugin;
 use backtest::rules::{self, StrategyDef};
 use backtest::{Bars, walkforward};
 use serde_json::json;
@@ -144,6 +145,12 @@ fn print_strategy(def: &StrategyDef) {
         format!("{} — {}", def.name, def.description)
     };
     print_kv("Strategy", &title);
+    if def.plugin.is_some() {
+        print_kv(
+            "Signals",
+            &format!("WASM plugin {} (ABI v{})", def.source, plugin::ABI_VERSION),
+        );
+    }
     let join = |c: &[String]| {
         let c: Vec<String> = c.iter().map(|x| rules::render(x, &def.params)).collect();
         if c.len() == 1 {
@@ -155,7 +162,9 @@ fn print_strategy(def: &StrategyDef) {
                 .join(" and ")
         }
     };
-    print_kv("Entry", &join(&def.entry));
+    if def.plugin.is_none() {
+        print_kv("Entry", &join(&def.entry));
+    }
     let mut exit = if def.exit.is_empty() {
         Vec::new()
     } else {
@@ -167,7 +176,9 @@ fn print_strategy(def: &StrategyDef) {
     if let Some(tp) = def.take_profit_pct {
         exit.push(format!("target {tp}%"));
     }
-    print_kv("Exit", &exit.join(" · "));
+    if !exit.is_empty() {
+        print_kv("Exit", &exit.join(" · "));
+    }
     if !def.params.is_empty() {
         print_kv("Parameters", &rules::format_params(&def.params));
     }
@@ -318,7 +329,7 @@ fn footer() {
 }
 
 fn single(symbol: &str, bars: &Bars, def: &StrategyDef, cfg: &SimConfig) -> Result<SimResult> {
-    let signals = def.compile()?.signals(bars);
+    let signals = def.compile()?.signals(bars)?;
     Ok(engine::simulate(
         &[Asset {
             symbol,
@@ -545,7 +556,15 @@ pub async fn cmd_backtest_portfolio(
         );
     }
     let cur = currency.as_deref();
-    let signals: Vec<_> = data.iter().map(|(b, _)| strategy.signals(b)).collect();
+    let signals = resolved
+        .iter()
+        .zip(&data)
+        .map(|(s, (b, _))| {
+            strategy
+                .signals(b)
+                .with_context(|| format!("signals for {s}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let assets: Vec<Asset> = resolved
         .iter()
         .zip(&data)
@@ -893,10 +912,15 @@ pub fn cmd_backtest_strategies(files: &[String], json: bool) -> Result<()> {
 
     let builtins = rules::builtins();
     let dir = rules::strategies_dir();
-    let mine: Vec<(String, Result<StrategyDef>)> = dir
+    // A build without the `wasm-plugins` feature lists plugins as skipped
+    // rather than as broken files.
+    let (files, skipped): (Vec<_>, Vec<_>) = dir
         .as_deref()
         .map(rules::user_strategy_files)
         .unwrap_or_default()
+        .into_iter()
+        .partition(|p| plugin::SUPPORTED || !rules::is_plugin_file(p));
+    let mine: Vec<(String, Result<StrategyDef>)> = files
         .into_iter()
         .map(|p| (p.display().to_string(), rules::load_file(&p)))
         .collect();
@@ -915,6 +939,7 @@ pub fn cmd_backtest_strategies(files: &[String], json: bool) -> Result<()> {
                     Err(e) => json!({ "path": path, "ok": false, "error": format!("{e:#}") }),
                 })
                 .collect::<Vec<_>>(),
+            "skipped_plugins": skipped,
         });
         output::print_json(&out)?;
     } else {
@@ -933,7 +958,7 @@ pub fn cmd_backtest_strategies(files: &[String], json: bool) -> Result<()> {
             Some(d) => println!("  {} {}", "Folder:".dimmed(), d.display()),
             None => println!("  {}", "No home directory; use -s file:PATH".dimmed()),
         }
-        if mine.is_empty() {
+        if mine.is_empty() && skipped.is_empty() {
             println!(
                 "  {}",
                 "No strategy files yet. Copy one from examples/strategies/ to get started."
@@ -942,6 +967,17 @@ pub fn cmd_backtest_strategies(files: &[String], json: bool) -> Result<()> {
         }
         for (path, r) in &mine {
             print_file_status(path, r, true);
+        }
+        if !skipped.is_empty() {
+            println!(
+                "  {}",
+                format!(
+                    "{} WASM plugin(s) skipped: this build has no plugin support \
+                     (cargo install stockwise --features wasm-plugins)",
+                    skipped.len()
+                )
+                .yellow()
+            );
         }
         println!(
             "\n  {}",
@@ -971,11 +1007,19 @@ fn print_file_status(path: &str, r: &Result<StrategyDef>, in_folder: bool) {
             } else {
                 String::new()
             };
+            let kind = if d.plugin.is_some() {
+                format!(" [WASM, ABI v{}]", plugin::ABI_VERSION)
+                    .dimmed()
+                    .to_string()
+            } else {
+                String::new()
+            };
             println!(
-                "  {} {:<16} {}{}",
+                "  {} {:<16} {}{}{}",
                 "✓".green(),
                 d.name.bold(),
                 d.description,
+                kind,
                 shadow
             );
         }

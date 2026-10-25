@@ -787,6 +787,7 @@ mod tests {
             sell_price: sell.1,
             buy_date_estimated: false,
             source: "manual".into(),
+            order_id: None,
         }
     }
 

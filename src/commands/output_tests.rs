@@ -379,7 +379,7 @@ fn backtest_json_and_trade_rows() {
         .collect();
     let bars = Bars::from_closes(&closes);
     let def = rules::load("rsi").unwrap();
-    let signals = def.compile().unwrap().signals(&bars);
+    let signals = def.compile().unwrap().signals(&bars).unwrap();
     let costs = CostModel::in_delivery();
     let cfg = SimConfig::single(100_000.0, Fill::NextOpen, costs.clone());
     let asset = engine::Asset {
@@ -693,6 +693,7 @@ fn goal_and_tax_export_json_shapes() {
         sell_price: 4100.0,
         buy_date_estimated: false,
         source: "manual".into(),
+        order_id: None,
     };
     let india = serde_json::to_value(crate::tax_export::india_schedule(
         std::slice::from_ref(&sale),

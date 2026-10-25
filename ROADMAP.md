@@ -88,7 +88,7 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
   FIFO sales, idempotent) and GTT status changes in `trade gtt list` (experimental on non-Angel
   brokers)
 - ✅ A small web dashboard served by `stockwise serve` (`serve --open`)
-- 💡 WASM strategy plugins (TOML strategies cover most cases today)
+- ✅ WASM strategy plugins (**experimental**; `--features wasm-plugins`, `backtest -s wasm:PATH`)
 - ✅ Options strategy builder — `options payoff`: legs or presets (spreads, straddle, strangle,
   iron condor, butterfly, covered call) priced from the live chain, payoff chart, breakevens,
   probability of profit, net greeks
