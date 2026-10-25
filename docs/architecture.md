@@ -31,7 +31,8 @@ src/
                      shared by the CLI printers, the TUI and the server; `DataSource` trait
   tui/               `stockwise tui`: app.rs (state + key handling, no I/O), ui.rs (ratatui
                      drawing), mod.rs (event loop, fetches)
-  server/            `stockwise serve`: axum routes, bearer auth, Prometheus metrics
+  server/            `stockwise serve`: axum routes, bearer auth, Prometheus metrics; web.rs serves
+                     the dashboard (web/, embedded with include_str!) and sets CSP/security headers
   daemon_status.rs   Reads the intraday daemon's daemon_state.json for /metrics
   store.rs           Atomic JSON persistence, data directory (STOCKWISE_HOME)
   config.rs          Optional config.toml: defaults for market, AI, cache, data dir, periods

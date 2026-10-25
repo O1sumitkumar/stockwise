@@ -62,6 +62,11 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - 📋 Technical alerts — RSI, moving-average crosses and breakouts, not only price levels
 - 📋 Results and corporate-announcement calendar for holdings (NSE/BSE filings)
 - 📋 More Indian languages: Marathi, Tamil, Bengali
+- 📋 Commodities: gold and silver — MCX futures, gold/silver ETFs, Sovereign Gold Bonds, spot in ₹/10 g
+- 📋 Global exchanges from one market table — UK, Germany, Japan, Hong Kong, Singapore, Canada, Australia
+- 📋 Indian government bonds and T-bills (G-secs)
+- 📋 Simulator challenges — historical replay ("trade the 2020 crash" with the future hidden),
+  goal-based challenges, risk-adjusted scores, badges and streaks, a shareable result card
 
 ## 💡 Later — exploring (0.6+)
 
@@ -69,7 +74,7 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - ✅ Broker-side GTT and order-status sync into the portfolio — `trade sync` (fills → lots and
   FIFO sales, idempotent) and GTT status changes in `trade gtt list` (experimental on non-Angel
   brokers)
-- 💡 A small web dashboard served by `stockwise serve`
+- ✅ A small web dashboard served by `stockwise serve` (`serve --open`)
 - 💡 WASM strategy plugins (TOML strategies cover most cases today)
 - 💡 Options strategy builder — payoff charts for spreads and straddles from the live chain
 
