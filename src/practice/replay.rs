@@ -323,7 +323,9 @@ impl Replay {
                         .filter(|o| o.side == OrderSide::Buy && o.symbol == symbol)
                         .map(|o| o.qty)
                         .sum();
-                    let weight = (held + queued + qty) as f64 * close / self.equity() * 100.0;
+                    let weight = held.saturating_add(queued).saturating_add(qty) as f64 * close
+                        / self.equity()
+                        * 100.0;
                     let has_stop = stop.is_some()
                         || self.positions.get(symbol).is_some_and(|p| p.stop.is_some());
                     let broken = ch.check_buy(date, symbol, has_stop, weight);
@@ -350,7 +352,7 @@ impl Replay {
                     .filter(|o| o.side == OrderSide::Sell && o.symbol == symbol)
                     .map(|o| o.qty)
                     .sum();
-                if qty + queued > held {
+                if qty.saturating_add(queued) > held {
                     bail!(
                         "You hold {held} {symbol}{} — you can't sell {qty}. Short selling is not part of the replay.",
                         if queued > 0 {
@@ -532,8 +534,12 @@ impl Replay {
                 if order.target.is_some() {
                     pos.target = order.target;
                 }
+                // Size on the basis the order was judged on: the last close
+                // before this fill, over that close's equity.
+                let known = self.calendar[self.day.saturating_sub(1)];
+                let ref_px = tape.last_close(&order.symbol, known).unwrap_or(price);
                 let weight = if equity > 0.0 {
-                    pos.qty as f64 * price / equity * 100.0
+                    pos.qty as f64 * ref_px / equity * 100.0
                 } else {
                     100.0
                 };
@@ -639,9 +645,17 @@ impl Replay {
             bail!("The replay is on its last day — no room for a challenge.");
         }
         let left = self.calendar.len() - 1 - self.day;
+        if def.days > left {
+            bail!(
+                "The {} challenge lasts {} trading days and this replay has {left} left. \
+                 Start it earlier in a replay.",
+                def.title,
+                def.days
+            );
+        }
         let end_day = match def.days {
             0 => self.calendar.len() - 1,
-            n => self.day + n.min(left),
+            n => self.day + n,
         };
         let mut active = Active::new(def, self.day, self.date(), end_day);
         if let Some(amount) = active.def.monthly_contribution {
@@ -681,7 +695,7 @@ impl Replay {
         let month_end = (date.month() != prev.month())
             .then(|| self.marks.iter().rev().nth(1))
             .flatten()
-            .filter(|m| m.date >= self.calendar[start] && m.equity > 0.0)
+            .filter(|m| m.date > self.calendar[start] && m.equity > 0.0)
             .map(|m| m.invested / m.equity * 100.0);
         let ch = self.challenge.as_mut().expect("checked above");
         if flow > 0.0 && bench > 0.0 {
@@ -1048,8 +1062,7 @@ mod tests {
     #[test]
     fn hard_rules_refuse_orders_and_drawdown_ends_the_challenge() {
         let (mut r, tape) = setup(&[10.0, 10.0, 8.0, 8.0, 8.0, 8.0], &[5.0; 6]);
-        r.start_challenge(&tape, challenge::load("stop-loss").unwrap())
-            .unwrap();
+        r.start_challenge(&tape, short("stop-loss", 3)).unwrap();
         let e = r
             .place(&tape, OrderSide::Buy, "AAA", 10, None, None)
             .unwrap_err()
@@ -1057,8 +1070,7 @@ mod tests {
         assert!(e.contains("stop-loss"), "{e}");
         r.challenge = None;
 
-        r.start_challenge(&tape, challenge::load("steady-hands").unwrap())
-            .unwrap();
+        r.start_challenge(&tape, short("steady-hands", 4)).unwrap();
         r.place(&tape, OrderSide::Buy, "AAA", 900, None, None)
             .unwrap();
         r.step(&tape).unwrap();
@@ -1076,10 +1088,99 @@ mod tests {
         assert!(r.run_input().hard_break);
     }
 
+    /// A built-in challenge shortened to fit the test tapes.
+    fn short(name: &str, days: usize) -> challenge::Challenge {
+        let mut c = challenge::load(name).unwrap();
+        c.days = days;
+        c
+    }
+
+    #[test]
+    fn a_challenge_must_fit_in_the_days_left() {
+        let (mut r, tape) = setup(&[10.0; 6], &[5.0; 6]);
+        let e = r
+            .start_challenge(&tape, challenge::load("steady-hands").unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("30 trading days") && e.contains("5 left"), "{e}");
+        r.start_challenge(&tape, short("steady-hands", 5)).unwrap();
+        assert_eq!(r.challenge.as_ref().unwrap().end_day, 5);
+    }
+
+    #[test]
+    fn fill_size_is_judged_like_the_order() {
+        // 199 × 10 is 19.9% of 10,000 at the close; the next open gaps to 10.5.
+        let mut tape = Tape::default();
+        let mut a = flat("2020-01-01", &[10.0; 4]);
+        a[1].open = 10.5;
+        a[1].high = 10.5;
+        tape.insert("AAA", None, a);
+        tape.insert("BBB", None, flat("2020-01-01", &[5.0; 4]));
+        tape.insert("^IDX", None, flat("2020-01-01", &[100.0; 4]));
+        let mut r = Replay::new(
+            scenario(&[("AAA", "Tech"), ("BBB", "Energy")]),
+            &tape,
+            10_000.0,
+            "none",
+        )
+        .unwrap();
+        r.start_challenge(&tape, short("position-limit", 3))
+            .unwrap();
+        r.place(&tape, OrderSide::Buy, "AAA", 199, Some(9.0), None)
+            .unwrap();
+        r.step(&tape).unwrap();
+        assert_eq!(r.fills[0].price, 10.5);
+        assert!((r.fills[0].weight_percent - 19.9).abs() < 1e-9);
+        assert!(score::disciplined(
+            &r.run_input(),
+            &Scorecard {
+                score: Some(50),
+                ..Scorecard::default()
+            }
+        ));
+    }
+
+    #[test]
+    fn month_end_check_skips_the_start_day() {
+        // Start on 31 Jan with an investing rule: nothing could be bought by
+        // the January close, so February's first step breaks nothing.
+        let mut tape = Tape::default();
+        tape.insert("AAA", None, flat("2020-01-31", &[10.0; 4]));
+        tape.insert("BBB", None, flat("2020-01-31", &[5.0; 4]));
+        tape.insert("^IDX", None, flat("2020-01-31", &[100.0; 4]));
+        let mut s = scenario(&[("AAA", "Tech"), ("BBB", "Energy")]);
+        s.from = d("2020-01-31");
+        s.to = d("2020-02-29");
+        let mut r = Replay::new(s, &tape, 10_000.0, "none").unwrap();
+        let mut def = short("steady-hands", 3);
+        def.rules = vec![challenge::Rule::InvestEachMonth {
+            percent: 90.0,
+            hard: true,
+        }];
+        r.start_challenge(&tape, def).unwrap();
+        let ev = r.step(&tape).unwrap();
+        assert!(ev.is_empty(), "{ev:?}");
+        assert!(r.challenge.is_some());
+    }
+
+    #[test]
+    fn huge_quantities_do_not_overflow() {
+        let (mut r, tape) = setup(&[10.0; 4], &[5.0; 4]);
+        r.place(&tape, OrderSide::Buy, "AAA", 10, None, None)
+            .unwrap();
+        r.step(&tape).unwrap();
+        r.place(&tape, OrderSide::Sell, "AAA", 5, None, None)
+            .unwrap();
+        assert!(
+            r.place(&tape, OrderSide::Sell, "AAA", u64::MAX, None, None)
+                .is_err()
+        );
+    }
+
     #[test]
     fn soft_position_rule_is_recorded_not_refused() {
         let (mut r, tape) = setup(&[10.0; 6], &[5.0; 6]);
-        let mut def = challenge::load("position-limit").unwrap();
+        let mut def = short("position-limit", 5);
         def.rules[0] = challenge::Rule::MaxPosition {
             percent: 20.0,
             hard: false,

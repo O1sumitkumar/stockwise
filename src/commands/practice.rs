@@ -1048,6 +1048,18 @@ fn print_scorecard(title: &str, run: &RunResult, debrief: &str) {
     println!("  {}\n", disclaimer().dimmed());
 }
 
+/// Badges a challenge earned as it ended belong to the run's result too.
+fn merge_new_badges(run: &mut RunResult, ids: Vec<String>) {
+    for id in ids {
+        if !run.badges.contains(&id) {
+            run.badges.push(id.clone());
+        }
+        if !run.new_badges.contains(&id) {
+            run.new_badges.push(id);
+        }
+    }
+}
+
 fn run_json(run: &RunResult, debrief: &str) -> Value {
     let mut v = serde_json::to_value(run).unwrap_or(Value::Null);
     v["debrief"] = json!(debrief);
@@ -1061,10 +1073,11 @@ pub fn cmd_replay_end(fmt: Format) -> Result<()> {
     let (mut r, _tape) = load_replay()?;
     let today = chrono::Local::now().date_naive();
     let mut profile = Profile::load()?;
+    let mut challenge_badges = Vec::new();
     if let Some(ch) = &r.challenge {
         let abandoned = r.day < ch.end_day;
         let outcome = r.finish_challenge(abandoned);
-        profile.record_challenge(&outcome, today);
+        challenge_badges = profile.record_challenge(&outcome, today);
     }
     let input = r.run_input();
     let card = score::score(&input);
@@ -1096,11 +1109,12 @@ pub fn cmd_replay_end(fmt: Format) -> Result<()> {
         curve: score::rebased(&input.nav, 60),
         benchmark_curve: score::rebased(&input.benchmark, 60),
     };
-    let run = if run.scorecard.score.is_some() {
+    let mut run = if run.scorecard.score.is_some() {
         profile.record_run(run, today)
     } else {
         run
     };
+    merge_new_badges(&mut run, challenge_badges);
     profile.save()?;
     remove_replay_files()?;
     let debrief = r.scenario.debrief.clone();
@@ -1404,7 +1418,7 @@ pub async fn cmd_challenge_end(fmt: Format) -> Result<()> {
     let lr = live.evaluate(&sessions, &bench);
     let outcome = live.outcome(&lr);
     let mut profile = Profile::load()?;
-    profile.record_challenge(&outcome, today);
+    let challenge_badges = profile.record_challenge(&outcome, today);
     let card = score::score(&lr.input);
     let facts = score::RunFacts {
         buys: lr.input.buys.len(),
@@ -1440,11 +1454,12 @@ pub async fn cmd_challenge_end(fmt: Format) -> Result<()> {
         curve: score::rebased(&lr.input.nav, 60),
         benchmark_curve: score::rebased(&lr.input.benchmark, 60),
     };
-    let run = if run.scorecard.score.is_some() {
+    let mut run = if run.scorecard.score.is_some() {
         profile.record_run(run, today)
     } else {
         run
     };
+    merge_new_badges(&mut run, challenge_badges);
     profile.save()?;
     LiveChallenge::clear()?;
     if fmt == Format::Json {
@@ -1683,8 +1698,9 @@ mod tests {
         assert_eq!(input.nav.len(), 5);
         assert!(input.benchmark.iter().all(|b| *b < 9_100.0));
         // A challenge's view too.
-        r.start_challenge(&tape, challenge::load("steady-hands").unwrap())
-            .unwrap();
+        let mut def = challenge::load("steady-hands").unwrap();
+        def.days = 3;
+        r.start_challenge(&tape, def).unwrap();
         assert_no_future(&serde_json::to_string(&status_json(&r, &tape)).unwrap());
 
         // Stepping onto day 5 makes its bar the present, and only then.

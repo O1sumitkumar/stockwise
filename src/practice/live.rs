@@ -47,15 +47,25 @@ impl LiveChallenge {
         Ok(())
     }
 
-    /// Settled sessions in this market from the start date on, oldest first.
+    /// The settled sessions that count, oldest first: this market, from the
+    /// start date on, one per trading day (the first settled that day), and
+    /// no more than the challenge's length.
     pub fn sessions<'a>(&self, history: &'a SimHistory) -> Vec<&'a SimSession> {
         let start = self.active.start_date.format("%Y-%m-%d").to_string();
-        let mut out: Vec<&SimSession> = history
+        let mut out: Vec<&SimSession> = Vec::new();
+        for s in history
             .sessions
             .iter()
             .filter(|s| s.settled && s.market == self.market && s.date >= start)
-            .collect();
+        {
+            if !out.iter().any(|o| o.date == s.date) {
+                out.push(s);
+            }
+        }
         out.sort_by(|a, b| a.date.cmp(&b.date));
+        if self.active.end_day > 0 {
+            out.truncate(self.active.end_day);
+        }
         out
     }
 
@@ -246,6 +256,30 @@ mod tests {
         let out = c.outcome(&run);
         assert!(!out.passed);
         assert_eq!(out.reason, "abandoned"); // 3 of 30 sessions
+    }
+
+    #[test]
+    fn counts_one_session_a_day_and_stops_at_the_length() {
+        let mut c = live("steady-hands");
+        c.active.end_day = 2;
+        let mut history = SimHistory::default();
+        history
+            .sessions
+            .push(session("2026-10-01", 1.0, 98.0, 5_000.0));
+        history
+            .sessions
+            .push(session("2026-10-01", 9.0, 98.0, 5_000.0)); // same day again
+        history
+            .sessions
+            .push(session("2026-10-02", 1.0, 98.0, 5_000.0));
+        history
+            .sessions
+            .push(session("2026-10-05", -30.0, 98.0, 5_000.0)); // after the end
+        let sessions = c.sessions(&history);
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].total_pnl_pct, Some(1.0));
+        assert_eq!(sessions[1].date, "2026-10-02");
+        assert!(c.is_complete(sessions.len()));
     }
 
     #[test]

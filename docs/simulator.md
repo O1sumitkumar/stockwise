@@ -128,7 +128,9 @@ stockwise sim challenge end                      # give up, or score a finished 
 **Hard rules** cannot be broken by accident: an order that would break one is
 refused with the reason, and a hard rule broken by the market (a drawdown)
 ends the challenge as failed. **Soft rules** are recorded and cost discipline
-points. Position size is judged when you place the order, at the last close.
+points. Position size is judged when you place the order, at the last close,
+and the score judges it the same way. A challenge must fit in the days left in
+the replay, so start a 30-day challenge at least 30 trading days before the end.
 
 `sip-discipline` starts on the replay's first day, before any order: your
 account begins with one month's contribution (10,000 in the replay's currency)
@@ -138,9 +140,12 @@ same days — can your timing beat discipline? Returns are time-weighted, so
 the money you add never counts as profit.
 
 Over **live paper sessions** a challenge counts settled sessions from the day
-you start it (one session = one day); the rules are checked over the trades
-the bot made. Start it outside a replay, then use `sim start` each morning and
-`sim settle` after the close.
+you start it: the first session settled on each trading day, up to the
+challenge's length. The rules are checked over the trades the bot made. Start
+it outside a replay, then use `sim start` each morning and `sim settle` after
+the close. Your return compounds each session's intraday P&L, while the
+benchmark moves close to close over the same dates, overnight gaps included —
+a tougher comparison than in a replay.
 
 ## Scores, grades and badges
 
