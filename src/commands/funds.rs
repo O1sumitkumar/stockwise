@@ -1,8 +1,9 @@
-//! Mutual funds: AMFI scheme search and NAVs, NAV history with returns,
-//! SIP simulation with XIRR, category screening, and ETF/fund overlap.
+//! Mutual funds: AMFI scheme search and NAVs with expense ratios (TER), NAV
+//! history with returns, SIP simulation with XIRR, category screening, and
+//! ETF/fund overlap.
 
 use super::*;
-use crate::funds::{self, Scheme};
+use crate::funds::{self, Scheme, SchemeTer, TerTable};
 
 /// How `mf screen` filters plans.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -10,6 +11,55 @@ pub enum PlanFilter {
     Direct,
     Regular,
     All,
+}
+
+/// How `mf screen` ranks funds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ScreenSort {
+    /// Trailing return over this many months, highest first.
+    Return(u32),
+    /// Expense ratio, lowest first.
+    Ter,
+}
+
+/// The TER table, or `None` with a note on stderr: expense ratios are extra
+/// information and never block NAVs or returns.
+fn ter_or_note(ter: Result<TerTable>) -> Option<TerTable> {
+    match ter {
+        Ok(t) => Some(t),
+        Err(e) => {
+            eprintln!("  Note: expense ratios (TER) unavailable — {e:#}");
+            None
+        }
+    }
+}
+
+/// "0.67% direct plan · regular 2.19% · as of 23 Oct 2026".
+fn ter_line(t: &SchemeTer) -> String {
+    let other = match t.plan {
+        "direct" => t
+            .regular
+            .map(|r| format!(" · regular plan {}", pct_plain(r))),
+        _ => t.direct.map(|d| format!(" · direct plan {}", pct_plain(d))),
+    };
+    format!(
+        "{} {} plan{} · as of {}",
+        pct_plain(t.costs.total).bold(),
+        t.plan,
+        other.unwrap_or_default(),
+        t.date.format("%d %b %Y")
+    )
+}
+
+/// TER cell for `mf nav` / `mf history`: the value, or why there is none.
+fn ter_cell(table: Option<&TerTable>, ter: Option<&SchemeTer>) -> String {
+    match (table, ter) {
+        (_, Some(t)) => ter_line(t),
+        (Some(_), None) => "not in AMFI's TER disclosure for this plan"
+            .dimmed()
+            .to_string(),
+        (None, None) => "unavailable".dimmed().to_string(),
+    }
 }
 
 const INR: Option<&str> = Some("INR");
@@ -120,7 +170,9 @@ pub async fn cmd_mf_search(query: &str, limit: usize, json: bool) -> Result<()> 
 
 /// `mf nav` — latest NAV from AMFI for one or more scheme codes.
 pub async fn cmd_mf_nav(codes: &[u32], json: bool) -> Result<()> {
-    let schemes = funds::load_amfi().await?;
+    let (schemes, ter) = tokio::join!(funds::load_amfi(), funds::load_ter());
+    let schemes = schemes?;
+    let ter = ter_or_note(ter);
     let found: Vec<&Scheme> = codes
         .iter()
         .filter_map(|c| schemes.iter().find(|s| s.code == *c))
@@ -139,10 +191,25 @@ pub async fn cmd_mf_nav(codes: &[u32], json: bool) -> Result<()> {
     if found.is_empty() {
         return Err(missing_err());
     }
+    let ters: Vec<Option<SchemeTer>> = found
+        .iter()
+        .map(|s| ter.as_ref().and_then(|t| t.for_scheme(s)))
+        .collect();
     if json {
-        println!("{}", serde_json::to_string_pretty(&found)?);
+        #[derive(serde::Serialize)]
+        struct NavRow<'a> {
+            #[serde(flatten)]
+            scheme: &'a Scheme,
+            ter: &'a Option<SchemeTer>,
+        }
+        let rows: Vec<NavRow> = found
+            .iter()
+            .zip(&ters)
+            .map(|(scheme, ter)| NavRow { scheme, ter })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
     } else {
-        for s in &found {
+        for (s, t) in found.iter().zip(&ters) {
             print_header(&s.full_name());
             print_kv(
                 "NAV",
@@ -160,6 +227,7 @@ pub async fn cmd_mf_nav(codes: &[u32], json: bool) -> Result<()> {
             print_kv("Fund house", s.amc.as_deref().unwrap_or("—"));
             print_kv("Category", s.category.as_deref().unwrap_or("—"));
             print_kv("Type", s.scheme_type.as_deref().unwrap_or("—"));
+            print_kv("Expense ratio (TER)", &ter_cell(ter.as_ref(), t.as_ref()));
             if let Some(isin) = &s.isin_growth {
                 print_kv("ISIN", isin);
             }
@@ -169,7 +237,8 @@ pub async fn cmd_mf_nav(codes: &[u32], json: bool) -> Result<()> {
         }
         println!(
             "\n  {}",
-            "Source: AMFI NAVAll.txt (cached up to 12 hours)".dimmed()
+            "Source: AMFI NAVAll.txt (cached up to 12 hours); TER: AMFI's monthly TER disclosure (cached a day)"
+                .dimmed()
         );
         println!();
     }
@@ -184,7 +253,27 @@ pub async fn cmd_mf_nav(codes: &[u32], json: bool) -> Result<()> {
 pub async fn cmd_mf_history(code: u32, period: &str, json: bool) -> Result<()> {
     let months = period_months(period)?;
     let client = funds::http_client()?;
-    let hist = funds::load_history(&client, code).await?;
+    let (hist, schemes, ter) = tokio::join!(
+        funds::load_history(&client, code),
+        funds::load_amfi(),
+        funds::load_ter()
+    );
+    let hist = hist?;
+    let ter_table = ter_or_note(ter);
+    // Join on AMFI's own scheme name when the NAV file has the code; the
+    // NAV-history name ("X Fund - Direct Plan - Growth") is the fallback.
+    let scheme_ter = ter_table.as_ref().and_then(|t| {
+        match schemes
+            .ok()
+            .and_then(|all| all.into_iter().find(|s| s.code == code))
+        {
+            Some(s) => t.for_scheme(&s),
+            None => t.for_name(
+                &hist.meta.name,
+                hist.meta.name.to_lowercase().contains("direct"),
+            ),
+        }
+    });
     let navs = &hist.navs;
     let window = funds::slice_period(navs, months);
     let returns: Vec<(&str, Option<f64>)> = funds::HORIZONS
@@ -211,6 +300,7 @@ pub async fn cmd_mf_history(code: u32, period: &str, json: bool) -> Result<()> {
             "date": last_date,
             "returns": ret,
             "max_drawdown": drawdown,
+            "ter": scheme_ter,
             "navs": window.iter().map(|(d, n)| serde_json::json!({"date": d, "nav": n})).collect::<Vec<_>>(),
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
@@ -228,6 +318,10 @@ pub async fn cmd_mf_history(code: u32, period: &str, json: bool) -> Result<()> {
     );
     print_kv("Fund house", hist.meta.fund_house.as_deref().unwrap_or("—"));
     print_kv("Category", hist.meta.category.as_deref().unwrap_or("—"));
+    print_kv(
+        "Expense ratio (TER)",
+        &ter_cell(ter_table.as_ref(), scheme_ter.as_ref()),
+    );
 
     let values: Vec<f64> = window.iter().map(|(_, n)| *n).collect();
     if values.len() >= 2 {
@@ -414,21 +508,31 @@ struct ScreenRow {
     return_3y: Option<f64>,
     return_5y: Option<f64>,
     since_inception: Option<f64>,
+    /// Total expense ratio of the scheme's plan (fraction), from AMFI.
+    ter: Option<f64>,
+    ter_date: Option<chrono::NaiveDate>,
 }
 
 /// `mf screen` — rank a category's growth-option schemes by trailing
-/// returns. Without a category, list the categories.
+/// returns or expense ratio, optionally capped by `max_ter_pct`. Without a
+/// category, list the categories.
 pub async fn cmd_mf_screen(
     category: &str,
     plan: PlanFilter,
-    sort_months: u32,
+    sort: ScreenSort,
+    max_ter_pct: Option<f64>,
     limit: usize,
     max_funds: usize,
     json: bool,
 ) -> Result<()> {
-    let all = funds::load_amfi().await?;
-    let schemes = funds::active(&all);
     let category = category.trim();
+    let (all, ter) = if category.is_empty() {
+        (funds::load_amfi().await?, None)
+    } else {
+        let (all, ter) = tokio::join!(funds::load_amfi(), funds::load_ter());
+        (all?, Some(ter))
+    };
+    let schemes = funds::active(&all);
     if category.is_empty() {
         let cats = funds::categories(schemes.iter().copied());
         if json {
@@ -472,6 +576,29 @@ pub async fn cmd_mf_screen(
             category
         );
     }
+    let ter = match ter {
+        Some(Err(e)) if sort == ScreenSort::Ter || max_ter_pct.is_some() => {
+            return Err(e.context(
+                "--sort ter and --max-ter need AMFI's TER disclosure, which could not be loaded",
+            ));
+        }
+        Some(t) => ter_or_note(t),
+        None => None,
+    };
+    let ter_of = |s: &Scheme| ter.as_ref().and_then(|t| t.for_scheme(s));
+    let mut no_ter = 0;
+    if let Some(max) = max_ter_pct {
+        let before = candidates.len();
+        candidates.retain(|s| ter_of(s).is_some_and(|t| t.costs.total * 100.0 <= max + 1e-9));
+        no_ter = before - candidates.len();
+        if candidates.is_empty() {
+            bail!(
+                "No scheme in '{}' has a disclosed TER at or below {}%",
+                category,
+                max
+            );
+        }
+    }
     candidates.sort_by_key(|s| s.full_name());
     let total = candidates.len();
     if total > max_funds {
@@ -511,6 +638,7 @@ pub async fn cmd_mf_screen(
         .iter()
         .filter_map(|s| {
             let h = histories.get(&s.code)?;
+            let t = ter_of(s);
             Some(ScreenRow {
                 code: s.code,
                 name: s.full_name(),
@@ -521,15 +649,19 @@ pub async fn cmd_mf_screen(
                 return_3y: funds::trailing_return(&h.navs, 36),
                 return_5y: funds::trailing_return(&h.navs, 60),
                 since_inception: funds::since_inception(&h.navs),
+                ter: t.as_ref().map(|t| t.costs.total),
+                ter_date: t.as_ref().map(|t| t.date),
             })
         })
         .collect();
-    let pick = |r: &ScreenRow| match sort_months {
-        12 => r.return_1y,
-        60 => r.return_5y,
-        _ => r.return_3y,
+    let pick = |r: &ScreenRow| match sort {
+        ScreenSort::Return(12) => r.return_1y,
+        ScreenSort::Return(60) => r.return_5y,
+        ScreenSort::Return(_) => r.return_3y,
+        // Lowest TER first: rank on the negated value.
+        ScreenSort::Ter => r.ter.map(|t| -t),
     };
-    // Highest first; funds too young for the horizon go last.
+    // Best first; funds without a value (too young, no TER) go last.
     rows.sort_by(|a, b| match (pick(a), pick(b)) {
         (Some(x), Some(y)) => y.total_cmp(&x),
         (Some(_), None) => std::cmp::Ordering::Less,
@@ -545,29 +677,41 @@ pub async fn cmd_mf_screen(
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
-    let sort_label = months_label(Some(sort_months)).to_uppercase();
+    let sort_label = match sort {
+        ScreenSort::Return(m) => format!("{} return", months_label(Some(m)).to_uppercase()),
+        ScreenSort::Ter => "expense ratio (lowest first)".into(),
+    };
     print_header(&format!(
-        "Fund screen: '{}' — top {} by {} return",
+        "Fund screen: '{}' — top {} by {}{}",
         category,
         rows.len(),
-        sort_label
+        sort_label,
+        max_ter_pct
+            .map(|m| format!(", TER ≤ {m}%"))
+            .unwrap_or_default()
     ));
     println!(
-        "  {:>3} {:>7}  {:<52} {:>9} {:>9} {:>9}",
+        "  {:>3} {:>7}  {:<52} {:>7} {:>9} {:>9} {:>9}",
         "#".bold(),
         "Code".bold(),
         "Scheme".bold(),
+        "TER".bold(),
         "1Y".bold(),
         "3Y CAGR".bold(),
         "5Y CAGR".bold()
     );
-    println!("  {}", "─".repeat(96).dimmed());
+    println!("  {}", "─".repeat(104).dimmed());
     for (i, r) in rows.iter().enumerate() {
+        let ter_cell = match r.ter {
+            Some(t) => format!("{:>7}", pct_plain(t)),
+            None => format!("{:>7}", "N/A").dimmed().to_string(),
+        };
         println!(
-            "  {:>3} {:>7}  {:<52} {} {} {}",
+            "  {:>3} {:>7}  {:<52} {} {} {} {}",
             i + 1,
             r.code.to_string().cyan(),
             truncate(&r.name, 52),
+            ter_cell,
             pct_cell(r.return_1y, 9),
             pct_cell(r.return_3y, 9),
             pct_cell(r.return_5y, 9)
@@ -579,10 +723,30 @@ pub async fn cmd_mf_screen(
             format!("{} fund(s) skipped: NAV history unavailable", failed).yellow()
         );
     }
+    if no_ter > 0 {
+        println!(
+            "  {}",
+            format!(
+                "{} fund(s) left out: TER above the cap or not in AMFI's disclosure",
+                no_ter
+            )
+            .dimmed()
+        );
+    }
+    let ter_note = match &ter {
+        Some(t) => format!(
+            "TER: total expense ratio of each plan from AMFI's {} disclosure (latest day).",
+            t.month
+        ),
+        None => "TER: AMFI's disclosure could not be loaded this time.".into(),
+    };
     println!(
         "\n  {}",
-        "Growth options only. Expense ratios (TER) are not in AMFI's free NAV feed — compare them on\n  the AMC's site; direct plans cost less than regular ones. Past returns do not predict future returns."
-            .dimmed()
+        format!(
+            "Growth options only. {}\n  Direct plans cost less than regular ones. Past returns do not predict future returns.",
+            ter_note
+        )
+        .dimmed()
     );
     println!();
     Ok(())

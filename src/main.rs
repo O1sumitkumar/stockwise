@@ -47,6 +47,7 @@ mod tui;
 mod views;
 mod watchlist;
 mod wealth;
+mod xlsx;
 
 use clap::parser::ValueSource;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
@@ -864,16 +865,19 @@ enum MfCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Rank a category's growth funds by 1Y/3Y/5Y return (bare: list categories)
+    /// Rank a category's growth funds by 1Y/3Y/5Y return or expense ratio (bare: list categories)
     Screen {
         /// Category words, e.g. `flexi cap`, `elss`, `liquid`, `equity etf`
         category: Vec<String>,
         /// Which plans to include
         #[arg(long, value_enum, ignore_case = true, default_value = "direct")]
         plan: MfPlan,
-        /// Return horizon to rank by
+        /// Rank by return horizon, or by expense ratio (`ter`, lowest first)
         #[arg(short, long, value_enum, default_value = "3y")]
         sort: MfSort,
+        /// Only funds whose disclosed TER is at most this many percent, e.g. 1.0
+        #[arg(long, value_name = "PERCENT", value_parser = max_ter)]
+        max_ter: Option<f64>,
         /// Funds to show
         #[arg(short = 'n', long, default_value_t = 15)]
         limit: usize,
@@ -914,6 +918,17 @@ enum MfSort {
     Y3,
     #[value(name = "5y")]
     Y5,
+    /// Total expense ratio, lowest first
+    Ter,
+}
+
+fn max_ter(s: &str) -> Result<f64, String> {
+    match s.trim().trim_end_matches('%').parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 && v <= 5.0 => Ok(v),
+        _ => Err(format!(
+            "`{s}`: a percentage above 0 and at most 5, e.g. 1.0"
+        )),
+    }
 }
 
 #[derive(Subcommand)]
@@ -1788,6 +1803,7 @@ async fn main() {
                 category,
                 plan,
                 sort,
+                max_ter,
                 limit,
                 max,
                 json,
@@ -1797,12 +1813,14 @@ async fn main() {
                     MfPlan::Regular => commands::PlanFilter::Regular,
                     MfPlan::All => commands::PlanFilter::All,
                 };
-                let months = match sort {
-                    MfSort::Y1 => 12,
-                    MfSort::Y3 => 36,
-                    MfSort::Y5 => 60,
+                let sort = match sort {
+                    MfSort::Y1 => commands::ScreenSort::Return(12),
+                    MfSort::Y3 => commands::ScreenSort::Return(36),
+                    MfSort::Y5 => commands::ScreenSort::Return(60),
+                    MfSort::Ter => commands::ScreenSort::Ter,
                 };
-                commands::cmd_mf_screen(&category.join(" "), plan, months, limit, max, json).await
+                commands::cmd_mf_screen(&category.join(" "), plan, sort, max_ter, limit, max, json)
+                    .await
             }
             MfCmd::Overlap { a, b, json } => commands::cmd_mf_overlap(&a, &b, m, json).await,
         },
@@ -2759,6 +2777,34 @@ mod tests {
         assert!(Cli::try_parse_from(["stockwise", "mf", "history", "1", "-p", "3x"]).is_err());
         assert!(Cli::try_parse_from(["stockwise", "mf", "screen", "--sort", "2y"]).is_err());
         assert!(Cli::try_parse_from(["stockwise", "mf"]).is_err());
+
+        let cli = Cli::try_parse_from([
+            "stockwise",
+            "mf",
+            "screen",
+            "elss",
+            "--sort",
+            "ter",
+            "--max-ter",
+            "0.9%",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Mf {
+                action: MfCmd::Screen { sort, max_ter, .. },
+            } => {
+                assert!(matches!(sort, MfSort::Ter));
+                assert_eq!(max_ter, Some(0.9));
+            }
+            _ => panic!("expected mf screen"),
+        }
+        for bad in ["0", "-1", "9", "x"] {
+            assert!(
+                Cli::try_parse_from(["stockwise", "mf", "screen", "elss", "--max-ter", bad])
+                    .is_err(),
+                "--max-ter {bad}"
+            );
+        }
     }
 
     #[test]
