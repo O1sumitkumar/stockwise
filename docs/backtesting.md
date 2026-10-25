@@ -330,7 +330,8 @@ smallest complete one, in WebAssembly text.
   10 million for a `stockwise_on_bar` call, 50 million for instantiation
   and each setup call. An endless loop stops with an error at the first bar.
 - **Memory.** 64 MB of linear memory per instance, one memory, plugin files
-  up to 16 MB, wasmi's strict limits on module size.
+  up to 16 MB, and wasmi's strict limits on module structure (functions,
+  globals, tables, data segments).
 - **Errors, not crashes.** A trap (a Rust panic, an out-of-bounds access,
   division by zero, stack overflow), running out of fuel or memory, or a
   return value outside the ABI ends the command with exit code 1 and a
@@ -409,9 +410,12 @@ does this).
 Plugins run in [wasmi](https://github.com/wasmi-labs/wasmi) 2.x, a pure-Rust
 WebAssembly interpreter. It was chosen over wasmtime because:
 
-- **Size and build time.** wasmi adds about 1 MB to the release binary and
-  compiles in seconds; wasmtime (with Cranelift) adds several MB and minutes
-  of compile time and a much larger dependency tree.
+- **Size and build time.** With the feature, the release binary grows by
+  2.4 MB (12.9 → 15.3 MB on aarch64 macOS): 1.5 MB for wasmi and 0.9 MB for
+  the WAT text parser. Its crates add about 35 s of CPU time to a release
+  build, mostly in parallel with the rest. wasmtime with Cranelift is several
+  times larger, slower to compile, and pulls in a much bigger dependency
+  tree.
 - **MSRV.** wasmi 2.0 builds on Rust 1.86, inside StockWise's 1.88; the
   current wasmtime needs a newer compiler than the project supports.
 - **Limits.** wasmi meters fuel deterministically per instruction and
