@@ -730,12 +730,17 @@ pub async fn cmd_portfolio_benchmark(
     let mut bench_prices = benchmark::align(&calendar, &bench_hist.closes);
     if let Some(cur) = bench_currency.as_deref().filter(|c| *c != base) {
         let Some(fx) = fx_for(cur).await else {
+            let hint = if matches!(cur, "INR" | "USD") {
+                format!("; try --base {}", cur.to_lowercase())
+            } else {
+                String::new()
+            };
             bail!(
-                "No {}→{} exchange-rate history to compare with {}; try --base {}",
+                "No {}→{} exchange-rate history to compare with {}{}",
                 cur,
                 base,
                 bench_name,
-                cur.to_lowercase()
+                hint
             );
         };
         bench_prices = bench_prices
