@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Minimum supported Rust version is now **1.97** (was 1.88). StockWise
   supports the latest stable Rust and the two releases before it. Prebuilt
   binaries, Docker and Nix are unaffected.
+- `alert list --json/--csv` adds `period` and `description`; `alert check
+  --json/--csv` adds `period`, `description`, `value`, `reference` and the
+  status `no_data` (new CSV columns come after the old ones). Existing
+  `alerts.json` files load unchanged. Quotes carry Yahoo's
+  `regularMarketTime`.
+
 ### Added
 - Web dashboard at `/` of `stockwise serve`: indices, watchlist, portfolio
   (P&L, XIRR, allocation, INR/USD totals, sortable columns), alerts, symbol
@@ -21,6 +27,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Read-only. See [docs/server.md](docs/server.md#web-dashboard).
 - `stockwise serve --open` opens the dashboard in your browser; the startup
   log prints its address.
+- Technical alerts: `alert add SYMBOL rsi-below|rsi-above LEVEL [--period N]`,
+  `cross-above-sma|cross-below-sma|cross-above-ema|cross-below-ema DAYS`,
+  `breakout-high|breakdown-low DAYS`, `change-above|change-below PCT`,
+  `volume-spike MULTIPLE [--period N]` and `results-in DAYS`. They are
+  evaluated on daily bars (one chart request per symbol per check, updated
+  with the live quote) by `alert check`, `alert watch`, `dashboard`, the
+  `tui`, `serve` (`/api/alerts`) and `daemon longterm`; crosses fire only on
+  the crossing session, and `alert watch` notifies once per trading day.
+  `alert list` shows each condition in words. See
+  [docs/commands.md](docs/commands.md#alert-conditions).
+- `stockwise calendar [SYMBOLS] [--days 30] [--holdings|--watchlist]` —
+  upcoming results, ex-dividend and payment dates, splits and bonus issues
+  for holdings and the watchlist, sorted by date with today and the next
+  7 days marked; `--json` / `--csv`. Yahoo Finance supplies earnings and
+  dividend dates for US and Indian stocks; for `.NS` / `.BO` stocks NSE board
+  meetings and corporate actions add filed results dates, splits and bonus
+  issues (one polite session per run, cached for a day, Yahoo-only when NSE
+  refuses).
 
 ### Security
 - `serve` sends a strict Content-Security-Policy (no inline code, same-origin

@@ -137,6 +137,12 @@ pub fn tf(msg: Msg, args: &[&dyn Display]) -> String {
     fill(t(msg), args)
 }
 
+/// [`tf`] in a given language — for text that stays English whatever
+/// `--lang` says (notifications, `--json`).
+pub fn tf_in(lang: Lang, msg: Msg, args: &[&dyn Display]) -> String {
+    fill(msg.text(lang), args)
+}
+
 fn fill(template: &str, args: &[&dyn Display]) -> String {
     let mut out = template.to_string();
     for (i, arg) in args.iter().enumerate() {
@@ -189,7 +195,7 @@ messages! {
     AboutDoctor => "Check your setup: data directory, network, cache, AI, broker", "अपना सेटअप जाँचें: डेटा फ़ोल्डर, नेटवर्क, कैश, AI, ब्रोकर";
     AboutPortfolio => "Track holdings and P&L (default: show)", "होल्डिंग्स और लाभ/हानि ट्रैक करें (डिफ़ॉल्ट: दिखाएँ)";
     AboutWatch => "Manage your watchlist (default: show)", "अपनी वॉचलिस्ट संभालें (डिफ़ॉल्ट: दिखाएँ)";
-    AboutAlert => "Price alerts (default: list)", "भाव अलर्ट (डिफ़ॉल्ट: सूची)";
+    AboutAlert => "Price and technical alerts (default: list)", "भाव और तकनीकी अलर्ट (डिफ़ॉल्ट: सूची)";
     AboutCompletions => "Print a shell completion script (bash, zsh, fish, powershell, elvish)", "शेल कम्प्लीशन स्क्रिप्ट दिखाएँ (bash, zsh, fish, powershell, elvish)";
 
     // ── Markets ──
@@ -311,6 +317,46 @@ messages! {
     DoctorBrokerOrdersOff => "live orders off (read-only)", "लाइव ऑर्डर बंद (केवल देखना)";
     DoctorAngelStopGttOn => "SL/SL-M and GTT enabled", "SL/SL-M और GTT चालू";
     DoctorMarketDataDown => "Market data is unreachable", "मार्केट डेटा तक पहुँच नहीं हो पा रही";
+
+    // ── Alerts ──
+    AlertsTitle => "Alerts", "अलर्ट";
+    AlertAbove => "above {0}", "{0} से ऊपर";
+    AlertBelow => "below {0}", "{0} से नीचे";
+    AlertRsiBelow => "RSI({0}) below {1}", "RSI({0}) {1} से नीचे";
+    AlertRsiAbove => "RSI({0}) above {1}", "RSI({0}) {1} से ऊपर";
+    AlertCrossAbove => "close crosses above the {0}-day {1}", "क्लोज़ {0}-दिन के {1} को ऊपर की ओर पार करे";
+    AlertCrossBelow => "close crosses below the {0}-day {1}", "क्लोज़ {0}-दिन के {1} को नीचे की ओर पार करे";
+    AlertBreakoutHigh => "close above the previous {0}-day high", "क्लोज़ पिछले {0} दिनों के उच्चतम से ऊपर";
+    AlertBreakdownLow => "close below the previous {0}-day low", "क्लोज़ पिछले {0} दिनों के न्यूनतम से नीचे";
+    AlertChangeAbove => "day change of {0} or better", "दिन का बदलाव {0} या उससे अधिक";
+    AlertChangeBelow => "day change of {0} or worse", "दिन का बदलाव {0} या उससे कम";
+    AlertVolumeSpike => "volume {0}× its {1}-day average", "वॉल्यूम {1}-दिन के औसत का {0}×";
+    AlertResultsIn => "results due within {0} days", "{0} दिनों के भीतर नतीजे";
+
+    // ── Calendar ──
+    CalendarTitle => "Results & corporate calendar — next {0} days", "नतीजे और कॉर्पोरेट कैलेंडर — अगले {0} दिन";
+    CalDate => "Date", "तारीख";
+    CalWhen => "When", "कब";
+    CalEvent => "Event", "इवेंट";
+    CalDetails => "Details", "विवरण";
+    CalSource => "Source", "स्रोत";
+    CalToday => "today", "आज";
+    CalTomorrow => "tomorrow", "कल";
+    CalInDays => "in {0} days", "{0} दिन में";
+    CalEstimated => "estimated", "अनुमानित";
+    CalThisWeek => "{0} event(s) in the next 7 days", "अगले 7 दिनों में {0} इवेंट";
+    CalNoEvents => "No results, dividends or splits in the next {0} days for {1} symbol(s).", "अगले {0} दिनों में {1} सिंबल के लिए कोई नतीजे, डिविडेंड या स्प्लिट नहीं।";
+    CalNoSymbols => "Nothing to look up — add holdings or watchlist symbols, or name them: `stockwise calendar TCS INFY`.", "देखने के लिए कुछ नहीं — होल्डिंग या वॉचलिस्ट में सिंबल जोड़ें, या नाम दें: `stockwise calendar TCS INFY`।";
+    CalSources => "Source: Yahoo Finance (results, ex-dividend and payment dates).", "स्रोत: Yahoo Finance (नतीजे, एक्स-डिविडेंड और भुगतान की तारीखें)।";
+    CalSourcesNse => "Indian stocks: also NSE board meetings and corporate actions (filed results dates, dividends, splits, bonus issues).", "भारतीय शेयर: NSE बोर्ड बैठकें और कॉर्पोरेट एक्शन भी (दाखिल नतीजों की तारीखें, डिविडेंड, स्प्लिट, बोनस)।";
+    EventResults => "Results", "नतीजे";
+    EventBoardMeeting => "Board meeting", "बोर्ड बैठक";
+    EventExDividend => "Ex-dividend", "एक्स-डिविडेंड";
+    EventDividendPaid => "Dividend paid", "डिविडेंड भुगतान";
+    EventSplit => "Split", "स्प्लिट";
+    EventBonus => "Bonus", "बोनस";
+    EventRights => "Rights issue", "राइट्स इश्यू";
+    EventOther => "Corporate action", "कॉर्पोरेट एक्शन";
 
     // ── Web dashboard (`serve`) ──
     ServeDashboard => "Dashboard", "डैशबोर्ड";
