@@ -120,7 +120,11 @@ impl Bond {
         let c = self.coupon_per_period();
         if n == 1 {
             // Final period: simple interest to maturity.
-            return Ok((FACE + c) / (1.0 + dsc / e * y / f));
+            let discount = 1.0 + dsc / e * y / f;
+            if discount <= 0.0 {
+                bail!("yield {ytm_pct}% is too negative to price");
+            }
+            return Ok((FACE + c) / discount);
         }
         let base = 1.0 + y / f;
         if base <= 0.0 {

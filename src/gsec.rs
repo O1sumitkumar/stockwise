@@ -268,7 +268,7 @@ pub async fn yields(timeout: Duration) -> Result<YieldSet> {
         CCIL_URL,
         "CCIL",
         YIELDS_MAX_AGE,
-        |t| t.contains("id=\"dtTable\""),
+        |t| !parse_ccil(t).is_empty(),
     )
     .await;
     let ccil_err = match ccil {
@@ -291,7 +291,7 @@ pub async fn yields(timeout: Duration) -> Result<YieldSet> {
         RBI_HOME_URL,
         "RBI",
         YIELDS_MAX_AGE,
-        |t| t.contains("Government Securities Market"),
+        |t| !parse_rbi_home(t).is_empty(),
     )
     .await;
     match rbi {
@@ -345,9 +345,16 @@ impl Security {
         if !self.name.contains("% GS ") {
             return None;
         }
-        let digits = format!("{coupon:.2}").replace('.', "");
-        let digits = digits.trim_end_matches('0');
-        Some(format!("{}GS{}", digits, self.maturity.year()))
+        // Decimal point and trailing zeros of the fraction dropped:
+        // 7.30 → 73, 7.18 → 718, 10.00 → 10.
+        let text = format!("{coupon:.2}");
+        let (int, frac) = text.split_once('.').unwrap_or((&text, ""));
+        Some(format!(
+            "{}{}GS{}",
+            int,
+            frac.trim_end_matches('0'),
+            self.maturity.year()
+        ))
     }
 }
 
@@ -384,7 +391,7 @@ pub async fn securities(timeout: Duration) -> Result<(Vec<Security>, bool)> {
         RBI_GSEC_LIST_URL,
         "RBI",
         LIST_MAX_AGE,
-        |t| t.contains("Government of India Securities outstanding"),
+        |t| !parse_rbi_list(t).is_empty(),
     )
     .await?;
     let list = parse_rbi_list(&page.text);
@@ -411,12 +418,12 @@ pub fn parse_name(query: &str) -> Option<(f64, i32)> {
         if coupon.is_empty() || !coupon.chars().all(|c| c.is_ascii_digit()) {
             return None;
         }
-        // 10.18% is "1018"; coupons from 1% to 9.99% have one integer digit.
-        let int_digits = if coupon.len() >= 3 && coupon.starts_with('1') {
-            2
-        } else {
-            1
-        };
+        // 10.18% is "1018" and 10% is "10": a leading 1 followed by 0–2 is
+        // 10–12%. Other coupons have one integer digit (7.3% is "73").
+        let two = coupon.len() >= 2
+            && coupon.starts_with('1')
+            && matches!(coupon.as_bytes()[1], b'0'..=b'2');
+        let int_digits = if two { 2 } else { 1 };
         let (int, frac) = coupon.split_at(int_digits.min(coupon.len()));
         format!("{int}.{frac}0").parse::<f64>().ok()?
     };
@@ -529,6 +536,14 @@ mod tests {
         assert_eq!(s.issue_date, date(2023, 8, 14));
         assert_eq!(s.outstanding_cr, Some(201_000.0));
         assert_eq!(s.nse_symbol().as_deref(), Some("718GS2033"));
+        // Round coupons round-trip through the NSE spelling.
+        for coupon in [7.3, 10.0, 8.0, 10.18] {
+            let mut t = s.clone();
+            t.coupon = Some(coupon);
+            t.name = format!("{coupon:.2}% GS 2033");
+            let symbol = t.nse_symbol().unwrap();
+            assert_eq!(parse_name(&symbol), Some((coupon, 2033)), "{symbol}");
+        }
         let frb = list.iter().find(|s| s.name.starts_with("FRB")).unwrap();
         assert_eq!(frb.coupon, None);
         assert_eq!(frb.nse_symbol(), None);
@@ -543,6 +558,8 @@ mod tests {
         assert_eq!(parse_name("73GS2053"), Some((7.3, 2053)));
         assert_eq!(parse_name("74GS2035"), Some((7.4, 2035)));
         assert_eq!(parse_name("1018GS2026"), Some((10.18, 2026)));
+        assert_eq!(parse_name("10GS2030"), Some((10.0, 2030)));
+        assert_eq!(parse_name("8GS2030"), Some((8.0, 2030)));
         assert_eq!(parse_name("668GS2035A"), Some((6.68, 2035)));
         assert_eq!(parse_name("7.18% GS 2033"), Some((7.18, 2033)));
         assert_eq!(parse_name("6.94 gs 2036"), Some((6.94, 2036)));

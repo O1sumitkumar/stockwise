@@ -32,7 +32,9 @@ What each row holds:
 - **Currency**: prices use the local symbol (`£`, `€`, `¥`, `HK$`, `S$`, `C$`,
   `A$`). London quotes shares in pence: prices print as `118.20p`, market caps
   (which Yahoo reports in pounds) as `£27.38B`, and portfolio totals convert
-  pence at GBP's rate ÷ 100.
+  pence at GBP's rate ÷ 100. Enter London costs in pence too
+  (`portfolio add VOD.L 100 118.2`). The bots and the simulator size positions
+  in pounds, so they refuse `-m uk` for now.
 - **Benchmarks** for `markets` (`-m uk markets` leads with the FTSE 100, FTSE
   250 and FTSE All-Share); the first one is the `markets --global` row.
 - **Sectors** where Yahoo has a usable set: TOPIX-17 sector ETFs (Japan), Hang

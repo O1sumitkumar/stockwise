@@ -16,7 +16,7 @@ pub async fn cmd_sim(
 
     match action {
         "start" => {
-            market.require_stocks("sim start")?;
+            market.require_bot_support("sim start")?;
             let capital = amount.unwrap_or(25000.0);
             let target_pct = target.unwrap_or(2.0);
             let now = chrono::Utc::now();

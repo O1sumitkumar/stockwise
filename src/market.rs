@@ -144,8 +144,11 @@ impl MarketInfo {
     /// The Yahoo symbol for a bare ticker on this exchange.
     pub fn yahoo_symbol(&self, ticker: &str) -> String {
         let ticker = ticker.trim().to_ascii_uppercase();
-        let ticker = if self.pad_digits > 0 && ticker.chars().all(|c| c.is_ascii_digit()) {
-            format!("{:0>width$}", ticker, width = self.pad_digits)
+        let numeric = !ticker.is_empty() && ticker.chars().all(|c| c.is_ascii_digit());
+        let ticker = if self.pad_digits > 0 && numeric {
+            // `00700` and `700` are both Tencent: 0700.HK.
+            let bare = ticker.trim_start_matches('0');
+            format!("{:0>width$}", bare, width = self.pad_digits)
         } else {
             ticker
         };
@@ -656,6 +659,28 @@ impl Market {
                 _ => "trades 24x5 without exchange sessions, sectors or fundamentals",
             }
         )
+    }
+
+    /// Like [`Market::require_stocks`], for the bots and the simulator: they
+    /// size positions from the capital you type, so they also need prices
+    /// in the currency's major unit (London quotes in pence).
+    pub fn require_bot_support(self, command: &str) -> anyhow::Result<()> {
+        self.require_stocks(command)?;
+        if let Some(info) = self.info()
+            && let Some(unit) = info.quote_unit
+        {
+            anyhow::bail!(
+                "`{}` sizes positions from the capital you give, and {} prices are quoted in {} \
+                 ({} / 100) — not supported for -m {} yet. Quotes, charts, technicals, \
+                 backtests and alerts work",
+                command,
+                info.short,
+                unit,
+                info.currency,
+                info.code
+            );
+        }
+        Ok(())
     }
 
     /// Like [`Market::require_stocks`], for commands built on sector
@@ -1190,6 +1215,8 @@ mod tests {
         assert_eq!(resolve_symbol("5", m(Exchange::Hk)), "0005.HK");
         assert_eq!(resolve_symbol("700", m(Exchange::Hk)), "0700.HK");
         assert_eq!(resolve_symbol("9988", m(Exchange::Hk)), "9988.HK");
+        assert_eq!(resolve_symbol("00700", m(Exchange::Hk)), "0700.HK");
+        assert_eq!(resolve_symbol("80737", m(Exchange::Hk)), "80737.HK");
         assert_eq!(resolve_symbol("d05", m(Exchange::Sg)), "D05.SI");
         assert_eq!(resolve_symbol("RY", m(Exchange::Ca)), "RY.TO");
         assert_eq!(resolve_symbol(" bhp ", m(Exchange::Au)), "BHP.AX");
@@ -1227,6 +1254,18 @@ mod tests {
                 .is_ok()
         );
         assert!(Market::In.require_sectors("rotation").is_ok());
+        // Bots size positions in pounds; London quotes in pence.
+        let err = Market::Global(Exchange::Uk)
+            .require_bot_support("intraday")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("GBp") && err.contains("-m uk"), "{err}");
+        assert!(
+            Market::Global(Exchange::Jp)
+                .require_bot_support("intraday")
+                .is_ok()
+        );
+        assert!(Market::Crypto.require_bot_support("daemon").is_err());
     }
 
     #[test]

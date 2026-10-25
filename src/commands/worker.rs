@@ -10,7 +10,7 @@ use std::time::Duration;
 
 pub async fn cmd_daemon(mode: &str, amount: Option<f64>, market: Market) -> Result<()> {
     // Both loops follow exchange sessions; crypto and FX have none.
-    market.require_stocks("daemon")?;
+    market.require_bot_support("daemon")?;
     let csym = market.currency_symbol();
 
     match mode {

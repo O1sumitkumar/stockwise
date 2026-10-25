@@ -45,7 +45,9 @@ indices or ETFs, which Yahoo has for Japan (TOPIX-17 ETFs), Hong Kong, Canada
 and Australia only. Sessions, lunch breaks, half days and holidays come from
 each exchange's calendar ([markets.md](markets.md)). `tax` has rules for India,
 the US and the UK only, and names the other listings it leaves out. Backtest
-costs default to the US model outside India.
+costs default to the US model outside India. The bots and the simulator
+(`intraday`, `longterm`, `daemon`, `sim start`, `report`) size positions from
+the capital you type, so they refuse `-m uk`, whose prices are in pence.
 
 **Commodities** (`-m commodity`): `GOLD`/`SILVER` resolve to COMEX futures, so
 `history gold`, `chart silver`, `technical gold` and `alert add gold above
