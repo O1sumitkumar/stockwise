@@ -9,8 +9,8 @@ use super::app::{self, AppConfig, Needs};
 use super::http::{self, unknown_state};
 use super::secrets::Secret;
 use super::{
-    Broker, BrokerKind, Gtt, GttRequest, Holding, Instrument, Order, OrderAck, OrderKind,
-    OrderRequest, Position,
+    Broker, BrokerKind, Endpoint, Gtt, GttRequest, Holding, Instrument, Order, OrderAck, OrderKind,
+    OrderRequest, Position, Profile, Shape, Trade,
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -248,7 +248,90 @@ fn order(o: &Value) -> Option<Order> {
         trigger: http::price(o.get("trigger_price")),
         status: http::text(o.get("status")),
         message: http::text(o.get("status_message")),
+        filled_qty: http::num(o.get("filled_quantity")),
+        avg_price: http::price(o.get("average_price")),
+        product: http::text(o.get("product")),
     })
+}
+
+fn trade(t: &Value) -> Option<Trade> {
+    let sym = http::text(t.get("tradingsymbol"))?;
+    let stamp = http::text(
+        t.get("fill_timestamp")
+            .or_else(|| t.get("exchange_timestamp"))
+            .or_else(|| t.get("order_timestamp")),
+    );
+    let (date, time) = super::split_timestamp(stamp.as_deref());
+    Some(Trade {
+        trade_id: http::text(t.get("trade_id")),
+        order_id: http::text(t.get("order_id"))?,
+        symbol: super::strip_series(&sym).to_string(),
+        exchange: http::text(t.get("exchange")),
+        product: http::text(t.get("product")),
+        side: super::side_from(http::text(t.get("transaction_type")).as_deref()),
+        qty: http::num(t.get("quantity")).unwrap_or(0.0),
+        price: http::price(t.get("average_price")),
+        date,
+        time,
+    })
+}
+
+fn profile(p: &Value) -> Profile {
+    let list = |k: &str| {
+        p.get(k)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|v| http::text(Some(v))).collect())
+            .unwrap_or_default()
+    };
+    Profile {
+        user_id: http::text(p.get("user_id")),
+        exchanges: list("exchanges"),
+        products: list("products"),
+    }
+}
+
+/// Fields read from each endpoint, and the ones Kite's docs list.
+fn shape(endpoint: Endpoint) -> Shape {
+    match endpoint {
+        Endpoint::Profile => Shape {
+            required: "user_id exchanges products",
+            documented: "user_type email user_name user_shortname broker order_types avatar_url \
+                meta",
+        },
+        Endpoint::Holdings => Shape {
+            required: "tradingsymbol quantity average_price last_price",
+            documented: "exchange instrument_token isin product price used_quantity t1_quantity \
+                realised_quantity authorised_quantity authorised_date authorisation \
+                opening_quantity short_quantity collateral_quantity collateral_type discrepancy \
+                close_price pnl day_change day_change_percentage mtf",
+        },
+        Endpoint::Positions => Shape {
+            required: "tradingsymbol quantity",
+            documented: "exchange instrument_token product overnight_quantity multiplier \
+                average_price close_price last_price value pnl m2m unrealised realised \
+                buy_quantity buy_price buy_value buy_m2m sell_quantity sell_price sell_value \
+                sell_m2m day_buy_quantity day_buy_price day_buy_value day_sell_quantity \
+                day_sell_price day_sell_value",
+        },
+        Endpoint::Orders => Shape {
+            required: "order_id tradingsymbol transaction_type status quantity",
+            documented: "placed_by account_id exchange_order_id parent_order_id status_message \
+                status_message_raw order_timestamp exchange_update_timestamp exchange_timestamp \
+                variety modified exchange instrument_token order_type validity validity_ttl \
+                product disclosed_quantity price trigger_price average_price filled_quantity \
+                pending_quantity cancelled_quantity market_protection meta tag tags guid \
+                auction_number",
+        },
+        Endpoint::Trades => Shape {
+            required: "trade_id order_id exchange tradingsymbol product average_price quantity \
+                transaction_type fill_timestamp",
+            documented: "instrument_token exchange_order_id order_timestamp exchange_timestamp",
+        },
+        Endpoint::Gtts => Shape {
+            required: "id status condition orders",
+            documented: "user_id parent_trigger type created_at updated_at expires_at meta",
+        },
+    }
 }
 
 fn gtt(t: &Value) -> Option<Gtt> {
@@ -362,19 +445,48 @@ impl Broker for KiteClient {
     }
 
     async fn holdings(&self) -> Result<Vec<Holding>> {
-        let v = self.get("/portfolio/holdings", "holdings").await?;
-        Ok(Self::list(v).iter().filter_map(holding).collect())
+        let rows = self.rows(Endpoint::Holdings).await?;
+        Ok(rows.iter().filter_map(holding).collect())
     }
 
     async fn positions(&self) -> Result<Vec<Position>> {
-        let v = self.get("/portfolio/positions", "positions").await?;
-        let net = v.get("net").cloned().unwrap_or(Value::Null);
-        Ok(Self::list(net).iter().filter_map(position).collect())
+        let rows = self.rows(Endpoint::Positions).await?;
+        Ok(rows.iter().filter_map(position).collect())
     }
 
     async fn orders(&self) -> Result<Vec<Order>> {
-        let v = self.get("/orders", "order book").await?;
-        Ok(Self::list(v).iter().filter_map(order).collect())
+        let rows = self.rows(Endpoint::Orders).await?;
+        Ok(rows.iter().filter_map(order).collect())
+    }
+
+    async fn profile(&self) -> Result<Profile> {
+        let v = self.get("/user/profile", "profile").await?;
+        Ok(profile(&v))
+    }
+
+    /// Today's fills; Kite's trade book has no history.
+    async fn trades(&self, _since: Option<chrono::NaiveDate>) -> Result<Vec<Trade>> {
+        let rows = self.rows(Endpoint::Trades).await?;
+        Ok(rows.iter().filter_map(trade).collect())
+    }
+
+    async fn rows(&self, endpoint: Endpoint) -> Result<Vec<Value>> {
+        let what = endpoint.label();
+        Ok(match endpoint {
+            Endpoint::Profile => vec![self.get("/user/profile", what).await?],
+            Endpoint::Holdings => Self::list(self.get("/portfolio/holdings", what).await?),
+            Endpoint::Positions => {
+                let v = self.get("/portfolio/positions", what).await?;
+                Self::list(v.get("net").cloned().unwrap_or(Value::Null))
+            }
+            Endpoint::Orders => Self::list(self.get("/orders", what).await?),
+            Endpoint::Trades => Self::list(self.get("/trades", what).await?),
+            Endpoint::Gtts => Self::list(self.get("/gtt/triggers", what).await?),
+        })
+    }
+
+    fn shape(&self, endpoint: Endpoint) -> Option<Shape> {
+        Some(shape(endpoint))
     }
 
     async fn resolve_instrument(&self, symbol: &str, exchange: &str) -> Result<Instrument> {
@@ -422,8 +534,8 @@ impl Broker for KiteClient {
     }
 
     async fn gtt_list(&self) -> Result<Vec<Gtt>> {
-        let v = self.get("/gtt/triggers", "GTT list").await?;
-        Ok(Self::list(v).iter().filter_map(gtt).collect())
+        let rows = self.rows(Endpoint::Gtts).await?;
+        Ok(rows.iter().filter_map(gtt).collect())
     }
 
     async fn gtt_cancel(&self, id: &str) -> Result<()> {
@@ -720,5 +832,68 @@ mod tests {
         );
         // The secret itself never goes over the wire.
         assert!(!req.body.contains("kitesecret"));
+    }
+
+    fn all_fixtures() -> Vec<Route> {
+        vec![
+            Route::json(
+                "GET",
+                "/user/profile",
+                include_str!("fixtures/kite_profile.json"),
+            ),
+            Route::json(
+                "GET",
+                "/portfolio/holdings",
+                include_str!("fixtures/kite_holdings.json"),
+            ),
+            Route::json(
+                "GET",
+                "/portfolio/positions",
+                include_str!("fixtures/kite_positions.json"),
+            ),
+            Route::json("GET", "/orders", include_str!("fixtures/kite_orders.json")),
+            Route::json("GET", "/trades", include_str!("fixtures/kite_trades.json")),
+            Route::json(
+                "GET",
+                "/gtt/triggers",
+                include_str!("fixtures/kite_gtt_list.json"),
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn trade_book_parses_partial_fills_and_products() {
+        let (_s, c) = client(all_fixtures()).await;
+        let t = c.trades(None).await.unwrap();
+        assert_eq!(t.len(), 5);
+        // One order filled in two parts.
+        assert_eq!((t[0].order_id.as_str(), t[0].qty), ("200000000000000", 4.0));
+        assert_eq!((t[1].order_id.as_str(), t[1].qty), ("200000000000000", 6.0));
+        assert_eq!(t[1].trade_id.as_deref(), Some("10000001"));
+        assert_eq!(t[1].price, Some(1510.0));
+        assert_eq!(t[0].date, chrono::NaiveDate::from_ymd_opt(2026, 10, 20));
+        assert_eq!(t[0].time.as_deref(), Some("09:16:39"));
+        assert_eq!(t[2].side, Some(Side::Sell));
+        // CNC cash equity only: not MIS, not F&O.
+        let delivery: Vec<bool> = t.iter().map(Trade::is_delivery_equity).collect();
+        assert_eq!(delivery, [true, true, true, false, false]);
+    }
+
+    #[tokio::test]
+    async fn profile_and_order_fill_fields() {
+        let (_s, c) = client(all_fixtures()).await;
+        let p = c.profile().await.unwrap();
+        assert_eq!(p.user_id.as_deref(), Some("XX0042"));
+        assert!(p.exchanges.contains(&"NSE".to_string()));
+        assert!(p.products.contains(&"CNC".to_string()));
+        let o = c.orders().await.unwrap();
+        assert_eq!((o[0].filled_qty, o[0].avg_price), (Some(1.0), Some(109.4)));
+        assert_eq!(o[0].product.as_deref(), Some("CNC"));
+    }
+
+    #[tokio::test]
+    async fn fixtures_match_the_documented_shape() {
+        let (_s, c) = client(all_fixtures()).await;
+        crate::brokers::mock::assert_fixture_shapes(&c, &Endpoint::ALL).await;
     }
 }

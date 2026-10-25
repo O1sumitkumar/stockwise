@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `stockwise trade selftest [--broker NAME] [--redact-amounts] [--json]` — a
+  strictly read-only check of a broker integration against your own account:
+  login / session, profile, holdings, positions, order book, trade book, GTT
+  list, exact instrument lookup for RELIANCE, TCS and NIFTYBEES, a 1-share
+  LIMIT buy run through every order check without being sent, and
+  response-shape checks (missing and new field names, never values). Prints a
+  redacted Markdown report for a GitHub issue: no credentials or tokens, the
+  account id cut to its last 2 characters, e-mails and long numbers masked in
+  error messages, amounts hidden with `--redact-amounts`. The session is
+  wrapped so that every order, GTT or cancel call fails before reaching the
+  broker. See [Help verify a broker](docs/brokers.md#help-verify-a-broker).
+- Community testing kit: a "Broker test report" issue template, a
+  verification-status table per broker in docs/brokers.md, and the criteria for
+  dropping the experimental label (3 independent self-test reports plus one
+  small live order a tester chose to place themselves).
+- `stockwise trade sync [--since DATE] [--apply] [--notify] [--json]` — pulls
+  the broker's executed trades into the lot-based portfolio: delivery buys
+  become dated lots (fill date, average fill price, broker order id), sells
+  come out FIFO as realized sales. Previews by default; `--apply` writes.
+  Idempotent: applied fills are remembered by broker trade id, so re-running,
+  or syncing the rest of a partly filled order, never double-counts. Intraday,
+  margin and F&O fills are skipped; open and partly filled orders are listed;
+  quantities are compared with the broker's holdings. Dhan reads older fills
+  with `--since`; the other brokers return today's trades only.
+- `trade gtt list` shows what changed since the last look (triggered,
+  cancelled, expired, no longer listed), with `--notify` to send the changes
+  to your notification channels and `--json`. `trade sync --apply` tracks the
+  same changes.
+- `Broker` trait: `profile`, `trades` (trade book), raw read-only `rows` and
+  per-endpoint response shapes for all five brokers; order-book rows now carry
+  filled quantity, average price and product. Experimental on Zerodha, Upstox,
+  Dhan and Fyers like the rest of those integrations — the new endpoints were
+  built from the brokers' public docs and tested against fixtures only.
+- Portfolio lots and realized sales record the broker order id they came
+  from (`order_id`); the portfolio file keeps the list of synced fills
+  (`broker_fills`). Older files load unchanged.
+
 ## [0.4.0] - 2026-10-21
 
 Everything on the 0.3 roadmap: new markets and asset classes, a lot-based

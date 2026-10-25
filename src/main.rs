@@ -1060,6 +1060,29 @@ enum TradeCmd {
         #[command(subcommand)]
         action: GttCmd,
     },
+    /// Read-only check of the broker integration against your account; prints a
+    /// redacted report to paste into a GitHub issue (never places an order)
+    Selftest {
+        /// Hide prices and order values in the report
+        #[arg(long)]
+        redact_amounts: bool,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Pull today's executed trades (and GTT status) into the portfolio: preview, then --apply
+    Sync {
+        /// Ignore fills before this date (YYYY-MM-DD); Dhan also fetches its trade history
+        #[arg(long, value_name = "DATE")]
+        since: Option<String>,
+        /// Write the changes into the portfolio (default: preview only)
+        #[arg(long)]
+        apply: bool,
+        /// Notify (Telegram/Slack/Discord/email) about GTT changes and synced orders
+        #[arg(long)]
+        notify: bool,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1092,9 +1115,15 @@ enum GttCmd {
         #[command(flatten)]
         flags: OrderFlags,
     },
-    /// Your GTT orders
+    /// Your GTT orders, with status changes since the last look
     #[command(alias = "show")]
-    List,
+    List {
+        /// Notify (Telegram/Slack/Discord/email) about GTTs that triggered or were cancelled
+        #[arg(long)]
+        notify: bool,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
     /// Cancel a GTT by id (asks for confirmation)
     Cancel {
         /// GTT id from `trade gtt list`
@@ -2055,11 +2084,32 @@ async fn main() {
                         limit,
                         flags,
                     } => gtt(Side::Sell, symbol, qty, trigger, limit, flags),
-                    GttCmd::List => A::GttList,
+                    GttCmd::List { notify, out } => A::GttList {
+                        notify,
+                        format: out.into(),
+                    },
                     GttCmd::Cancel { id, flags } => A::GttCancel {
                         id,
                         opts: flags.into(),
                     },
+                },
+                TradeCmd::Selftest {
+                    redact_amounts,
+                    out,
+                } => A::Selftest {
+                    redact_amounts,
+                    format: out.into(),
+                },
+                TradeCmd::Sync {
+                    since,
+                    apply,
+                    notify,
+                    out,
+                } => A::Sync {
+                    since,
+                    apply,
+                    notify,
+                    format: out.into(),
                 },
             };
             commands::cmd_trade(broker, action, m).await
@@ -2845,6 +2895,62 @@ mod tests {
             Cli::try_parse_from(["stockwise", "trade", "--broker", "robinhood", "holdings"])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn trade_selftest_sync_and_gtt_list_flags_parse() {
+        for args in [
+            vec!["stockwise", "trade", "selftest"],
+            vec![
+                "stockwise",
+                "trade",
+                "selftest",
+                "--broker",
+                "dhan",
+                "--json",
+            ],
+            vec!["stockwise", "trade", "selftest", "--redact-amounts"],
+            vec!["stockwise", "trade", "sync", "--broker", "zerodha"],
+            vec![
+                "stockwise",
+                "trade",
+                "sync",
+                "--since",
+                "2026-10-01",
+                "--apply",
+            ],
+            vec![
+                "stockwise",
+                "trade",
+                "sync",
+                "--apply",
+                "--notify",
+                "--json",
+            ],
+            vec!["stockwise", "trade", "gtt", "list", "--notify", "--json"],
+            vec!["stockwise", "trade", "gtt", "show"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
+        }
+        // Selftest never takes order flags.
+        assert!(Cli::try_parse_from(["stockwise", "trade", "selftest", "--yes"]).is_err());
+        let cli =
+            Cli::try_parse_from(["stockwise", "trade", "sync", "--since", "2026-10-01"]).unwrap();
+        let Commands::Trade {
+            action:
+                TradeCmd::Sync {
+                    since,
+                    apply,
+                    notify,
+                    ..
+                },
+            ..
+        } = cli.command
+        else {
+            panic!("expected trade sync");
+        };
+        assert_eq!(since.as_deref(), Some("2026-10-01"));
+        assert!(!apply && !notify, "sync previews by default");
     }
 
     #[test]

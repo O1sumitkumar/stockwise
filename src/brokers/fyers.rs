@@ -9,8 +9,8 @@ use super::app::{self, AppConfig, Needs};
 use super::http::{self, unknown_state};
 use super::secrets::Secret;
 use super::{
-    Broker, BrokerKind, Gtt, GttRequest, Holding, Instrument, Order, OrderAck, OrderKind,
-    OrderRequest, Position, Side,
+    Broker, BrokerKind, Endpoint, Gtt, GttRequest, Holding, Instrument, Order, OrderAck, OrderKind,
+    OrderRequest, Position, Profile, Shape, Side, Trade,
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -274,7 +274,86 @@ fn order(o: &Value) -> Option<Order> {
         trigger: http::price(o.get("stopPrice")),
         status: status_name(http::num(o.get("status"))),
         message: http::text(o.get("message")),
+        filled_qty: http::num(o.get("filledQty")),
+        avg_price: http::price(o.get("tradedPrice")),
+        product: http::text(o.get("productType")),
     })
+}
+
+/// Segment code of the capital market (cash equity).
+const SEGMENT_CM: i64 = 10;
+
+fn trade(t: &Value) -> Option<Trade> {
+    let (symbol, exchange) = split_ticker(&http::text(t.get("symbol"))?);
+    // Only capital-market fills keep a plain NSE/BSE exchange.
+    let exchange = match http::num(t.get("segment")).map(|s| s as i64) {
+        Some(SEGMENT_CM) | None => exchange,
+        Some(seg) => Some(format!("{}:{seg}", exchange.unwrap_or_default())),
+    };
+    let (date, time) = super::split_timestamp(http::text(t.get("orderDateTime")).as_deref());
+    Some(Trade {
+        trade_id: http::text(t.get("tradeNumber")),
+        order_id: http::text(t.get("orderNumber"))?,
+        symbol,
+        exchange,
+        product: http::text(t.get("productType")),
+        side: side_name(t.get("side")).and_then(|s| super::side_from(Some(&s))),
+        qty: http::num(t.get("tradedQty")).unwrap_or(0.0),
+        price: http::price(t.get("tradePrice")),
+        date,
+        time,
+    })
+}
+
+fn profile(p: &Value) -> Profile {
+    Profile {
+        user_id: http::text(p.get("fy_id")),
+        exchanges: Vec::new(),
+        products: Vec::new(),
+    }
+}
+
+/// Fields read from each endpoint, and the ones Fyers's docs list.
+fn shape(endpoint: Endpoint) -> Shape {
+    match endpoint {
+        Endpoint::Profile => Shape {
+            required: "fy_id",
+            documented: "name display_name image email_id pan PAN pin_change_date pwd_change_date \
+                mobile_number totp pwd_to_expire ddpi_enabled mtf_enabled",
+        },
+        Endpoint::Holdings => Shape {
+            required: "symbol remainingQuantity|quantity costPrice ltp",
+            documented: "holdingType marketVal pl id fyToken exchange segment isin qty_t1 \
+                remainingPledgeQuantity collateralQuantity",
+        },
+        Endpoint::Positions => Shape {
+            required: "symbol netQty",
+            documented: "qty avgPrice netAvg side productType realized_profit unrealized_profit \
+                pl ltp buyQty buyAvg buyVal sellQty sellAvg sellVal slNo fyToken crossCurrency \
+                rbiRefRate qtyMulti_com segment id cfBuyQty cfSellQty dayBuyQty daySellQty \
+                exchange",
+        },
+        Endpoint::Orders => Shape {
+            required: "id symbol side type status qty",
+            documented: "clientId exchange fyToken id_fyers offlineOrder source pan limitPrice \
+                productType disclosedQty remainingQuantity segment description ex_sym \
+                orderDateTime orderValidity stopPrice tradedPrice filledQty exchOrdId message ch \
+                chp lp slNo orderNumStatus instrument orderTag parentId takeProfit stopLoss",
+        },
+        Endpoint::Trades => Shape {
+            required: "tradeNumber orderNumber symbol segment side productType tradedQty \
+                tradePrice orderDateTime",
+            documented: "clientId exchangeOrderNo exchange orderType fyToken tradeValue row \
+                orderTag",
+        },
+        Endpoint::Gtts => Shape {
+            required: "id symbol tran_side qty price_trigger price_limit",
+            documented: "clientId exchange fy_token id_fyers instrument lot_size multiplier \
+                ord_status precision price2_limit price2_trigger product_type qty2 report_type \
+                segment symbol_desc symbol_exch tick_size gtt_oco_ind create_time \
+                create_time_epoch oms_msg ltp ltp_ch ltp_chp",
+        },
+    }
 }
 
 fn gtt(g: &Value) -> Option<Gtt> {
@@ -386,27 +465,49 @@ impl Broker for FyersClient {
     }
 
     async fn holdings(&self) -> Result<Vec<Holding>> {
-        let v = self.get("/holdings", "holdings").await?;
-        Ok(Self::list(&v, "holdings")
-            .iter()
-            .filter_map(holding)
-            .collect())
+        let raw = self.rows(Endpoint::Holdings).await?;
+        Ok(raw.iter().filter_map(holding).collect())
     }
 
     async fn positions(&self) -> Result<Vec<Position>> {
-        let v = self.get("/positions", "positions").await?;
-        Ok(Self::list(&v, "netPositions")
-            .iter()
-            .filter_map(position)
-            .collect())
+        let raw = self.rows(Endpoint::Positions).await?;
+        Ok(raw.iter().filter_map(position).collect())
     }
 
     async fn orders(&self) -> Result<Vec<Order>> {
-        let v = self.get("/orders", "order book").await?;
-        Ok(Self::list(&v, "orderBook")
-            .iter()
-            .filter_map(order)
-            .collect())
+        let raw = self.rows(Endpoint::Orders).await?;
+        Ok(raw.iter().filter_map(order).collect())
+    }
+
+    async fn profile(&self) -> Result<Profile> {
+        let raw = self.rows(Endpoint::Profile).await?;
+        Ok(raw.first().map(profile).unwrap_or_default())
+    }
+
+    /// Today's fills; Fyers's trade book has no history.
+    async fn trades(&self, _since: Option<chrono::NaiveDate>) -> Result<Vec<Trade>> {
+        let raw = self.rows(Endpoint::Trades).await?;
+        Ok(raw.iter().filter_map(trade).collect())
+    }
+
+    async fn rows(&self, endpoint: Endpoint) -> Result<Vec<Value>> {
+        let what = endpoint.label();
+        let (path, key) = match endpoint {
+            Endpoint::Profile => {
+                let v = self.get("/profile", what).await?;
+                return Ok(v.get("data").cloned().into_iter().collect());
+            }
+            Endpoint::Holdings => ("/holdings", "holdings"),
+            Endpoint::Positions => ("/positions", "netPositions"),
+            Endpoint::Orders => ("/orders", "orderBook"),
+            Endpoint::Trades => ("/tradebook", "tradeBook"),
+            Endpoint::Gtts => ("/gtt/orders", "orderBook"),
+        };
+        Ok(Self::list(&self.get(path, what).await?, key))
+    }
+
+    fn shape(&self, endpoint: Endpoint) -> Option<Shape> {
+        Some(shape(endpoint))
     }
 
     async fn resolve_instrument(&self, symbol: &str, exchange: &str) -> Result<Instrument> {
@@ -451,8 +552,8 @@ impl Broker for FyersClient {
     }
 
     async fn gtt_list(&self) -> Result<Vec<Gtt>> {
-        let v = self.get("/gtt/orders", "GTT list").await?;
-        Ok(Self::list(&v, "orderBook").iter().filter_map(gtt).collect())
+        let raw = self.rows(Endpoint::Gtts).await?;
+        Ok(raw.iter().filter_map(gtt).collect())
     }
 
     async fn gtt_cancel(&self, id: &str) -> Result<()> {
@@ -665,5 +766,67 @@ mod tests {
         let req = server.last("POST", "/validate-authcode");
         assert_eq!(req.json()["appIdHash"], app_id_hash(&config));
         assert!(!req.body.contains("very-secret"));
+    }
+
+    fn read_routes() -> Vec<Route> {
+        vec![
+            Route::json(
+                "GET",
+                "/profile",
+                include_str!("fixtures/fyers_profile.json"),
+            ),
+            Route::json(
+                "GET",
+                "/holdings",
+                include_str!("fixtures/fyers_holdings.json"),
+            ),
+            Route::json("GET", "/orders", include_str!("fixtures/fyers_orders.json")),
+            Route::json(
+                "GET",
+                "/tradebook",
+                include_str!("fixtures/fyers_trades.json"),
+            ),
+            Route::json(
+                "GET",
+                "/gtt/orders",
+                include_str!("fixtures/fyers_gtt_list.json"),
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn trade_book_maps_codes_and_segments() {
+        let (_s, c) = client(read_routes()).await;
+        let t = c.trades(None).await.unwrap();
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].symbol, "SBIN");
+        assert_eq!(t[0].exchange.as_deref(), Some("NSE"));
+        assert_eq!(t[0].side, Some(Side::Buy));
+        assert_eq!((t[0].qty, t[0].price), (3.0, Some(540.6)));
+        assert_eq!(t[0].trade_id.as_deref(), Some("1000001"));
+        assert_eq!(t[0].date, chrono::NaiveDate::from_ymd_opt(2026, 10, 20));
+        assert!(t[0].is_delivery_equity());
+        // Segment 11 is F&O.
+        assert_eq!(t[1].exchange.as_deref(), Some("NSE:11"));
+        assert_eq!(t[1].side, Some(Side::Sell));
+        assert!(!t[1].is_delivery_equity());
+        let p = c.profile().await.unwrap();
+        assert_eq!(p.user_id.as_deref(), Some("XX00042"));
+    }
+
+    #[tokio::test]
+    async fn fixtures_match_the_documented_shape() {
+        let (_s, c) = client(read_routes()).await;
+        crate::brokers::mock::assert_fixture_shapes(
+            &c,
+            &[
+                Endpoint::Profile,
+                Endpoint::Holdings,
+                Endpoint::Orders,
+                Endpoint::Trades,
+                Endpoint::Gtts,
+            ],
+        )
+        .await;
     }
 }

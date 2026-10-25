@@ -24,6 +24,8 @@ src/
     worker.rs        daemon intraday / longterm loops
     alerting.rs      alert watch loop, notify status/test
     trade.rs         Live orders for every broker: place_live_order (validation, preview, cap, confirmation)
+    broker_selftest.rs  trade selftest: read-only checks + redacted report for broker test reports
+    broker_sync.rs   trade sync (trade book → lots/sales, idempotent) and trade gtt list status changes
     interfaces.rs    tui and serve (behind the `tui` / `server` cargo features)
   views.rs           Data behind quote/history/markets/portfolio/watchlist/alerts as structs,
                      shared by the CLI printers, the TUI and the server; `DataSource` trait
@@ -40,7 +42,9 @@ src/
   providers/         MarketData trait + opt-in Alpha Vantage, Massive (Polygon), Twelve Data; Yahoo fills gaps
   i18n.rs            Typed English/Hindi message catalog, --lang / STOCKWISE_LANG / locale detection
   brokers/           Broker trait + clients: angel (SmartAPI, TOTP), zerodha, upstox, dhan, fyers
-                     (experimental), secrets.rs (OS keyring / owner-only file), mock.rs (test HTTP server)
+                     (experimental), secrets.rs (OS keyring / owner-only file), mock.rs (test HTTP server),
+                     readonly.rs (session wrapper that refuses every order/GTT/cancel), gtt_watch.rs
+                     (GTT status changes between looks), per-endpoint response shapes for selftest
   funds.rs           AMFI NAV file + api.mfapi.in history (cached), returns, SIP, ETF holdings overlap
   derivatives.rs     Option chains from NSE / Yahoo, PCR, max pain, per-contract IV and greeks
   greeks.rs          Black-Scholes pricing, greeks, implied-volatility solver

@@ -1,0 +1,20 @@
+{
+  "s": "ok",
+  "code": 200,
+  "message": "",
+  "data": {
+    "name": "TEST USER",
+    "display_name": null,
+    "fy_id": "XX00042",
+    "image": null,
+    "email_id": "tester@example.com",
+    "pan": "XXXXX0000X",
+    "pin_change_date": "",
+    "pwd_change_date": null,
+    "mobile_number": "0000000000",
+    "totp": true,
+    "pwd_to_expire": 90,
+    "ddpi_enabled": false,
+    "mtf_enabled": false
+  }
+}

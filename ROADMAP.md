@@ -45,8 +45,12 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
   publishing them needs the tap repository and package submissions
 - 🛠️ Hindi for every command (today: help groups, `quote`, `markets`, `dashboard`,
   `portfolio`, `search`, `doctor`)
-- 📋 Broker integrations verified against live accounts — community testers wanted for
+- 🛠️ Broker integrations verified against live accounts — community testers wanted for
   Zerodha, Upstox, Dhan and Fyers before the "experimental" label comes off
+  - ✅ Testing kit: `stockwise trade selftest` (read-only, redacted report), a broker test
+    report issue template, and the [verification criteria](docs/brokers.md#help-verify-a-broker)
+  - 🛠️ Reports from real accounts (3 per broker plus one small live order a tester places
+    themselves)
 - 📋 BSE options in `options chain`
 - 📋 Expense ratios for Indian mutual funds (AMFI TER disclosures) in `mf screen`
 
@@ -62,7 +66,9 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 ## 💡 Later — exploring (0.6+)
 
 - 💡 Official NSE / BSE data feeds as a data provider
-- 💡 Broker-side GTT and order-status sync into the portfolio
+- ✅ Broker-side GTT and order-status sync into the portfolio — `trade sync` (fills → lots and
+  FIFO sales, idempotent) and GTT status changes in `trade gtt list` (experimental on non-Angel
+  brokers)
 - 💡 A small web dashboard served by `stockwise serve`
 - 💡 WASM strategy plugins (TOML strategies cover most cases today)
 - 💡 Options strategy builder — payoff charts for spreads and straddles from the live chain

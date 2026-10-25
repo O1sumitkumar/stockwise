@@ -152,6 +152,25 @@ impl MockServer {
     }
 }
 
+/// Fetch every endpoint in `fixtures` through `broker.rows` and assert the
+/// rows match the broker's documented shape: every field StockWise reads is
+/// present, and no field is missing from the documented list.
+pub async fn assert_fixture_shapes(broker: &dyn super::Broker, fixtures: &[super::Endpoint]) {
+    for &ep in fixtures {
+        let rows = broker
+            .rows(ep)
+            .await
+            .unwrap_or_else(|e| panic!("{ep:?}: {e:#}"));
+        let shape = broker.shape(ep).expect("a shape for every fixture");
+        let report = super::check_shape(&rows, &shape);
+        assert!(report.rows > 0, "{ep:?}: no rows");
+        assert!(
+            report.missing.is_empty() && report.unknown.is_empty() && report.not_objects == 0,
+            "{ep:?}: {report:?}"
+        );
+    }
+}
+
 async fn read_request(sock: &mut tokio::net::TcpStream) -> Option<Request> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];

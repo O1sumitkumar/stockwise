@@ -1,0 +1,16 @@
+{
+  "status": "success",
+  "data": {
+    "user_id": "XX0042",
+    "user_type": "individual",
+    "email": "tester@example.com",
+    "user_name": "Test User",
+    "user_shortname": "Test",
+    "broker": "ZERODHA",
+    "exchanges": ["NSE", "BSE", "MF"],
+    "products": ["CNC", "NRML", "MIS", "BO", "CO"],
+    "order_types": ["MARKET", "LIMIT", "SL", "SL-M"],
+    "avatar_url": null,
+    "meta": {"demat_consent": "physical"}
+  }
+}

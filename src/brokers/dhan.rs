@@ -10,8 +10,8 @@ use super::app::{self, Needs};
 use super::http::{self, unknown_state};
 use super::secrets::Secret;
 use super::{
-    Broker, BrokerKind, Gtt, GttRequest, Holding, Instrument, Order, OrderAck, OrderKind,
-    OrderRequest, Position,
+    Broker, BrokerKind, Endpoint, Gtt, GttRequest, Holding, Instrument, Order, OrderAck, OrderKind,
+    OrderRequest, Position, Profile, Shape, Trade,
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -235,7 +235,105 @@ fn order(o: &Value) -> Option<Order> {
         trigger: http::price(o.get("triggerPrice")),
         status: http::text(o.get("orderStatus")),
         message: http::text(o.get("omsErrorDescription")),
+        filled_qty: http::num(o.get("filledQty")),
+        avg_price: http::price(o.get("averageTradedPrice")),
+        product: http::text(o.get("productType")),
     })
+}
+
+/// `NSE_EQ` → `NSE`, `BSE_EQ` → `BSE`; other segments stay as they are
+/// (and are not cash equity).
+fn plain_exchange(segment: Option<String>) -> Option<String> {
+    segment.map(|s| match s.as_str() {
+        "NSE_EQ" => "NSE".to_string(),
+        "BSE_EQ" => "BSE".to_string(),
+        _ => s,
+    })
+}
+
+fn trade(t: &Value) -> Option<Trade> {
+    let sym = http::text(t.get("tradingSymbol"))
+        .or_else(|| http::text(t.get("customSymbol")))
+        .unwrap_or_default();
+    let stamp = http::text(
+        t.get("exchangeTime")
+            .filter(|v| !v.is_null())
+            .or_else(|| t.get("createTime")),
+    )
+    .filter(|s| !s.starts_with("NA"));
+    let (date, time) = super::split_timestamp(stamp.as_deref());
+    Some(Trade {
+        trade_id: http::text(t.get("exchangeTradeId")),
+        order_id: http::text(t.get("orderId"))?,
+        symbol: super::strip_series(&sym).to_string(),
+        exchange: plain_exchange(http::text(t.get("exchangeSegment"))),
+        product: http::text(t.get("productType")),
+        side: super::side_from(http::text(t.get("transactionType")).as_deref()),
+        qty: http::num(t.get("tradedQuantity")).unwrap_or(0.0),
+        price: http::price(t.get("tradedPrice")),
+        date,
+        time,
+    })
+}
+
+fn profile(p: &Value) -> Profile {
+    let segments = http::text(p.get("activeSegment"))
+        .map(|s| {
+            s.split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    Profile {
+        user_id: http::text(p.get("dhanClientId")),
+        exchanges: segments,
+        products: Vec::new(),
+    }
+}
+
+/// Fields read from each endpoint, and the ones Dhan's docs list.
+fn shape(endpoint: Endpoint) -> Shape {
+    match endpoint {
+        Endpoint::Profile => Shape {
+            required: "dhanClientId",
+            documented: "tokenValidity activeSegment ddpi mtf dataPlan dataValidity",
+        },
+        Endpoint::Holdings => Shape {
+            required: "tradingSymbol totalQty avgCostPrice",
+            documented: "exchange securityId isin dpQty t1Qty mtf_t1_qty mtf_qty availableQty \
+                collateralQty lastTradedPrice",
+        },
+        Endpoint::Positions => Shape {
+            required: "tradingSymbol netQty",
+            documented: "dhanClientId securityId positionType exchangeSegment productType buyAvg \
+                costPrice buyQty sellAvg sellQty realizedProfit unrealizedProfit rbiReferenceRate \
+                multiplier carryForwardBuyQty carryForwardSellQty carryForwardBuyValue \
+                carryForwardSellValue dayBuyQty daySellQty dayBuyValue daySellValue drvExpiryDate \
+                drvOptionType drvStrikePrice crossCurrency",
+        },
+        Endpoint::Orders => Shape {
+            required: "orderId orderStatus transactionType quantity",
+            documented: "dhanClientId correlationId exchangeSegment productType orderType \
+                validity tradingSymbol securityId disclosedQuantity price triggerPrice \
+                afterMarketOrder boProfitValue boStopLossValue legName createTime updateTime \
+                exchangeTime drvExpiryDate drvOptionType drvStrikePrice omsErrorCode \
+                omsErrorDescription algoId remainingQuantity averageTradedPrice filledQty",
+        },
+        Endpoint::Trades => Shape {
+            required: "orderId exchangeTradeId transactionType exchangeSegment productType \
+                tradingSymbol|customSymbol tradedQuantity tradedPrice exchangeTime|createTime",
+            documented: "dhanClientId exchangeOrderId orderType securityId isin instrument \
+                sebiTax stt brokerageCharges serviceTax exchangeTransactionCharges stampDuty \
+                createTime updateTime exchangeTime drvExpiryDate drvOptionType drvStrikePrice",
+        },
+        Endpoint::Gtts => Shape {
+            required: "orderId orderStatus transactionType quantity price triggerPrice",
+            documented: "dhanClientId exchangeSegment productType orderType tradingSymbol \
+                securityId legName createTime updateTime exchangeTime drvExpiryDate drvOptionType \
+                drvStrikePrice",
+        },
+    }
 }
 
 fn gtt(g: &Value) -> Option<Gtt> {
@@ -306,6 +404,26 @@ impl DhanClient {
         })
     }
 
+    /// Trades from `from` to `to` (inclusive), page by page (from 0). An
+    /// empty page ends the walk; at most 50 pages are read.
+    async fn trade_history(
+        &self,
+        from: chrono::NaiveDate,
+        to: chrono::NaiveDate,
+    ) -> Result<Vec<Value>> {
+        let mut all = Vec::new();
+        for page in 0..50 {
+            let path = format!("/trades/{from}/{to}/{page}");
+            let rows = self.list(&path, "trade history").await?;
+            let n = rows.len();
+            all.extend(rows);
+            if n == 0 {
+                break;
+            }
+        }
+        Ok(all)
+    }
+
     async fn profile_client_id(&self) -> Result<Option<String>> {
         let v = self.get("/profile", "token check").await?;
         Ok(http::text(v.get("dhanClientId")))
@@ -359,30 +477,53 @@ impl Broker for DhanClient {
     }
 
     async fn holdings(&self) -> Result<Vec<Holding>> {
-        Ok(self
-            .list("/holdings", "holdings")
-            .await?
-            .iter()
-            .filter_map(holding)
-            .collect())
+        let raw = self.rows(Endpoint::Holdings).await?;
+        Ok(raw.iter().filter_map(holding).collect())
     }
 
     async fn positions(&self) -> Result<Vec<Position>> {
-        Ok(self
-            .list("/positions", "positions")
-            .await?
-            .iter()
-            .filter_map(position)
-            .collect())
+        let raw = self.rows(Endpoint::Positions).await?;
+        Ok(raw.iter().filter_map(position).collect())
     }
 
     async fn orders(&self) -> Result<Vec<Order>> {
-        Ok(self
-            .list("/orders", "order book")
-            .await?
-            .iter()
-            .filter_map(order)
-            .collect())
+        let raw = self.rows(Endpoint::Orders).await?;
+        Ok(raw.iter().filter_map(order).collect())
+    }
+
+    async fn profile(&self) -> Result<Profile> {
+        let raw = self.rows(Endpoint::Profile).await?;
+        Ok(raw.first().map(profile).unwrap_or_default())
+    }
+
+    /// Today's fills, plus Dhan's trade history from `since` when it is
+    /// before today.
+    async fn trades(&self, since: Option<chrono::NaiveDate>) -> Result<Vec<Trade>> {
+        let mut raw = self.rows(Endpoint::Trades).await?;
+        // History runs up to yesterday; today's fills come from /trades.
+        let yesterday = super::ist_now().date_naive().pred_opt();
+        if let (Some(from), Some(to)) = (since, yesterday)
+            && from <= to
+        {
+            raw.extend(self.trade_history(from, to).await?);
+        }
+        Ok(raw.iter().filter_map(trade).collect())
+    }
+
+    async fn rows(&self, endpoint: Endpoint) -> Result<Vec<Value>> {
+        let what = endpoint.label();
+        match endpoint {
+            Endpoint::Profile => Ok(vec![self.get("/profile", what).await?]),
+            Endpoint::Holdings => self.list("/holdings", what).await,
+            Endpoint::Positions => self.list("/positions", what).await,
+            Endpoint::Orders => self.list("/orders", what).await,
+            Endpoint::Trades => self.list("/trades", what).await,
+            Endpoint::Gtts => self.list("/forever/orders", what).await,
+        }
+    }
+
+    fn shape(&self, endpoint: Endpoint) -> Option<Shape> {
+        Some(shape(endpoint))
     }
 
     async fn resolve_instrument(&self, symbol: &str, exchange: &str) -> Result<Instrument> {
@@ -429,12 +570,8 @@ impl Broker for DhanClient {
     }
 
     async fn gtt_list(&self) -> Result<Vec<Gtt>> {
-        Ok(self
-            .list("/forever/orders", "Forever Order list")
-            .await?
-            .iter()
-            .filter_map(gtt)
-            .collect())
+        let raw = self.rows(Endpoint::Gtts).await?;
+        Ok(raw.iter().filter_map(gtt).collect())
     }
 
     async fn gtt_cancel(&self, id: &str) -> Result<()> {
@@ -639,5 +776,80 @@ BSE,E,500180,EQUITY,0,HDFCBANK,1.0,HDFC Bank,,,,5.0000,NA,ES,A,HDFC BANK LTD\n";
         assert_eq!(list[0].status.as_deref(), Some("CONFIRM"));
         c.gtt_cancel("1132208051115").await.unwrap();
         assert_eq!(server.count("DELETE", "/forever/orders/1132208051115"), 1);
+    }
+
+    fn read_routes() -> Vec<Route> {
+        vec![
+            Route::json(
+                "GET",
+                "/profile",
+                include_str!("fixtures/dhan_profile.json"),
+            ),
+            Route::json(
+                "GET",
+                "/holdings",
+                include_str!("fixtures/dhan_holdings.json"),
+            ),
+            Route::json(
+                "GET",
+                "/positions",
+                include_str!("fixtures/dhan_positions.json"),
+            ),
+            Route::json("GET", "/orders", include_str!("fixtures/dhan_orders.json")),
+            Route::json("GET", "/trades", include_str!("fixtures/dhan_trades.json")),
+            Route::json(
+                "GET",
+                "/forever/orders",
+                include_str!("fixtures/dhan_forever_list.json"),
+            ),
+            Route::json(
+                "GET",
+                "/trades/2026-10-15/2026-10-15/0",
+                include_str!("fixtures/dhan_trade_history.json"),
+            ),
+            Route::json("GET", "/trades/2026-10-15/2026-10-15/1", "[]"),
+        ]
+    }
+
+    #[tokio::test]
+    async fn trade_book_maps_segments_and_profile_parses() {
+        let (_s, c) = client(read_routes()).await;
+        let t = c.trades(None).await.unwrap();
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].symbol, "TCS");
+        assert_eq!(t[0].exchange.as_deref(), Some("NSE"));
+        assert_eq!(t[0].trade_id.as_deref(), Some("15112111182046"));
+        assert_eq!((t[0].qty, t[0].price), (2.0, Some(3345.8)));
+        assert_eq!(t[0].time.as_deref(), Some("11:20:06"));
+        assert!(t[0].is_delivery_equity());
+        assert_eq!(t[1].exchange.as_deref(), Some("NSE_FNO"));
+        assert!(!t[1].is_delivery_equity());
+        let p = c.profile().await.unwrap();
+        assert_eq!(p.user_id.as_deref(), Some("1000000042"));
+        assert!(p.exchanges.contains(&"Equity".to_string()));
+    }
+
+    #[tokio::test]
+    async fn trade_history_pages_until_empty() {
+        let (server, c) = client(read_routes()).await;
+        let rows = c
+            .trade_history(
+                chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(server.count("GET", "/trades/2026-10-15/2026-10-15/1"), 1);
+        let t = trade(&rows[0]).unwrap();
+        // "NA" create time: the exchange time is used.
+        assert_eq!(t.date, chrono::NaiveDate::from_ymd_opt(2026, 10, 15));
+        assert_eq!(t.symbol, "HDFCBANK");
+    }
+
+    #[tokio::test]
+    async fn fixtures_match_the_documented_shape() {
+        let (_s, c) = client(read_routes()).await;
+        crate::brokers::mock::assert_fixture_shapes(&c, &Endpoint::ALL).await;
     }
 }

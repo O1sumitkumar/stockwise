@@ -254,6 +254,8 @@ stockwise trade buy RELIANCE 10 --dry-run      # resolve + preview, send nothing
 stockwise trade buy RELIANCE 10                # preview, then type "yes" to send
 stockwise trade sell RELIANCE 10 --trigger 1250            # stop-loss (SL-M)
 stockwise trade holdings --broker zerodha      # also: upstox, dhan, fyers (experimental)
+stockwise trade sync --broker zerodha --apply  # today's fills → dated lots and FIFO sales
+stockwise trade selftest --broker zerodha      # read-only check; paste the report in an issue
 ```
 
 Orders resolve the exact NSE instrument, show the estimated value, respect an

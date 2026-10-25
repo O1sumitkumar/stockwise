@@ -1,0 +1,15 @@
+{
+  "status": true,
+  "message": "SUCCESS",
+  "errorcode": "",
+  "data": {
+    "clientcode": "A1000042",
+    "name": "TEST USER",
+    "email": "",
+    "mobileno": "",
+    "exchanges": ["NSE", "BSE", "NFO"],
+    "products": ["MARGIN", "MIS", "NRML", "CNC", "CO", "BO"],
+    "lastlogintime": "",
+    "brokerid": "B2C"
+  }
+}

@@ -1,0 +1,100 @@
+name: Broker test report
+description: Paste the output of `stockwise trade selftest` to help verify a broker integration
+title: "[broker test] <broker> — <pass / problems>"
+labels: ["broker-test"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing! `stockwise trade selftest` only **reads** from your account — it never
+        places, modifies or cancels an order. See
+        [Help verify a broker](https://github.com/iamsaquib8/stockwise/blob/master/docs/brokers.md#help-verify-a-broker).
+
+        **Never paste credentials, API keys, access tokens, TOTP secrets, your full client id, PAN,
+        phone number or e-mail.** The self-test report is already redacted — read it once before
+        posting anyway.
+  - type: dropdown
+    id: broker
+    attributes:
+      label: Broker
+      options:
+        - Zerodha Kite
+        - Upstox
+        - Dhan
+        - Fyers
+        - Angel One
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: StockWise version
+      description: Output of `stockwise --version`
+      placeholder: "stockwise 0.5.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed StockWise
+      options:
+        - Release binary / install script
+        - cargo install / binstall
+        - Homebrew / Scoop / winget / AUR
+        - Docker / Nix
+        - Built from source
+    validations:
+      required: false
+  - type: textarea
+    id: report
+    attributes:
+      label: Self-test report
+      description: |
+        Paste everything `stockwise trade selftest --broker <name>` printed below the
+        `<!-- Paste ... -->` line. Add `--redact-amounts` if you'd rather hide prices.
+      placeholder: "### StockWise broker self-test — Zerodha Kite (experimental)\n..."
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I ran the self-test against my own account, on today's session.
+          required: true
+        - label: I read the report and it contains no credentials, tokens, full client id, PAN, phone number or e-mail.
+          required: true
+        - label: The holdings, positions and order counts match what the broker's app shows.
+        - label: "`stockwise trade holdings --broker <name>` lists the same quantities and average prices as the app."
+        - label: "`stockwise trade gtt list --broker <name>` matches the GTTs in the app (skip for Upstox)."
+        - label: "`stockwise trade sync --broker <name>` (preview, without `--apply`) lists today's delivery trades correctly."
+  - type: textarea
+    id: live-order
+    attributes:
+      label: Optional — a small live order you placed yourself
+      description: |
+        Only if you chose to (never needed for a report): after adding `"enable_orders": true`,
+        did a 1-share order through `stockwise trade buy|sell` (or `trade gtt`) match its preview
+        in the broker's app, and show up in `trade orders` and `trade sync`? Say which order type
+        (MARKET, LIMIT, SL, SL-M, GTT). Do not paste order ids.
+      placeholder: "LIMIT buy of 1 ITC below the market: preview matched the Kite app; cancelled it in the app; `trade orders` showed CANCELLED."
+    validations:
+      required: false
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else?
+      description: Errors, odd values, fields that look wrong, rate-limit messages, static-IP issues ...
+    validations:
+      required: false

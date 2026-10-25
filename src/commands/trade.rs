@@ -46,10 +46,30 @@ pub enum TradeAction {
         limit: f64,
         opts: OrderOpts,
     },
-    GttList,
+    GttList {
+        /// Send a notification for GTTs that triggered, were cancelled or
+        /// went away since the last look.
+        notify: bool,
+        format: Format,
+    },
     GttCancel {
         id: String,
         opts: OrderOpts,
+    },
+    /// Read-only verification against the user's own account.
+    Selftest {
+        redact_amounts: bool,
+        format: Format,
+    },
+    /// Trade book and GTT status into the portfolio.
+    Sync {
+        /// `YYYY-MM-DD`: ignore older fills (and fetch history where the
+        /// broker keeps it).
+        since: Option<String>,
+        /// Write the portfolio; without it, preview only.
+        apply: bool,
+        notify: bool,
+        format: Format,
     },
 }
 
@@ -188,27 +208,31 @@ fn check_orders_enabled(
     )
 }
 
-/// Resolve, validate, preview, cap-check, confirm, and send one live order
-/// or GTT. Each guard exists because a typo in a shell command could
-/// otherwise spend real money. This is the only caller of
-/// [`Broker::place_order`] and [`Broker::gtt_create`].
-pub(super) async fn place_live_order(
+/// An order or GTT that passed every check that comes before the preview.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Prepared {
+    pub instrument: brokers::Instrument,
+    /// Estimated value for the preview and the `max_order_value` cap.
+    pub est_value: Option<f64>,
+}
+
+/// The checks before the preview: arguments, GTT support, the exact
+/// instrument, and trigger / limit against the side and the last price.
+/// Sends nothing. Shared by [`place_live_order`] and `trade selftest`.
+pub(super) async fn prepare_order(
     broker: &dyn Broker,
     side: Side,
     symbol: &str,
     qty: u32,
     intent: Intent,
-    opts: OrderOpts,
-    guard: &Guard<'_>,
-) -> Result<Outcome> {
+    last: Option<f64>,
+) -> Result<Prepared> {
     check_args(qty, &intent)?;
-    let kind = broker.kind();
     if matches!(intent, Intent::Gtt { .. }) && !broker.supports_gtt() {
-        bail!("{} GTT orders are not supported yet", kind.label());
+        bail!("{} GTT orders are not supported yet", broker.kind().label());
     }
     let sym = brokers::nse_symbol(symbol)?;
     let instrument = broker.resolve_instrument(&sym, "NSE").await?;
-    let last = guard.last_price;
 
     // Trigger checks need the market price; run them before the preview so a
     // refused order never looks ready to send.
@@ -222,6 +246,52 @@ pub(super) async fn place_live_order(
             Some(limit * qty as f64)
         }
     };
+    Ok(Prepared {
+        instrument,
+        est_value,
+    })
+}
+
+/// Refuse an order whose estimated value is above the broker's
+/// `max_order_value`, or unknown while a cap is set.
+pub(super) fn check_cap(kind: BrokerKind, cap: Option<f64>, est_value: Option<f64>) -> Result<()> {
+    let Some(cap) = cap else {
+        return Ok(());
+    };
+    match est_value {
+        Some(v) if v <= cap => Ok(()),
+        Some(v) => bail!(
+            "Estimated value ₹{:.2} exceeds max_order_value ₹{:.2} in your {} config",
+            v,
+            cap,
+            kind.label()
+        ),
+        None => bail!(
+            "Cannot estimate the order value, so max_order_value (₹{:.2}) cannot be checked. Use a limit order.",
+            cap
+        ),
+    }
+}
+
+/// Resolve, validate, preview, cap-check, confirm, and send one live order
+/// or GTT. Each guard exists because a typo in a shell command could
+/// otherwise spend real money. This is the only caller of
+/// [`Broker::place_order`] and [`Broker::gtt_create`].
+pub(super) async fn place_live_order(
+    broker: &dyn Broker,
+    side: Side,
+    symbol: &str,
+    qty: u32,
+    intent: Intent,
+    opts: OrderOpts,
+    guard: &Guard<'_>,
+) -> Result<Outcome> {
+    let kind = broker.kind();
+    let last = guard.last_price;
+    let Prepared {
+        instrument,
+        est_value,
+    } = prepare_order(broker, side, symbol, qty, intent, last).await?;
 
     let title = match intent {
         Intent::Order(_) => format!("{} order — REAL MONEY", side.as_str()),
@@ -249,21 +319,7 @@ pub(super) async fn place_live_order(
     );
     println!();
 
-    if let Some(cap) = guard.limits.max_order_value {
-        match est_value {
-            Some(v) if v <= cap => {}
-            Some(v) => bail!(
-                "Estimated value ₹{:.2} exceeds max_order_value ₹{:.2} in your {} config",
-                v,
-                cap,
-                kind.label()
-            ),
-            None => bail!(
-                "Cannot estimate the order value, so max_order_value (₹{:.2}) cannot be checked. Use a limit order.",
-                cap
-            ),
-        }
-    }
+    check_cap(kind, guard.limits.max_order_value, est_value)?;
 
     if opts.dry_run {
         println!("  {} Dry run — no order sent.\n", "✓".green());
@@ -401,7 +457,7 @@ pub(super) fn confirm_live_order(what: &str) -> Result<bool> {
 }
 
 /// Last NSE price from Yahoo, or None.
-async fn last_price(symbol: &str) -> Option<f64> {
+pub(super) async fn last_price(symbol: &str) -> Option<f64> {
     let yahoo_sym = format!("{}.NS", brokers::plain_symbol(symbol));
     let y = YahooClient::new().await.ok()?;
     y.get_quote(&[yahoo_sym.as_str()])
@@ -504,10 +560,8 @@ pub async fn cmd_trade(kind: BrokerKind, action: TradeAction, market: Market) ->
             )
             .await
         }
-        TradeAction::GttList => {
-            let broker = brokers::connect(kind).await?;
-            print_gtts(kind, &broker.gtt_list().await?);
-            Ok(())
+        TradeAction::GttList { notify, format } => {
+            super::cmd_trade_gtt_list(kind, notify, format).await
         }
         TradeAction::GttCancel { id, opts } => {
             let limits = brokers::order_limits(kind)?;
@@ -520,6 +574,16 @@ pub async fn cmd_trade(kind: BrokerKind, action: TradeAction, market: Market) ->
             cancel_gtt(broker.as_ref(), &id, opts, &guard).await?;
             Ok(())
         }
+        TradeAction::Selftest {
+            redact_amounts,
+            format,
+        } => super::cmd_trade_selftest(kind, redact_amounts, format).await,
+        TradeAction::Sync {
+            since,
+            apply,
+            notify,
+            format,
+        } => super::cmd_trade_sync(kind, since, apply, notify, format).await,
     }
 }
 
@@ -888,7 +952,7 @@ fn print_orders(kind: BrokerKind, orders: &[brokers::Order]) {
     println!();
 }
 
-fn print_gtts(kind: BrokerKind, gtts: &[Gtt]) {
+pub(super) fn print_gtts(kind: BrokerKind, gtts: &[Gtt]) {
     if gtts.is_empty() {
         println!("\n  {}", "No GTT orders.".dimmed());
         return;

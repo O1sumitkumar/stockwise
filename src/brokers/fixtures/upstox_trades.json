@@ -1,0 +1,39 @@
+{
+  "status": "success",
+  "data": [
+    {
+      "exchange": "NSE",
+      "product": "D",
+      "trading_symbol": "GMRINFRA",
+      "tradingsymbol": "GMRINFRA",
+      "instrument_token": "NSE_EQ|INE776C01039",
+      "order_type": "MARKET",
+      "transaction_type": "BUY",
+      "quantity": 100,
+      "exchange_order_id": "1000000000000001",
+      "order_id": "231020000000001",
+      "exchange_timestamp": "20-Oct-2026 09:15:42",
+      "average_price": 82.35,
+      "trade_id": "50091502",
+      "order_ref_id": "udapi-aqwsed14356",
+      "order_timestamp": "20-Oct-2026 09:15:41"
+    },
+    {
+      "exchange": "NFO",
+      "product": "I",
+      "trading_symbol": "NIFTY26OCTFUT",
+      "tradingsymbol": "NIFTY26OCTFUT",
+      "instrument_token": "NSE_FO|52618",
+      "order_type": "LIMIT",
+      "transaction_type": "SELL",
+      "quantity": 75,
+      "exchange_order_id": "1000000000000002",
+      "order_id": "231020000000002",
+      "exchange_timestamp": "20-Oct-2026 10:20:00",
+      "average_price": 25010.5,
+      "trade_id": "50091503",
+      "order_ref_id": "udapi-aqwsed14357",
+      "order_timestamp": "20-Oct-2026 10:19:59"
+    }
+  ]
+}

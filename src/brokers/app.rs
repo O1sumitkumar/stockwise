@@ -102,13 +102,25 @@ pub fn status(kind: BrokerKind, needs: Needs, migrate: bool) -> Result<ConfigSta
             None => format!("token saved {when}"),
         }
     });
-    super::status_of(
+    let mut status = super::status_of(
         kind,
         is_configured(&config, needs),
         format!("app {}", config.api_key),
         storage,
         session,
-    )
+    )?;
+    status.session_date = config
+        .access_token
+        .is_real()
+        .then_some(config.session_created.as_deref())
+        .flatten()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.date_naive());
+    status.identifiers = std::iter::once(config.api_key.clone())
+        .chain(config.user_id.clone())
+        .filter(|s| secrets::is_real(s))
+        .collect();
+    Ok(status)
 }
 
 /// Load the config for an API call: credentials and a saved session.
