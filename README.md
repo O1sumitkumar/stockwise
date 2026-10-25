@@ -52,7 +52,8 @@ stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR
   macOS, Linux and Windows. `stockwise doctor` checks everything.
 - **65+ commands, one muscle memory.** Fundamentals, technicals, risk, screeners,
   sector rotation, mutual funds, options greeks, backtests, SIP/what-if
-  calculators, alerts, tax estimates — in English or Hindi (`--lang hi`).
+  calculators, goal planning, alerts, tax estimates and ITR-ready capital-gains
+  exports — in English or Hindi (`--lang hi`).
 - **Backtests that count costs.** STT, brokerage, stamp duty and slippage;
   next-day fills; portfolios and walk-forward; strategies as small TOML files.
 - **Scriptable.** `--json` on 21 data commands and `--csv` on their tables, a
@@ -61,8 +62,9 @@ stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR
 - **Live dashboards.** `stockwise tui` keeps indices, watchlist, portfolio P&L,
   alerts and a chart on one refreshing screen; `stockwise serve --open` shows
   the same in your browser.
-- **Practice before money.** A paper-trading simulator and an intraday paper
-  daemon with risk controls and notifications. Optional live orders via Angel
+- **Practice before money.** A paper-trading simulator, an intraday paper
+  daemon with risk controls and notifications, and historical replays — trade
+  the 2020 crash with the future hidden — scored on risk, not raw return. Optional live orders via Angel
   One (Zerodha, Upstox, Dhan and Fyers experimental), always behind a preview
   and a typed confirmation.
 - **Private by design.** Your portfolio stays in local files; broker secrets in
@@ -134,10 +136,11 @@ Homebrew, AUR and Nix install the man pages and completions for you.
 | **Start here** | `quote`, `deep`, `markets`, `dashboard`, `search`, `doctor` |
 | **Analysis** | `analyze`, `technical`, `history`, `chart`, `compare`, `risk`, `correlate`, `timeframes`, `returns`, `patterns`, `support`, `fibs`, `volume`, `gaps`, `stoploss`, `forecast` |
 | **Market** | `movers`, `sectors`, `heatmap`, `sentiment`, `news`, `rotation`, `sectorcmp`, `peers`, `insider`, `ipo`, `earnings`, `surprise`, `matrix`, `picks`, `screen`, `dividends` |
-| **Funds & F&O** | `mf` (search, nav, history, sip, screen, overlap), `options` (chain, pcr, maxpain, moves) |
+| **Funds & F&O** | `mf` (search, nav, history, sip, screen, overlap — with AMFI expense ratios), `options` (chain, pcr, maxpain, payoff, moves; NSE, BSE and US) |
 | **Commodities & bonds** | `commodity` (spot, futures, etfs, sgb), `bonds` (yields, list, calc) |
 | **Strategies & bots** | `backtest`, `sip`, `whatif`, `intraday`, `longterm`, `daemon`, `sim`, `report` |
 | **Portfolio** | `portfolio`, `watch`, `alert`, `calendar`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
+| **Planning** | `goal` (sip, retire, education) |
 | **Interfaces** | `tui`, `serve` |
 | **Live trading** | `trade` (Angel One; Zerodha, Upstox, Dhan, Fyers experimental) |
 
@@ -152,6 +155,8 @@ stockwise portfolio                              # live P&L, XIRR + allocation
 stockwise portfolio sell TCS 5 3900              # FIFO sale, realized P&L kept for tax
 stockwise portfolio actions --apply              # splits, bonuses and dividends since you bought
 stockwise tax in                                 # LTCG/STCG per lot, set-off, realized vs unrealized
+stockwise tax export in --fy 2025-26 > cg.csv    # ITR Schedule CG / 112A CSV of your sales
+stockwise portfolio benchmark NIFTY -p 1y        # time-weighted return vs the index, alpha/beta, attribution
 stockwise --portfolio us portfolio add AAPL 3 190 -m us   # a second, named portfolio
 stockwise dashboard                              # indices + portfolio + watchlist + alerts
 ```
@@ -160,17 +165,27 @@ Every purchase is a lot with its own date, so holding periods, FIFO sales and
 XIRR are exact. Holdings in INR and USD are totalled in one currency
 (`portfolio --base usd`) at the live `USDINR=X` rate.
 
+### Plan a goal
+
+```bash
+stockwise goal sip --target 1cr --years 15 --step-up 10       # SIP for ₹1 crore, rising 10% a year
+stockwise goal retire --monthly-expense 80k --years-to-retire 20 --years-in-retirement 30
+stockwise goal education --cost 25L --years 10                # cost after 8% education inflation
+```
+
 ### Mutual funds and options
 
 ```bash
 stockwise mf search parag flexi direct     # AMFI scheme codes
 stockwise mf sip 122639 5000 -p 5y         # monthly SIP with XIRR
-stockwise mf screen flexi cap              # rank a category by 3Y CAGR
-stockwise options chain NIFTY              # NSE chain with IV and greeks
+stockwise mf screen flexi cap              # rank a category by 3Y CAGR, with TERs
+stockwise mf screen elss -s ter --max-ter 1  # cheapest ELSS funds by expense ratio
+stockwise options chain NIFTY              # NSE chain with IV and greeks (SENSEX → BSE)
 stockwise options maxpain BANKNIFTY        # or: options pcr, options chain AAPL -m us
+stockwise options payoff NIFTY -s iron-condor -w 200   # P/L chart, breakevens, POP
 ```
 
-NAVs come from AMFI, option chains from NSE (India) or Yahoo (US). See
+NAVs and expense ratios come from AMFI, option chains from NSE or BSE (India) or Yahoo (US). See
 [docs/commands.md](docs/commands.md#funds--fo) for what has data and what doesn't.
 
 ### Gold, SGBs and G-secs
@@ -198,7 +213,10 @@ stockwise backtest TCS -s file:my_rules.toml       # your own TOML rules
 
 Strategies are TOML files of entry and exit rules over RSI, MACD, moving
 averages, Bollinger Bands, ATR and VWAP — see
-[docs/backtesting.md](docs/backtesting.md).
+[docs/backtesting.md](docs/backtesting.md). For logic rules can't express,
+an experimental build (`--features wasm-plugins`) runs sandboxed WebAssembly
+strategies: `-s wasm:strategy.wasm`
+([example](examples/wasm-strategy-rsi/)).
 
 ### Watch it live
 
@@ -267,6 +285,25 @@ NSE holidays included), survives network blips, resumes after a restart, and
 squares off on Ctrl+C. Read [docs/bot-design.md](docs/bot-design.md) for how
 it decides.
 
+### Practise on past markets
+
+```bash
+stockwise sim replay start covid-crash-2020      # Feb 2020, ₹1,00,000 of paper money, future hidden
+stockwise sim challenge start crash-survivor     # optional goal: lose less than half of what NIFTY loses
+stockwise sim replay buy TCS 10 --stop 1900      # fills at the next day's open, with Indian charges
+stockwise sim replay next 5                      # step through trading days
+stockwise sim replay end                         # 0–100 score, badges, and what really happened
+stockwise sim card --svg card.svg                # share the result
+```
+
+<p align="center"><img src="assets/sim-card.svg" alt="A StockWise replay result card: the COVID crash, score 74, grade B" width="560"></p>
+
+Six built-in scenarios (2008, the dot-com bust, the COVID crash, the 2021 bull
+run, the Adani report, the 2022 rate hikes) or your own dates and stocks. The
+score rewards risk-adjusted return, small drawdowns, stop-losses, sensible
+position sizes and diversification — never raw return alone. Paper money
+only; see [docs/simulator.md](docs/simulator.md).
+
 ### Alerts and notifications
 
 ```bash
@@ -289,6 +326,8 @@ stockwise trade buy RELIANCE 10 --dry-run      # resolve + preview, send nothing
 stockwise trade buy RELIANCE 10                # preview, then type "yes" to send
 stockwise trade sell RELIANCE 10 --trigger 1250            # stop-loss (SL-M)
 stockwise trade holdings --broker zerodha      # also: upstox, dhan, fyers (experimental)
+stockwise trade sync --broker zerodha --apply  # today's fills → dated lots and FIFO sales
+stockwise trade selftest --broker zerodha      # read-only check; paste the report in an issue
 ```
 
 Orders resolve the exact NSE instrument, show the estimated value, respect an
@@ -375,6 +414,7 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 - [Markets: global exchanges, commodities, bonds](docs/markets.md)
 - [Terminal dashboard](docs/tui.md) and [web dashboard, HTTP API & metrics](docs/server.md)
 - [Trading bots](docs/bots.md) and [bot design](docs/bot-design.md)
+- [Practice mode: replays, challenges and scores](docs/simulator.md)
 - [Brokers: live trading, keyring, imports](docs/brokers.md)
 - [AI: Ollama and cloud providers](docs/ai.md)
 - [Data providers](docs/data-providers.md)
@@ -382,7 +422,7 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 
 ## Roadmap & contributing
 
-Next up: Hindi for every command, live-tested broker integrations, tax exports and goal planning — see the
+Next up: Hindi for every command and live-tested broker integrations — see the
 [ROADMAP](ROADMAP.md). Ideas and bug reports are
 welcome in [Discussions](https://github.com/iamsaquib8/stockwise/discussions) and
 [Issues](https://github.com/iamsaquib8/stockwise/issues); start with

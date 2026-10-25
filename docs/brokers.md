@@ -17,7 +17,8 @@ import holdings from broker exports and CAS statements.
 > and handwritten responses on a local mock server. Nobody has run them against
 > a real account yet. Until you opt in, they only read (holdings, positions,
 > orders) and preview (`--dry-run`); see [Turning on live orders](#turning-on-live-orders).
-> Reports from real accounts are very welcome — open an issue.
+> Reports from real accounts are very welcome: run `stockwise trade selftest` and
+> paste its report — see [Help verify a broker](#help-verify-a-broker).
 
 Pick the broker per command with `--broker`, or set a default with
 `STOCKWISE_BROKER=zerodha`. Without either, `trade` uses Angel One, as before.
@@ -95,6 +96,72 @@ stockwise trade gtt cancel 112127
 Two-leg (OCO) GTTs are not supported yet. Upstox GTT rules have no limit price,
 so StockWise can't express "LIMIT at this price once triggered" there and
 refuses GTTs for Upstox.
+
+## Syncing trades and GTTs into the portfolio
+
+`trade sync` reads the broker's trade book (executed fills) and turns delivery
+trades into the lot-based portfolio: a buy becomes a lot with its fill date,
+average fill price and order id; a sell comes out of the oldest lots (FIFO) and
+is recorded as a realized sale for `tax`. It previews by default and writes only
+with `--apply`.
+
+```bash
+stockwise trade sync --broker zerodha                 # preview: what would change
+stockwise trade sync --broker zerodha --apply         # write it
+stockwise trade sync --broker dhan --since 2026-10-01 --apply
+stockwise trade sync --apply --notify --json          # for cron: JSON on stdout, notify on changes
+```
+
+- **Read-only at the broker.** Sync and `gtt list` run on a session that
+  refuses any order, GTT or cancel request.
+- **Idempotent.** Every fill applied is remembered (broker, order and trade id) in the
+  portfolio file, and lots and sales keep the broker order id. Running sync
+  twice, or after a partial fill completes, never counts a fill twice: the
+  later part of a partly filled order becomes its own lot.
+- **Delivery equity only.** Intraday (MIS / INTRADAY), margin (MTF), F&O and
+  commodity fills are listed as skipped, not turned into lots. NSE and BSE
+  fills of a stock you already hold go to that holding; a new holding takes
+  the exchange of its fill (`.NS` or `.BO`).
+- **Sells need the shares.** A sell larger than the shares the portfolio held
+  on that date is left out (and not marked as synced) until you add the
+  missing lots, e.g. with `portfolio add SYMBOL QTY PRICE --date`. Sells of a
+  stock whose lots still wait for a split or bonus are held back too — run
+  `portfolio actions SYMBOL --apply` first.
+- **Dates.** Fills are dated by the broker's timestamp. Angel One gives a time
+  only, so its fills are dated with the last NSE session (today once the
+  market has opened, else the previous trading day).
+- **Today only, mostly.** Angel One, Zerodha, Upstox and Fyers return today's
+  trades only — run sync at the end of each trading day (or from cron). Dhan
+  keeps a trade history, so `--since` fetches older fills there (up to 50
+  pages; history rows get their NSE symbol from Dhan's scrip master). For
+  older history on other brokers, `stockwise import` a tradebook export.
+- **Open orders** (pending, partly filled) are listed; their fills sync once
+  they appear in the trade book.
+- **Quantity check.** For each symbol it touched, sync compares the
+  portfolio's quantity with the broker's holdings list. Today's buys reach that
+  list only after settlement (T+1), so a same-day gap is normal; a lasting gap
+  means lots are missing or doubled. Use either `trade sync` (dated lots from
+  fills) or `trade holdings` (quantities only, estimated dates) as your source
+  for a broker — `trade holdings` matches quantities, so after a sync it only
+  changes something when the two disagree.
+
+### GTT status changes
+
+`trade gtt list` remembers what it saw (in `gtt_seen_<broker>.json` in the
+data directory) and shows what changed since the last look: GTTs that
+triggered, were cancelled or expired, or no longer appear (brokers drop old
+ones from the list). `--notify` sends those changes to your notification
+channels (Telegram, Slack, Discord, email — see `stockwise notify status`);
+only real state changes and vanished GTTs are sent, not a status spelling
+change such as Angel One's `NEW` → `ACTIVE`. If every channel fails, the
+record is not updated, so the changes are reported again next time.
+`trade sync --apply` updates the same record and includes the changes;
+`trade sync --apply --notify` notifies about them and about synced orders.
+
+```bash
+stockwise trade gtt list --broker zerodha --notify
+stockwise trade gtt list --json     # {broker, gtts, changes, first_check, last_checked}
+```
 
 ## Turning on live orders
 
@@ -235,8 +302,75 @@ stockwise trade positions                   # Open positions
 stockwise trade orders                      # Today's order book
 stockwise trade buy RELIANCE 10 --dry-run   # Resolve + preview, send nothing
 stockwise trade sell TCS 5 --trigger 3400   # SL-M sell
-stockwise trade gtt list                    # GTT orders
+stockwise trade gtt list [--notify]         # GTT orders + status changes since the last look
+stockwise trade sync [--since DATE] [--apply]          # Fills into the portfolio (preview first)
+stockwise trade selftest [--redact-amounts] [--json]   # Read-only check; report for a GitHub issue
 ```
+
+## Help verify a broker
+
+Zerodha, Upstox, Dhan and Fyers — and stop-loss / GTT orders on Angel One —
+were built from public API docs and have never been run against a real account
+by the maintainers. If you have an account with one of them, you can help take
+the "experimental" label off in about five minutes, without placing an order.
+
+1. Install the latest StockWise and set the broker up as described above
+   (`trade setup`, `trade config`, `trade login`).
+2. Run the self-test:
+
+   ```bash
+   stockwise trade selftest --broker zerodha
+   stockwise trade selftest --broker zerodha --redact-amounts   # also hide prices
+   stockwise trade selftest --broker zerodha --json             # machine-readable
+   ```
+
+   It is **strictly read-only**. It logs in (or loads today's session), reads
+   the profile, holdings, positions, order book, trade book and GTT list,
+   resolves RELIANCE, TCS and NIFTYBEES (the Nifty 50 ETF) exactly, runs a
+   1-share LIMIT buy 5% below the market through every order check and stops
+   before sending (like `--dry-run`), and compares the field names of each
+   response with the documented ones. The session it uses refuses any order,
+   GTT or cancel in code, and the self-test never calls those methods.
+3. Read the report, then paste it into a
+   [broker test report](https://github.com/iamsaquib8/stockwise/issues/new?template=broker_test_report.yml).
+   It contains no credentials, tokens, names, e-mail addresses or holdings
+   symbols; the account id is cut to its last two characters, and long numbers
+   in error messages are masked. Field names, row counts, statuses and
+   instrument tokens stay, as do the dry-run price and value unless you pass
+   `--redact-amounts`. The command exits with status 1 if a check failed.
+4. Optional, and only if you want to: place **one small order yourself** —
+   say a 1-share LIMIT buy of a liquid stock below the market, which you can
+   cancel — after adding `"enable_orders": true` to the broker's config. Check
+   it in the broker's app, run `trade orders` and `trade sync`, and say in the
+   report what happened. Nobody will ask you to place an order; this is the
+   step that proves the write path.
+
+### Verification status
+
+| Broker | Status | Self-test reports | Small live order confirmed by a tester |
+|--------|--------|-------------------|----------------------------------------|
+| Angel One — MARKET, LIMIT | original integration (0.2), not experimental | reports welcome | — |
+| Angel One — SL, SL-M, GTT | experimental | 0 of 3 | no |
+| Zerodha Kite | experimental | 0 of 3 | no |
+| Upstox | experimental | 0 of 3 | no |
+| Dhan | experimental | 0 of 3 | no |
+| Fyers | experimental | 0 of 3 | no |
+
+**From experimental to verified.** A broker (or order path) loses the
+experimental label in a release when all of these hold:
+
+1. **3 independent self-test reports** — different testers and accounts — on
+   a release that includes any fixes they led to, with no failed checks and no
+   missing fields left unexplained.
+2. **One confirmed small live order**, placed by a tester on their own
+   initiative (never on request) through `trade buy` / `trade sell` (and, for
+   GTT paths, `trade gtt`), that matched the preview in the broker's app and
+   showed up in `trade orders` and `trade sync`.
+3. A maintainer has reviewed the reports and updated this table, the
+   `BrokerKind::experimental` flag and the CHANGELOG.
+
+Until then, live orders on that path need `"enable_orders": true`, and every
+preview says the path is experimental.
 
 ## Importing holdings
 

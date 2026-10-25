@@ -45,10 +45,17 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
   publishing them needs the tap repository and package submissions
 - 🛠️ Hindi for every command (today: help groups, `quote`, `markets`, `dashboard`,
   `portfolio`, `search`, `doctor`)
-- 📋 Broker integrations verified against live accounts — community testers wanted for
+- 🛠️ Broker integrations verified against live accounts — community testers wanted for
   Zerodha, Upstox, Dhan and Fyers before the "experimental" label comes off
+  - ✅ Testing kit: `stockwise trade selftest` (read-only, redacted report), a broker test
+    report issue template, and the [verification criteria](docs/brokers.md#help-verify-a-broker)
+  - 🛠️ Reports from real accounts (3 per broker plus one small live order a tester places
+    themselves)
 - 📋 BSE options in `options chain`
-- 📋 Expense ratios for Indian mutual funds (AMFI TER disclosures) in `mf screen`
+- ✅ BSE options in `options chain`, `pcr` and `maxpain` — SENSEX, BANKEX, SENSEX50 and `.BO`
+  stocks via BSE's public API; BSE sometimes refuses scripted requests (StockWise then says so)
+- ✅ Expense ratios for Indian mutual funds (AMFI TER disclosures) in `mf screen`, `mf nav` and
+  `mf history`, with `--sort ter` and `--max-ter`
 
 ## 📋 Next — planning and reporting (0.5)
 
@@ -57,9 +64,11 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
   for `--universe`. Shipped; still to do: check the parsers against live NSE/BSE responses (the
   test fixtures are modelled on the endpoints' known shapes) and add SENSEX from BSE. The
   endpoints are unofficial — licensed exchange feeds remain out of scope
-- 📋 Tax export: capital-gains schedule (ITR Schedule CG–ready CSV) from realized lots
-- 📋 Benchmark comparison and attribution — portfolio vs NIFTY 50 / S&P 500, by holding and sector
-- 📋 Goal planner — SIP needed for a target corpus, retirement and education calculators
+- ✅ Tax export: capital-gains schedule (ITR Schedule CG–ready CSV) from realized lots
+  (`tax export in`, Form 8949 with `tax export us`)
+- ✅ Benchmark comparison and attribution — portfolio vs NIFTY 50 / S&P 500, by holding and sector
+  (`portfolio benchmark`)
+- ✅ Goal planner — SIP needed for a target corpus, retirement and education calculators (`goal`)
 - ✅ Technical alerts — RSI, SMA/EMA crosses, N-day breakouts, day-change and volume-spike
   alerts next to price levels, plus `results-in N` before a results date
 - ✅ Results and corporate calendar for holdings (`stockwise calendar`) — Yahoo earnings and
@@ -74,15 +83,20 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 - 🛠️ Indian government bonds and T-bills (G-secs) — benchmark yields, India 10Y in `markets`, the
   outstanding list and a YTM calculator (`bonds`); still missing: live prices of individual G-secs
   and T-bills (no documented public source)
-- 📋 Simulator challenges — historical replay ("trade the 2020 crash" with the future hidden),
+- ✅ Simulator challenges — historical replay ("trade the 2020 crash" with the future hidden),
   goal-based challenges, risk-adjusted scores, badges and streaks, a shareable result card
+  (`sim replay`, `sim challenge`, `sim profile`, `sim card`)
 
 ## 💡 Later — exploring (0.6+)
 
-- 💡 Broker-side GTT and order-status sync into the portfolio
+- ✅ Broker-side GTT and order-status sync into the portfolio — `trade sync` (fills → lots and
+  FIFO sales, idempotent) and GTT status changes in `trade gtt list` (experimental on non-Angel
+  brokers)
 - ✅ A small web dashboard served by `stockwise serve` (`serve --open`)
-- 💡 WASM strategy plugins (TOML strategies cover most cases today)
-- 💡 Options strategy builder — payoff charts for spreads and straddles from the live chain
+- ✅ WASM strategy plugins (**experimental**; `--features wasm-plugins`, `backtest -s wasm:PATH`)
+- ✅ Options strategy builder — `options payoff`: legs or presets (spreads, straddle, strangle,
+  iron condor, butterfly, covered call) priced from the live chain, payoff chart, breakevens,
+  probability of profit, net greeks
 
 ## Non-goals
 

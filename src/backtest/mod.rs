@@ -8,10 +8,12 @@
 //!   fills, stops and targets, rebalancing — and performance metrics.
 //! - [`walkforward`]: rolling train/test parameter optimisation.
 //! - [`indicators`]: whole-series indicators matching `technical.rs`.
+//! - [`plugin`]: sandboxed WASM strategy plugins (`wasm-plugins` feature).
 
 pub mod costs;
 pub mod engine;
 pub mod indicators;
+pub mod plugin;
 pub mod rules;
 pub mod walkforward;
 

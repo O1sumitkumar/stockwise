@@ -139,7 +139,7 @@ impl Valuation {
 
 /// Yahoo FX symbol giving the rate from `currency` to `base`, and whether to
 /// invert it. USD↔INR always comes from USDINR=X.
-fn fx_pair(currency: &str, base: &str) -> (String, bool) {
+pub(super) fn fx_pair(currency: &str, base: &str) -> (String, bool) {
     if currency == "INR" && base == "USD" {
         ("USDINR=X".into(), true)
     } else {

@@ -1,0 +1,31 @@
+[
+  {
+    "dhanClientId": "1000000003",
+    "orderId": "212111182001",
+    "exchangeOrderId": "25112111182001",
+    "exchangeTradeId": "25112111182002",
+    "transactionType": "BUY",
+    "exchangeSegment": "NSE_EQ",
+    "productType": "CNC",
+    "orderType": "MARKET",
+    "tradingSymbol": null,
+    "customSymbol": "HDFC Bank",
+    "securityId": "1333",
+    "tradedQuantity": 5,
+    "tradedPrice": 1650.25,
+    "isin": "INE040A01034",
+    "instrument": "EQUITY",
+    "sebiTax": 0.01,
+    "stt": 8.25,
+    "brokerageCharges": 0.0,
+    "serviceTax": 0.12,
+    "exchangeTransactionCharges": 0.25,
+    "stampDuty": 1.24,
+    "createTime": "NA",
+    "updateTime": "NA",
+    "exchangeTime": "2026-10-15 10:01:02",
+    "drvExpiryDate": "NA",
+    "drvOptionType": "NA",
+    "drvStrikePrice": 0.0
+  }
+]

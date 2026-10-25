@@ -144,6 +144,14 @@ command exits non-zero if nothing was settled.
 | MODERATE | >50% day win rate + profitable |
 | LOW | Below moderate threshold |
 
+### Practice mode
+
+To practise your own decisions rather than the bot's, replay a past market
+day by day with the future hidden — the COVID crash, 2008, the dot-com bust —
+take on goal-based challenges, and get a risk-adjusted score, badges and a
+shareable card: `stockwise sim replay start covid-crash-2020`. See
+[simulator.md](simulator.md).
+
 ---
 
 ## Daemon Mode

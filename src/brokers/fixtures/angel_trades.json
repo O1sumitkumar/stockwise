@@ -1,0 +1,47 @@
+{
+  "status": true,
+  "message": "SUCCESS",
+  "errorcode": "",
+  "data": [
+    {
+      "exchange": "NSE",
+      "producttype": "DELIVERY",
+      "tradingsymbol": "ITC-EQ",
+      "instrumenttype": "",
+      "symbolgroup": "EQ",
+      "strikeprice": "-1",
+      "optiontype": "",
+      "expirydate": "",
+      "marketlot": "1",
+      "precision": "2",
+      "multiplier": "-1",
+      "tradevalue": "175.00",
+      "transactiontype": "BUY",
+      "fillprice": "175.00",
+      "fillsize": "1",
+      "orderid": "201020000000095",
+      "fillid": "50005750",
+      "filltime": "13:27:53"
+    },
+    {
+      "exchange": "NSE",
+      "producttype": "INTRADAY",
+      "tradingsymbol": "SBIN-EQ",
+      "instrumenttype": "",
+      "symbolgroup": "EQ",
+      "strikeprice": "-1",
+      "optiontype": "",
+      "expirydate": "",
+      "marketlot": "1",
+      "precision": "2",
+      "multiplier": "-1",
+      "tradevalue": "4206.50",
+      "transactiontype": "SELL",
+      "fillprice": "420.65",
+      "fillsize": "10",
+      "orderid": "201020000000096",
+      "fillid": "50005751",
+      "filltime": "14:01:02"
+    }
+  ]
+}

@@ -251,7 +251,7 @@ pub fn run(
         .iter()
         .map(|p| {
             let s = def.compile_with(p)?;
-            let sig = s.signals(bars);
+            let sig = s.signals(bars)?;
             Ok((s, sig))
         })
         .collect::<Result<_>>()?;

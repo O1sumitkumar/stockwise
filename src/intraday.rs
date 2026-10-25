@@ -1,7 +1,7 @@
 use crate::api::{Quote, YahooClient};
 use crate::market;
 use crate::technical;
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 // ══════════════════════════════════════════════════════════
 // MULTI-STRATEGY INTRADAY ENGINE
@@ -799,30 +799,34 @@ pub async fn scan_intraday(
 /// "Custom rule" signal when its entry rule holds on the latest daily bar, a
 /// Short one when its exit rule holds. Uses its own daily history, long
 /// enough for the rule's indicators, so the built-in signals are unchanged.
+/// No history means no vote; a failing WASM plugin is an error.
 async fn custom_rule_signal(
     client: &YahooClient,
     symbol: &str,
     rule: &crate::backtest::rules::Strategy,
-) -> Option<StrategySignal> {
+) -> Result<Option<StrategySignal>> {
     let range = match rule.lookback() {
         0..200 => "1y",
         200..450 => "2y",
         _ => "5y",
     };
-    let chart = client.get_chart(symbol, range, "1d").await.ok()?;
+    let Ok(chart) = client.get_chart(symbol, range, "1d").await else {
+        return Ok(None);
+    };
     rule_vote(rule, &crate::backtest::Bars::from_chart(&chart))
+        .with_context(|| format!("strategy signal for {symbol}"))
 }
 
 fn rule_vote(
     rule: &crate::backtest::rules::Strategy,
     bars: &crate::backtest::Bars,
-) -> Option<StrategySignal> {
+) -> Result<Option<StrategySignal>> {
     if bars.len() <= rule.lookback() {
-        return None;
+        return Ok(None);
     }
-    let signals = rule.signals(bars);
+    let signals = rule.signals(bars)?;
     let last = bars.len() - 1;
-    if signals.entry[last] && !signals.exit[last] {
+    Ok(if signals.entry[last] && !signals.exit[last] {
         Some(StrategySignal {
             name: "Custom rule",
             direction: Direction::Long,
@@ -838,7 +842,7 @@ fn rule_vote(
         })
     } else {
         None
-    }
+    })
 }
 
 /// [`scan_intraday`] with an optional strategy rule as an extra signal.
@@ -895,7 +899,7 @@ pub async fn scan_intraday_with(
         }
 
         let custom = match rule {
-            Some(rule) => custom_rule_signal(client, &symbol, rule).await,
+            Some(rule) => custom_rule_signal(client, &symbol, rule).await?,
             None => None,
         };
         let signal = compute_signal(
@@ -1153,14 +1157,15 @@ mod tests {
         .unwrap()
         .compile()
         .unwrap();
-        let up = rule_vote(&rule, &Bars::from_closes(&[10.0, 10.0, 10.0, 12.0])).unwrap();
+        let vote = |closes: &[f64]| rule_vote(&rule, &Bars::from_closes(closes)).unwrap();
+        let up = vote(&[10.0, 10.0, 10.0, 12.0]).unwrap();
         assert_eq!(up.direction, Direction::Long);
         assert!(up.reason.starts_with("up: entry"));
-        let down = rule_vote(&rule, &Bars::from_closes(&[10.0, 10.0, 10.0, 8.0])).unwrap();
+        let down = vote(&[10.0, 10.0, 10.0, 8.0]).unwrap();
         assert_eq!(down.direction, Direction::Short);
-        assert!(rule_vote(&rule, &Bars::from_closes(&[10.0; 4])).is_none());
+        assert!(vote(&[10.0; 4]).is_none());
         // Not enough history for the rule's indicators: no vote.
-        assert!(rule_vote(&rule, &Bars::from_closes(&[10.0, 12.0])).is_none());
+        assert!(vote(&[10.0, 12.0]).is_none());
     }
 
     #[test]

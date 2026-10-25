@@ -188,6 +188,7 @@ messages! {
     GroupInterfaces => "Interfaces", "इंटरफ़ेस";
     GroupLiveTrading => "Live trading", "लाइव ट्रेडिंग";
     GroupSetup => "Setup", "सेटअप";
+    GroupPlanning => "Planning", "योजना";
     AboutQuote => "Real-time quote for one or more stocks", "एक या अधिक शेयरों का ताज़ा भाव";
     AboutDeep => "Everything about a stock in one command", "एक कमांड में किसी शेयर की पूरी जानकारी";
     AboutMarkets => "Major market indices (US + India)", "प्रमुख बाज़ार सूचकांक (अमेरिका + भारत)";
@@ -335,6 +336,73 @@ messages! {
     DoctorAngelStopGttOn => "SL/SL-M and GTT enabled", "SL/SL-M और GTT चालू";
     DoctorMarketDataDown => "Market data is unreachable", "मार्केट डेटा तक पहुँच नहीं हो पा रही";
 
+    // ── Goal planner ──
+    GoalSipTitle => "Goal: {0} in {1} years", "लक्ष्य: {1} साल में {0}";
+    GoalRetireTitle => "Retirement in {0} years", "{0} साल में रिटायरमेंट";
+    GoalEducationTitle => "Education goal in {0} years", "{0} साल में शिक्षा का लक्ष्य";
+    GoalMonthlySip => "Monthly SIP needed", "ज़रूरी मासिक SIP";
+    GoalFinalSip => "SIP in the last year", "आख़िरी साल में SIP";
+    GoalStepUp => "Yearly step-up", "सालाना बढ़ोतरी";
+    GoalExpectedReturn => "Expected return", "अनुमानित रिटर्न";
+    GoalTotalInvested => "Total invested", "कुल निवेश";
+    GoalWealthGained => "Wealth gained", "कुल बढ़त";
+    GoalLumpSum => "Or a lump sum today", "या आज एकमुश्त निवेश";
+    GoalSavings => "Existing savings", "मौजूदा बचत";
+    GoalSavingsGrowTo => "Savings grow to", "बचत बढ़कर होगी";
+    GoalCovered => "Your savings already cover this goal at the expected return.", "अनुमानित रिटर्न पर आपकी मौजूदा बचत से यह लक्ष्य पूरा हो जाता है।";
+    GoalYearByYear => "Year by year", "साल-दर-साल";
+    GoalYear => "Year", "साल";
+    GoalSipColumn => "Monthly SIP", "मासिक SIP";
+    GoalInvested => "Invested", "निवेश";
+    GoalExpenseToday => "Expense today", "आज का ख़र्च";
+    GoalExpenseAtRetirement => "Expense at retirement", "रिटायरमेंट पर ख़र्च";
+    GoalInflation => "Inflation", "महँगाई";
+    GoalYearsInRetirement => "Years in retirement", "रिटायरमेंट के साल";
+    GoalReturnBefore => "Return before retirement", "रिटायरमेंट से पहले रिटर्न";
+    GoalReturnAfter => "Return after retirement", "रिटायरमेंट के बाद रिटर्न";
+    GoalCorpusNeeded => "Corpus needed at retirement", "रिटायरमेंट पर ज़रूरी राशि";
+    GoalCostToday => "Cost today", "आज की लागत";
+    GoalFutureCost => "Cost in {0} years", "{0} साल बाद लागत";
+    GoalPerYear => "{0}% a year", "{0}% सालाना";
+    GoalPerMonth => "{0} a month", "{0} प्रति माह";
+    GoalAssumptions => "Assumes the same return every year, SIPs at the start of each month and a monthly rate of annual ÷ 12. Returns are not guaranteed — not financial advice.", "हर साल एक जैसा रिटर्न, हर महीने की शुरुआत में SIP और मासिक दर = सालाना ÷ 12 मानकर। रिटर्न की गारंटी नहीं — यह वित्तीय सलाह नहीं है।";
+
+    // ── Benchmark ──
+    BenchTitle => "Portfolio vs {0}", "पोर्टफोलियो बनाम {0}";
+    BenchPortfolio => "Portfolio", "पोर्टफोलियो";
+    BenchGrowth => "Growth of 100", "100 की बढ़त";
+    BenchPeriod => "Period", "अवधि";
+    BenchTradingDays => "{0} trading days", "{0} कारोबारी दिन";
+    BenchPortfolioReturn => "Portfolio return", "पोर्टफोलियो रिटर्न";
+    BenchIndexReturn => "{0} return", "{0} रिटर्न";
+    BenchExcess => "Excess return", "अतिरिक्त रिटर्न";
+    BenchAnnualized => "Annualized", "वार्षिक";
+    BenchAlpha => "Alpha (annualized)", "अल्फ़ा (वार्षिक)";
+    BenchBeta => "Beta", "बीटा";
+    BenchTrackingError => "Tracking error", "ट्रैकिंग एरर";
+    BenchInfoRatio => "Information ratio", "इन्फ़ॉर्मेशन रेशियो";
+    BenchCorrelation => "Correlation", "सहसंबंध";
+    BenchByHolding => "Attribution by holding", "होल्डिंग के अनुसार योगदान";
+    BenchBySector => "Attribution by sector", "सेक्टर के अनुसार योगदान";
+    BenchSector => "Sector", "सेक्टर";
+    BenchAvgWeight => "Avg wt", "औसत भार";
+    BenchReturn => "Return", "रिटर्न";
+    BenchContribution => "Contrib", "योगदान";
+    BenchVsIndex => "vs index", "इंडेक्स से";
+    BenchFlagged => "Partial history", "अधूरा इतिहास";
+    BenchTooFewDays => "Fewer than {0} daily returns — alpha and beta need a longer period.", "{0} से कम दैनिक रिटर्न — अल्फ़ा और बीटा के लिए लंबी अवधि चाहिए।";
+    BenchNothingHeld => "Nothing in this portfolio was held with a price during the last {0}.", "पिछले {0} में इस पोर्टफोलियो में कीमत वाली कोई होल्डिंग नहीं थी।";
+    BenchConverted => "{0} converted to {1} at daily exchange rates", "{0} को दैनिक विनिमय दर पर {1} में बदला गया";
+    BenchMethod => "Time-weighted, from daily closes: trades count at the day's close and dividends are left out on both sides. Contributions are percentage points and add up to the totals.", "समय-भारित, दैनिक बंद भाव से: सौदे उसी दिन के बंद भाव पर गिने जाते हैं और डिविडेंड दोनों तरफ़ शामिल नहीं। योगदान प्रतिशत अंकों में हैं और जुड़कर कुल के बराबर होते हैं।";
+
+    // ── Tax export ──
+    TaxExportTitle => "Capital-gains schedule — {0}", "पूंजीगत लाभ विवरण — {0}";
+    TaxExportEstimate => "Estimate — verify with your broker's tax P&L", "अनुमान — अपने ब्रोकर के टैक्स P&L से मिलान करें";
+    TaxExportWrote => "Wrote {0} sales to {1}", "{0} बिक्री {1} में लिखी गईं";
+    TaxExportNoSales => "No sales recorded in {0}. Record one with `stockwise portfolio sell` or import a tradebook.", "{0} में कोई बिक्री दर्ज नहीं। `stockwise portfolio sell` से दर्ज करें या ट्रेडबुक इम्पोर्ट करें।";
+    TaxExportSales => "Sales", "बिक्री";
+    TaxExportIsinMissing => "ISIN unknown for {0} — fill it in before filing", "{0} का ISIN नहीं मिला — रिटर्न भरने से पहले जोड़ें";
+
     // ── Alerts ──
     AlertsTitle => "Alerts", "अलर्ट";
     AlertAbove => "above {0}", "{0} से ऊपर";
@@ -432,6 +500,63 @@ messages! {
     BondsCalcNote => "Half-yearly coupons, 30/360 day count, as for G-secs. NSE quotes G-secs at dirty prices: add --dirty when you enter one.", "छमाही कूपन, 30/360 दिन-गणना, जैसा G-sec में होता है। NSE G-sec का डर्टी भाव दिखाता है: वह भाव डालें तो --dirty जोड़ें।";
     BondsTbillNote => "T-bill yield = (100 − price) / price × 365 / days, the convention RBI auctions use.", "T-bill यील्ड = (100 − मूल्य) / मूल्य × 365 / दिन, RBI नीलामी की परिपाटी।";
     India10yName => "India 10Y G-sec", "भारत 10Y G-sec";
+
+    // ── Practice: replays, challenges, scores, cards (`sim`) ──
+    PracticeDisclaimer => "Paper trading — not financial advice.", "पेपर ट्रेडिंग — यह वित्तीय सलाह नहीं है।";
+    PracticeCardReplay => "paper trading replay", "पेपर ट्रेडिंग रीप्ले";
+    PracticeCardLive => "paper trading challenge", "पेपर ट्रेडिंग चुनौती";
+    PracticeScore => "Score", "स्कोर";
+    PracticeGrade => "Grade", "ग्रेड";
+    PracticeNotScored => "Not scored (fewer than {0} trading days)", "स्कोर नहीं ({0} से कम ट्रेडिंग दिन)";
+    PracticeTradingDays => "{0} trading days", "{0} ट्रेडिंग दिन";
+    PracticeYou => "You", "आप";
+    PracticeReturn => "Return", "रिटर्न";
+    PracticeMaxDrawdown => "Max drawdown", "अधिकतम गिरावट";
+    PracticeInvested => "Invested", "निवेशित";
+    PracticeNoBadges => "No badges this time", "इस बार कोई बैज नहीं";
+    PracticePassed => "passed", "सफल";
+    PracticeFailed => "failed", "असफल";
+    PracticeChallenge => "Challenge", "चुनौती";
+    PracticeScorecard => "Scorecard", "स्कोरकार्ड";
+    PracticeBenchmark => "Benchmark", "बेंचमार्क";
+    PracticeCash => "Cash", "नकद";
+    PracticeEquity => "Equity", "कुल मूल्य";
+    PracticePositions => "Positions", "पोज़िशन";
+    PracticeOrders => "Pending orders (fill at the next open)", "बाकी ऑर्डर (अगले दिन खुलने पर भरेंगे)";
+    PracticeMarket => "Market on this day", "इस दिन का बाज़ार";
+    PracticeDay => "Day {0} of {1}", "दिन {0} / {1}";
+    PracticeBadges => "Badges", "बैज";
+    PracticeNewBadge => "New badge: {0}", "नया बैज: {0}";
+    PracticeStreaks => "Streaks", "लगातार सफलता";
+    PracticeStreakDisciplined => "Disciplined runs in a row", "लगातार अनुशासित रन";
+    PracticeStreakChallenges => "Challenges passed in a row", "लगातार सफल चुनौतियाँ";
+    PracticeBestScores => "Best scores", "सर्वश्रेष्ठ स्कोर";
+    PracticeLocked => "Not earned yet", "अभी नहीं मिला";
+    PracticeRiskAdjusted => "Risk-adjusted return", "जोखिम-समायोजित रिटर्न";
+    PracticeDrawdownControl => "Drawdown control", "गिरावट पर नियंत्रण";
+    PracticeDiscipline => "Discipline", "अनुशासन";
+    PracticeDiversification => "Diversification", "विविधीकरण";
+    PracticeDebrief => "What happened", "क्या हुआ था";
+    BadgeKeptStops => "Kept your stops", "स्टॉप-लॉस निभाया";
+    BadgeKeptStopsHow => "Three or more buys, every one with a stop-loss", "तीन या अधिक खरीद, हर एक के साथ स्टॉप-लॉस";
+    BadgeDiversified => "Diversified across 5 sectors", "5 सेक्टरों में विविधता";
+    BadgeDiversifiedHow => "Hold stocks from five sectors at the same time", "एक साथ पाँच सेक्टरों के शेयर रखें";
+    BadgeSurvived => "Survived the crash", "गिरावट में टिके रहे";
+    BadgeSurvivedHow => "The benchmark falls 20% or more; you lose at most half as much while 30%+ invested", "बेंचमार्क 20% या अधिक गिरे; 30%+ निवेशित रहते हुए आपकी गिरावट उसकी आधी से ज़्यादा न हो";
+    BadgeBeatIndex => "Beat the index", "इंडेक्स को पछाड़ा";
+    BadgeBeatIndexHow => "Higher return than the benchmark with a smaller drawdown, 30%+ invested", "30%+ निवेशित रहते हुए कम गिरावट के साथ बेंचमार्क से अधिक रिटर्न";
+    BadgeSteady => "Steady hands", "स्थिर हाथ";
+    BadgeSteadyHow => "20+ days at least half invested with a drawdown under 10%", "20+ दिन कम से कम आधा निवेशित, गिरावट 10% से कम";
+    BadgeRiskAdjusted => "Risk-adjusted winner", "जोखिम-समायोजित विजेता";
+    BadgeRiskAdjustedHow => "Sharpe ratio of 1 or more over 20+ days, above the benchmark's", "20+ दिनों में 1 या अधिक शार्प अनुपात, बेंचमार्क से ऊपर";
+    BadgeChallenge => "Challenge complete", "चुनौती पूरी";
+    BadgeChallengeHow => "Pass any challenge", "कोई भी चुनौती पूरी करें";
+    BadgeSip => "Never missed a SIP", "कोई SIP नहीं छूटी";
+    BadgeSipHow => "Pass the SIP challenge without missing a month", "बिना कोई महीना छोड़े SIP चुनौती पूरी करें";
+    BadgeDistance => "Went the distance", "पूरा सफ़र तय किया";
+    BadgeDistanceHow => "Play a replay to its last day", "रीप्ले को आखिरी दिन तक खेलें";
+    BadgeStreak => "Three in a row", "लगातार तीन";
+    BadgeStreakHow => "Three disciplined runs in a row: every buy stopped and sized, no rule broken", "लगातार तीन अनुशासित रन: हर खरीद पर स्टॉप और सही आकार, कोई नियम नहीं टूटा";
 
     // ── Errors ──
     ErrorPrefix => "Error:", "त्रुटि:";

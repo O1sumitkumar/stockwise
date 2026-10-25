@@ -11,7 +11,8 @@ use super::app::{self, AppConfig, Needs};
 use super::http::{self, unknown_state};
 use super::secrets::Secret;
 use super::{
-    Broker, BrokerKind, Holding, Instrument, Order, OrderAck, OrderKind, OrderRequest, Position,
+    Broker, BrokerKind, Endpoint, Holding, Instrument, Order, OrderAck, OrderKind, OrderRequest,
+    Position, Profile, Shape, Trade,
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -250,7 +251,87 @@ fn order(o: &Value) -> Option<Order> {
         trigger: http::price(o.get("trigger_price")),
         status: http::text(o.get("status")),
         message: http::text(o.get("status_message")),
+        filled_qty: http::num(o.get("filled_quantity")),
+        avg_price: http::price(o.get("average_price")),
+        product: http::text(o.get("product")),
     })
+}
+
+fn trade(t: &Value) -> Option<Trade> {
+    let sym = http::text(t.get("trading_symbol").or_else(|| t.get("tradingsymbol")))?;
+    let stamp = http::text(
+        t.get("exchange_timestamp")
+            .or_else(|| t.get("order_timestamp")),
+    );
+    let (date, time) = super::split_timestamp(stamp.as_deref());
+    Some(Trade {
+        trade_id: http::text(t.get("trade_id")),
+        order_id: http::text(t.get("order_id"))?,
+        symbol: super::strip_series(&sym).to_string(),
+        exchange: http::text(t.get("exchange")),
+        product: http::text(t.get("product")),
+        side: super::side_from(http::text(t.get("transaction_type")).as_deref()),
+        qty: http::num(t.get("quantity")).unwrap_or(0.0),
+        price: http::price(t.get("average_price")),
+        date,
+        time,
+    })
+}
+
+fn profile(p: &Value) -> Profile {
+    let list = |k: &str| {
+        p.get(k)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|v| http::text(Some(v))).collect())
+            .unwrap_or_default()
+    };
+    Profile {
+        user_id: http::text(p.get("user_id")),
+        exchanges: list("exchanges"),
+        products: list("products"),
+    }
+}
+
+/// Fields read from each endpoint, and the ones Upstox's docs list.
+fn shape(endpoint: Endpoint) -> Shape {
+    match endpoint {
+        Endpoint::Profile => Shape {
+            required: "user_id exchanges products",
+            documented: "email broker user_name order_types user_type poa ddpi is_active",
+        },
+        Endpoint::Holdings => Shape {
+            required: "trading_symbol|tradingsymbol quantity average_price last_price",
+            documented: "isin cnc_used_quantity collateral_type company_name haircut product \
+                close_price pnl day_change day_change_percentage instrument_token \
+                collateral_quantity collateral_update_quantity t1_quantity exchange",
+        },
+        Endpoint::Positions => Shape {
+            required: "trading_symbol|tradingsymbol quantity",
+            documented: "exchange multiplier value pnl product instrument_token average_price \
+                buy_value overnight_quantity day_buy_value day_buy_price overnight_buy_amount \
+                overnight_buy_quantity day_buy_quantity day_sell_value day_sell_price \
+                overnight_sell_amount overnight_sell_quantity day_sell_quantity last_price \
+                unrealised realised sell_value close_price buy_price sell_price",
+        },
+        Endpoint::Orders => Shape {
+            required: "order_id status transaction_type quantity",
+            documented: "exchange product price guid tag instrument_token placed_by \
+                trading_symbol tradingsymbol order_type validity trigger_price disclosed_quantity \
+                average_price filled_quantity pending_quantity status_message status_message_raw \
+                exchange_order_id parent_order_id variety order_timestamp exchange_timestamp \
+                is_amo order_request_id order_ref_id",
+        },
+        Endpoint::Trades => Shape {
+            required: "trade_id order_id exchange product trading_symbol|tradingsymbol \
+                transaction_type quantity average_price exchange_timestamp|order_timestamp",
+            documented: "instrument_token order_type exchange_order_id order_ref_id \
+                order_timestamp exchange_timestamp",
+        },
+        Endpoint::Gtts => Shape {
+            required: "",
+            documented: "",
+        },
+    }
 }
 
 impl UpstoxClient {
@@ -318,22 +399,45 @@ impl Broker for UpstoxClient {
     }
 
     async fn holdings(&self) -> Result<Vec<Holding>> {
-        let raw = self
-            .list("/v2/portfolio/long-term-holdings", "holdings")
-            .await?;
+        let raw = self.rows(Endpoint::Holdings).await?;
         Ok(raw.iter().filter_map(holding).collect())
     }
 
     async fn positions(&self) -> Result<Vec<Position>> {
-        let raw = self
-            .list("/v2/portfolio/short-term-positions", "positions")
-            .await?;
+        let raw = self.rows(Endpoint::Positions).await?;
         Ok(raw.iter().filter_map(position).collect())
     }
 
     async fn orders(&self) -> Result<Vec<Order>> {
-        let raw = self.list("/v2/order/retrieve-all", "order book").await?;
+        let raw = self.rows(Endpoint::Orders).await?;
         Ok(raw.iter().filter_map(order).collect())
+    }
+
+    async fn profile(&self) -> Result<Profile> {
+        let raw = self.rows(Endpoint::Profile).await?;
+        Ok(raw.first().map(profile).unwrap_or_default())
+    }
+
+    /// Today's fills (`get-trades-for-day`).
+    async fn trades(&self, _since: Option<chrono::NaiveDate>) -> Result<Vec<Trade>> {
+        let raw = self.rows(Endpoint::Trades).await?;
+        Ok(raw.iter().filter_map(trade).collect())
+    }
+
+    async fn rows(&self, endpoint: Endpoint) -> Result<Vec<Value>> {
+        let what = endpoint.label();
+        match endpoint {
+            Endpoint::Profile => Ok(vec![self.get_data("/v2/user/profile", what).await?]),
+            Endpoint::Holdings => self.list("/v2/portfolio/long-term-holdings", what).await,
+            Endpoint::Positions => self.list("/v2/portfolio/short-term-positions", what).await,
+            Endpoint::Orders => self.list("/v2/order/retrieve-all", what).await,
+            Endpoint::Trades => self.list("/v2/order/trades/get-trades-for-day", what).await,
+            Endpoint::Gtts => bail!("Upstox GTT orders are not supported yet"),
+        }
+    }
+
+    fn shape(&self, endpoint: Endpoint) -> Option<Shape> {
+        (endpoint != Endpoint::Gtts).then(|| shape(endpoint))
     }
 
     async fn resolve_instrument(&self, symbol: &str, exchange: &str) -> Result<Instrument> {
@@ -589,5 +693,62 @@ mod tests {
     async fn gtt_is_not_supported() {
         let (_s, c) = client(vec![]).await;
         assert!(c.gtt_list().await.is_err());
+    }
+
+    fn read_routes() -> Vec<Route> {
+        vec![
+            Route::json(
+                "GET",
+                "/v2/user/profile",
+                include_str!("fixtures/upstox_profile.json"),
+            ),
+            Route::json(
+                "GET",
+                "/v2/portfolio/long-term-holdings",
+                include_str!("fixtures/upstox_holdings.json"),
+            ),
+            Route::json(
+                "GET",
+                "/v2/order/retrieve-all",
+                include_str!("fixtures/upstox_orders.json"),
+            ),
+            Route::json(
+                "GET",
+                "/v2/order/trades/get-trades-for-day",
+                include_str!("fixtures/upstox_trades.json"),
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn trade_book_and_profile_parse() {
+        let (_s, c) = client(read_routes()).await;
+        let t = c.trades(None).await.unwrap();
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].symbol, "GMRINFRA");
+        assert_eq!((t[0].qty, t[0].price), (100.0, Some(82.35)));
+        assert_eq!(t[0].trade_id.as_deref(), Some("50091502"));
+        assert_eq!(t[0].date, chrono::NaiveDate::from_ymd_opt(2026, 10, 20));
+        assert_eq!(t[0].time.as_deref(), Some("09:15:42"));
+        assert!(t[0].is_delivery_equity());
+        assert!(!t[1].is_delivery_equity());
+        let p = c.profile().await.unwrap();
+        assert_eq!(p.user_id.as_deref(), Some("TEST42"));
+        assert!(c.rows(Endpoint::Gtts).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn fixtures_match_the_documented_shape() {
+        let (_s, c) = client(read_routes()).await;
+        crate::brokers::mock::assert_fixture_shapes(
+            &c,
+            &[
+                Endpoint::Profile,
+                Endpoint::Holdings,
+                Endpoint::Orders,
+                Endpoint::Trades,
+            ],
+        )
+        .await;
     }
 }

@@ -1,0 +1,80 @@
+{
+  "status": "success",
+  "data": [
+    {
+      "trade_id": "10000000",
+      "order_id": "200000000000000",
+      "exchange": "NSE",
+      "tradingsymbol": "INFY",
+      "instrument_token": 408065,
+      "product": "CNC",
+      "average_price": 1500.0,
+      "quantity": 4,
+      "exchange_order_id": "300000000000000",
+      "transaction_type": "BUY",
+      "fill_timestamp": "2026-10-20 09:16:39",
+      "order_timestamp": "09:16:39",
+      "exchange_timestamp": "2026-10-20 09:16:39"
+    },
+    {
+      "trade_id": "10000001",
+      "order_id": "200000000000000",
+      "exchange": "NSE",
+      "tradingsymbol": "INFY",
+      "instrument_token": 408065,
+      "product": "CNC",
+      "average_price": 1510.0,
+      "quantity": 6,
+      "exchange_order_id": "300000000000000",
+      "transaction_type": "BUY",
+      "fill_timestamp": "2026-10-20 09:16:41",
+      "order_timestamp": "09:16:39",
+      "exchange_timestamp": "2026-10-20 09:16:41"
+    },
+    {
+      "trade_id": "10000002",
+      "order_id": "200000000000001",
+      "exchange": "NSE",
+      "tradingsymbol": "IOC",
+      "instrument_token": 415745,
+      "product": "CNC",
+      "average_price": 109.4,
+      "quantity": 1,
+      "exchange_order_id": "300000000000001",
+      "transaction_type": "SELL",
+      "fill_timestamp": "2026-10-20 10:02:11",
+      "order_timestamp": "10:02:10",
+      "exchange_timestamp": "2026-10-20 10:02:11"
+    },
+    {
+      "trade_id": "10000003",
+      "order_id": "200000000000002",
+      "exchange": "NSE",
+      "tradingsymbol": "SBIN",
+      "instrument_token": 779521,
+      "product": "MIS",
+      "average_price": 420.65,
+      "quantity": 10,
+      "exchange_order_id": "300000000000002",
+      "transaction_type": "BUY",
+      "fill_timestamp": "2026-10-20 11:30:00",
+      "order_timestamp": "11:30:00",
+      "exchange_timestamp": "2026-10-20 11:30:00"
+    },
+    {
+      "trade_id": "10000004",
+      "order_id": "200000000000003",
+      "exchange": "NFO",
+      "tradingsymbol": "NIFTY26OCT25000CE",
+      "instrument_token": 12345,
+      "product": "NRML",
+      "average_price": 120.5,
+      "quantity": 75,
+      "exchange_order_id": "300000000000003",
+      "transaction_type": "BUY",
+      "fill_timestamp": "2026-10-20 12:00:00",
+      "order_timestamp": "12:00:00",
+      "exchange_timestamp": "2026-10-20 12:00:00"
+    }
+  ]
+}

@@ -291,6 +291,25 @@ pub async fn cmd_sim(
             );
             println!("    {} — Clear all data", "stockwise sim reset".bold());
             println!();
+            println!("  {} Practice:", "→".cyan());
+            println!();
+            println!(
+                "    {} — Trade a past market day by day, the future hidden",
+                "stockwise sim replay start covid-crash-2020".bold()
+            );
+            println!(
+                "    {} — Goal-based challenges (replay or live sessions)",
+                "stockwise sim challenge list".bold()
+            );
+            println!(
+                "    {} — Badges, streaks, best scores",
+                "stockwise sim profile".bold()
+            );
+            println!(
+                "    {} — Share your last result",
+                "stockwise sim card --svg card.svg".bold()
+            );
+            println!();
             println!(
                 "  {} Morning: {} → Track: {} → EOD: {}",
                 "Workflow:".dimmed(),

@@ -14,6 +14,7 @@ mod ai;
 mod alerts;
 mod api;
 mod backtest;
+mod benchmark;
 mod bonds;
 mod brokers;
 mod calendar;
@@ -27,6 +28,7 @@ mod daemon_status;
 mod derivatives;
 mod display;
 mod funds;
+mod goals;
 mod greeks;
 mod gsec;
 mod i18n;
@@ -37,13 +39,16 @@ mod market;
 mod notify;
 mod output;
 mod pagecache;
+mod payoff;
 mod portfolio;
+mod practice;
 mod providers;
 #[cfg(feature = "server")]
 mod server;
 mod simulator;
 mod store;
 mod tax;
+mod tax_export;
 mod technical;
 #[cfg(test)]
 mod testutil;
@@ -52,6 +57,7 @@ mod tui;
 mod views;
 mod watchlist;
 mod wealth;
+mod xlsx;
 
 use clap::parser::ValueSource;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
@@ -395,15 +401,18 @@ enum Commands {
         action: MfCmd,
     },
 
-    /// Option chains with greeks, PCR and max pain; `options SYMBOL` shows expected moves
+    /// Option chains with greeks, PCR, max pain and payoffs; `options SYMBOL` shows expected moves
     #[command(
         args_conflicts_with_subcommands = true,
         subcommand_negates_reqs = true,
         after_help = "Examples:\n  \
 stockwise options chain NIFTY             NSE index options, nearest expiry\n  \
+stockwise options chain SENSEX            BSE index options (also BANKEX, SENSEX50, RELIANCE.BO)\n  \
 stockwise options chain AAPL -m us -n 5   US options from Yahoo, 5 strikes each side\n  \
 stockwise options pcr BANKNIFTY           put/call ratio and open-interest walls\n  \
 stockwise options maxpain RELIANCE -e 2026-10-27\n  \
+stockwise options payoff NIFTY --strategy iron-condor --width 200\n  \
+stockwise options payoff NIFTY --leg \"buy call 24500\" --leg \"sell call 24800\" --today\n  \
 stockwise options TCS                     expected moves (same as `options moves TCS`)"
     )]
     Options {
@@ -477,7 +486,7 @@ stockwise options TCS                     expected moves (same as `options moves
         /// Target return for the day, in percent (e.g. 1.5)
         target: f64,
         /// Add a strategy's entry/exit rule as an extra signal: a built-in, a file in your
-        /// strategies folder, or file:PATH.toml (as in `backtest -s`)
+        /// strategies folder, file:PATH.toml or wasm:PATH.wasm (as in `backtest -s`)
         #[arg(short, long)]
         strategy: Option<String>,
     },
@@ -581,10 +590,20 @@ stockwise options TCS                     expected moves (same as `options moves
     Rebalance,
     /// Tax-loss harvesting opportunities
     Harvest,
-    /// Capital-gains tax estimate for your portfolio
+    /// Capital-gains tax estimate; `tax export` writes an ITR Schedule CG / Form 8949 CSV
+    #[command(
+        args_conflicts_with_subcommands = true,
+        subcommand_negates_reqs = true,
+        after_help = "Examples:\n  \
+stockwise tax in                                  this tax year's estimate\n  \
+stockwise tax export in --fy 2025-26 --out cg.csv ITR Schedule CG / 112A CSV\n  \
+stockwise tax export us --fy 2025 --json          Form 8949 rows as JSON"
+    )]
     Tax {
-        #[arg(value_enum, ignore_case = true)]
-        country: TaxCountry,
+        #[command(subcommand)]
+        action: Option<TaxCmd>,
+        #[arg(value_enum, ignore_case = true, required = true)]
+        country: Option<TaxCountry>,
         #[command(flatten)]
         out: TableOutput,
     },
@@ -592,6 +611,18 @@ stockwise options TCS                     expected moves (same as `options moves
     Divcal,
     /// Correlation between your holdings — find redundant positions
     Pcorr,
+
+    // ── Planning ──
+    /// Goal planner: SIP for a target corpus, retirement and education calculators
+    #[command(after_help = "Examples:\n  \
+stockwise goal sip --target 1cr --years 15 --step-up 10\n  \
+stockwise goal retire --monthly-expense 80000 --years-to-retire 20 --years-in-retirement 30\n  \
+stockwise goal education --cost 25L --years 10 --json\n\n\
+Amounts take Indian units: 50k, 25L (lakh), 1cr (crore).")]
+    Goal {
+        #[command(subcommand)]
+        action: GoalCmd,
+    },
 
     // ── Live trading ──
     /// Live orders: Angel One; Zerodha/Upstox/Dhan/Fyers experimental (real money — try `sim` first)
@@ -721,6 +752,155 @@ enum PortfolioCmd {
     },
     /// List your portfolios (see --portfolio)
     List,
+    /// Time-weighted return vs NIFTY 50 / S&P 500: alpha, beta, attribution by holding and sector
+    Benchmark {
+        /// NIFTY, SENSEX, BANKNIFTY, NIFTY500, SP500, NASDAQ, NASDAQ100, DOW, an index such as
+        /// ^NSEI, or a ticker [default: NIFTY; SP500 with -m us]
+        benchmark: Option<String>,
+        #[arg(short, long, default_value = "1y", value_parser = BENCHMARK_PERIODS)]
+        period: String,
+        #[command(flatten)]
+        out: TableOutput,
+    },
+}
+
+/// Periods `portfolio benchmark` accepts: long enough for daily returns.
+const BENCHMARK_PERIODS: [&str; 9] = ["1mo", "3mo", "6mo", "ytd", "1y", "2y", "5y", "10y", "max"];
+
+#[derive(Subcommand)]
+enum TaxCmd {
+    /// Capital-gains schedule of a tax year's sales: ITR Schedule CG / 112A (in) or Form 8949 (us)
+    #[command(
+        after_help = "An estimate from the sales StockWise recorded (`portfolio sell`, \
+tradebook and CAS imports) — verify it with your broker's tax P&L before filing."
+    )]
+    Export {
+        /// `in` (ITR Schedule CG / 112A) or `us` (Form 8949) [default: in; us with -m us]
+        #[arg(value_enum, ignore_case = true)]
+        country: Option<ExportCountry>,
+        /// Tax year: 2025-26 or AY2026-27 for India, 2025 for the US [default: the current one]
+        #[arg(long, value_name = "YEAR")]
+        fy: Option<String>,
+        /// Write the file here and print a summary, instead of printing it
+        #[arg(long, value_name = "FILE")]
+        out: Option<std::path::PathBuf>,
+        /// JSON instead of CSV
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ExportCountry {
+    /// India: ITR Schedule CG / Schedule 112A
+    #[value(alias = "india")]
+    In,
+    /// United States: Form 8949 and Schedule D totals
+    #[value(alias = "usa")]
+    Us,
+}
+
+#[derive(Subcommand)]
+enum GoalCmd {
+    /// Monthly SIP needed for a target corpus, with an optional yearly step-up
+    Sip {
+        /// Target corpus: 1cr, 50L, 2500000, ...
+        #[arg(long, value_parser = goal_amount)]
+        target: f64,
+        /// Years to the goal (1-60)
+        #[arg(long, value_parser = goal_years)]
+        years: u32,
+        /// Expected annual return, in percent
+        #[arg(long = "return", value_name = "PCT", default_value_t = 12.0, value_parser = return_pct)]
+        return_pct: f64,
+        #[command(flatten)]
+        sip: GoalSipFlags,
+    },
+    /// Retirement corpus for today's monthly expenses, and the SIP that builds it
+    Retire {
+        /// Monthly expenses in today's money: 80000, 80k, 1.2L, ...
+        #[arg(long, value_parser = goal_amount)]
+        monthly_expense: f64,
+        /// Years until you retire (1-60)
+        #[arg(long, value_parser = goal_years)]
+        years_to_retire: u32,
+        /// Years the corpus must last (1-60)
+        #[arg(long, value_parser = goal_years)]
+        years_in_retirement: u32,
+        /// Yearly inflation of your expenses, in percent
+        #[arg(long, value_name = "PCT", default_value_t = 6.0, value_parser = inflation_pct)]
+        inflation: f64,
+        /// Annual return until retirement, in percent
+        #[arg(long, value_name = "PCT", default_value_t = 12.0, value_parser = return_pct)]
+        return_pre: f64,
+        /// Annual return on the corpus during retirement, in percent
+        #[arg(long, value_name = "PCT", default_value_t = 7.0, value_parser = return_pct)]
+        return_post: f64,
+        #[command(flatten)]
+        sip: GoalSipFlags,
+    },
+    /// Education cost in N years, grown by education inflation, and the SIP that pays it
+    Education {
+        /// Cost in today's money: 25L, 40 lakh, 1.2cr, ...
+        #[arg(long, value_parser = goal_amount)]
+        cost: f64,
+        /// Years until it is needed (1-60)
+        #[arg(long, value_parser = goal_years)]
+        years: u32,
+        /// Yearly education inflation, in percent
+        #[arg(long, value_name = "PCT", default_value_t = 8.0, value_parser = inflation_pct)]
+        inflation: f64,
+        /// Expected annual return, in percent
+        #[arg(long = "return", value_name = "PCT", default_value_t = 12.0, value_parser = return_pct)]
+        return_pct: f64,
+        #[command(flatten)]
+        sip: GoalSipFlags,
+    },
+}
+
+/// SIP options shared by every goal.
+#[derive(Args, Clone, Copy)]
+struct GoalSipFlags {
+    /// Raise the SIP by this percent every year
+    #[arg(long, value_name = "PCT", default_value_t = 0.0, value_parser = step_up_pct)]
+    step_up: f64,
+    /// Money already invested towards the goal (grows at the same return)
+    #[arg(long, value_parser = goal_amount)]
+    savings: Option<f64>,
+    #[command(flatten)]
+    out: JsonOutput,
+}
+
+fn goal_amount(s: &str) -> Result<f64, String> {
+    goals::parse_amount(s)
+}
+
+fn goal_years(s: &str) -> Result<u32, String> {
+    match s.trim().parse::<u32>() {
+        Ok(y) if (1..=60).contains(&y) => Ok(y),
+        _ => Err(format!(
+            "`{s}` must be a whole number of years from 1 to 60"
+        )),
+    }
+}
+
+fn percent_between(s: &str, lo: f64, hi: f64) -> Result<f64, String> {
+    match s.trim().trim_end_matches('%').parse::<f64>() {
+        Ok(v) if (lo..=hi).contains(&v) => Ok(v),
+        _ => Err(format!("`{s}` must be a percentage from {lo} to {hi}")),
+    }
+}
+
+fn return_pct(s: &str) -> Result<f64, String> {
+    percent_between(s, 0.0, 50.0)
+}
+
+fn inflation_pct(s: &str) -> Result<f64, String> {
+    percent_between(s, 0.0, 30.0)
+}
+
+fn step_up_pct(s: &str) -> Result<f64, String> {
+    percent_between(s, 0.0, 50.0)
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -858,6 +1038,183 @@ enum SimCmd {
         #[arg(short, long)]
         yes: bool,
     },
+    /// Historical replay: trade a past market day by day, the future hidden
+    #[command(after_help = REPLAY_HELP)]
+    Replay {
+        #[command(subcommand)]
+        action: ReplayCmd,
+    },
+    /// Goal-based challenges over a replay or live paper sessions
+    Challenge {
+        #[command(subcommand)]
+        action: ChallengeCmd,
+    },
+    /// Your badges, streaks and best scores
+    Profile {
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Shareable card of your last finished run (text, or SVG with --svg)
+    Card {
+        /// Write the card as an SVG image to FILE
+        #[arg(long, value_name = "FILE")]
+        svg: Option<std::path::PathBuf>,
+        /// Also print the text card (the default without --svg)
+        #[arg(long)]
+        text: bool,
+    },
+}
+
+const REPLAY_HELP: &str = "\
+Examples:
+  stockwise sim replay list
+  stockwise sim replay start covid-crash-2020
+  stockwise sim replay buy RELIANCE 20 --stop 1250 --target 1600
+  stockwise sim replay next 5
+  stockwise sim replay chart index
+  stockwise sim replay end
+  stockwise -m us sim replay start --from 2022-01-03 --to 2022-06-30 --symbols AAPL,MSFT,XOM
+
+Prices come from daily history fetched once at the start; you only ever see bars up
+to the replay date. Orders fill at the next day's open with the backtest cost models.
+Paper money only — not financial advice. Guide: docs/simulator.md";
+
+#[derive(Subcommand)]
+enum ReplayCmd {
+    /// The built-in scenarios
+    #[command(alias = "scenarios")]
+    List {
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Start a replay: a scenario name, or --from/--to/--symbols
+    Start {
+        /// covid-crash-2020, gfc-2008, adani-2023, dotcom-2000, bull-run-2021, rate-hikes-2022, or file:PATH.toml
+        #[arg(
+            required_unless_present_all = ["from", "to"],
+            conflicts_with_all = ["from", "to", "symbols", "benchmark"]
+        )]
+        scenario: Option<String>,
+        /// First day of a custom replay (YYYY-MM-DD)
+        #[arg(long, value_parser = replay_date, requires = "to")]
+        from: Option<chrono::NaiveDate>,
+        /// Last day of a custom replay (YYYY-MM-DD, in the past)
+        #[arg(long, value_parser = replay_date, requires = "from")]
+        to: Option<chrono::NaiveDate>,
+        /// Stocks for a custom replay, e.g. TCS,INFY,HDFCBANK
+        #[arg(long, value_delimiter = ',', num_args = 1..)]
+        symbols: Vec<String>,
+        /// Benchmark of a custom replay [default: ^NSEI, or ^GSPC with -m us]
+        #[arg(long)]
+        benchmark: Option<String>,
+        /// Paper capital [default: the scenario's, 100000]
+        #[arg(long, value_parser = capital)]
+        capital: Option<f64>,
+        /// Trading costs; auto = India delivery for INR stocks, US otherwise
+        #[arg(long, default_value = "auto", value_parser = ["auto", "none", "in-delivery", "in-intraday", "us"])]
+        costs: String,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Move forward one or more trading days
+    Next {
+        /// Trading days to move [default: 1]
+        #[arg(default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=1000))]
+        days: u32,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Queue a buy for the next day's open
+    Buy {
+        symbol: String,
+        #[arg(value_parser = clap::value_parser!(u64).range(1..))]
+        qty: u64,
+        /// Stop-loss price: sell if the price falls to it
+        #[arg(long, value_parser = level)]
+        stop: Option<f64>,
+        /// Target price: sell if the price rises to it
+        #[arg(long, value_parser = level)]
+        target: Option<f64>,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Queue a sell for the next day's open [default: the whole position]
+    Sell {
+        symbol: String,
+        #[arg(value_parser = clap::value_parser!(u64).range(1..))]
+        qty: Option<u64>,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Cancel a pending order [default: all of them]
+    Cancel {
+        /// Order number from `sim replay status`
+        id: Option<u32>,
+    },
+    /// Change a position's stop-loss or target
+    Set {
+        symbol: String,
+        #[arg(long, value_parser = level)]
+        stop: Option<f64>,
+        #[arg(long, value_parser = level)]
+        target: Option<f64>,
+    },
+    /// Account, positions, orders and the market on the replay date
+    Status {
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Price chart up to the replay date: a stock, or `index`
+    Chart {
+        symbol: String,
+        /// Trading days to show
+        #[arg(long, default_value_t = 60)]
+        days: usize,
+    },
+    /// Finish the replay: scorecard, badges and what happened next
+    End {
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+}
+
+#[derive(Subcommand)]
+enum ChallengeCmd {
+    /// The built-in challenges
+    List {
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Start a challenge: inside the running replay, or over live paper sessions
+    Start {
+        /// beat-the-index, steady-hands, position-limit, stop-loss, sip-discipline, crash-survivor, or file:PATH.toml
+        name: String,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Progress, rules and anything broken so far
+    Status {
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// End the challenge now and see the result
+    End {
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+}
+
+fn replay_date(s: &str) -> Result<chrono::NaiveDate, String> {
+    chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d")
+        .map_err(|_| format!("`{s}`: use YYYY-MM-DD, e.g. 2020-02-03"))
+}
+
+/// A stop-loss or target price.
+fn level(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
+        _ => Err(format!("`{s}` must be a price above 0")),
+    }
 }
 
 #[derive(Subcommand)]
@@ -1086,16 +1443,19 @@ enum MfCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Rank a category's growth funds by 1Y/3Y/5Y return (bare: list categories)
+    /// Rank a category's growth funds by 1Y/3Y/5Y return or expense ratio (bare: list categories)
     Screen {
         /// Category words, e.g. `flexi cap`, `elss`, `liquid`, `equity etf`
         category: Vec<String>,
         /// Which plans to include
         #[arg(long, value_enum, ignore_case = true, default_value = "direct")]
         plan: MfPlan,
-        /// Return horizon to rank by
+        /// Rank by return horizon, or by expense ratio (`ter`, lowest first)
         #[arg(short, long, value_enum, default_value = "3y")]
         sort: MfSort,
+        /// Only funds whose disclosed TER is at most this many percent, e.g. 1.0
+        #[arg(long, value_name = "PERCENT", value_parser = max_ter)]
+        max_ter: Option<f64>,
         /// Funds to show
         #[arg(short = 'n', long, default_value_t = 15)]
         limit: usize,
@@ -1136,6 +1496,17 @@ enum MfSort {
     Y3,
     #[value(name = "5y")]
     Y5,
+    /// Total expense ratio, lowest first
+    Ter,
+}
+
+fn max_ter(s: &str) -> Result<f64, String> {
+    match s.trim().trim_end_matches('%').parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 && v <= 5.0 => Ok(v),
+        _ => Err(format!(
+            "`{s}`: a percentage above 0 and at most 5, e.g. 1.0"
+        )),
+    }
 }
 
 #[derive(Subcommand)]
@@ -1181,12 +1552,96 @@ enum OptionsCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Payoff of a multi-leg position priced from the live chain: P/L chart,
+    /// max profit/loss, breakevens, probability of profit, net greeks (no orders)
+    #[command(
+        after_help = "Legs: `buy|sell [QTY] call|put STRIKE [@PRICE]` or `buy|sell [QTY] stock [@PRICE]`.\n\
+STRIKE is a listed strike or atm, atm+N, atm-N (N strikes from the money). Without @PRICE a\n\
+leg is priced at the bid/ask mid, else the last trade (flagged `ltp`).\n\n\
+Presets (around the at-the-money strike, W = --width, default two strike steps):\n  \
+bull-call     buy call ATM, sell call ATM+W\n  \
+bear-put      buy put ATM, sell put ATM-W\n  \
+straddle      buy call and put ATM\n  \
+strangle      buy put ATM-W, buy call ATM+W\n  \
+iron-condor   sell put ATM-W and call ATM+W, buy put ATM-2W and call ATM+2W\n  \
+butterfly     buy calls ATM-W and ATM+W, sell 2 calls ATM\n  \
+covered-call  buy the underlying at spot, sell call ATM+W"
+    )]
+    Payoff {
+        /// NIFTY, BANKNIFTY, SENSEX, an F&O stock, or a US ticker with -m us
+        symbol: String,
+        /// A leg, e.g. "buy call 24500" (repeat for each leg)
+        #[arg(long = "leg", value_name = "LEG", value_parser = payoff::parse_leg)]
+        legs: Vec<payoff::LegSpec>,
+        /// A ready-made strategy around the at-the-money strike
+        #[arg(short, long, value_enum)]
+        strategy: Option<StrategyArg>,
+        /// Strike distance for --strategy, in points (default: two strike steps)
+        #[arg(short, long)]
+        width: Option<f64>,
+        /// Expiry date (default: nearest)
+        #[arg(short, long, value_parser = expiry_date)]
+        expiry: Option<chrono::NaiveDate>,
+        /// Number of lots (each leg's quantity is multiplied by this)
+        #[arg(short, long, default_value_t = 1)]
+        lots: u32,
+        /// Units per lot, when the chain does not show it (e.g. BSE after hours)
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        lot_size: Option<u32>,
+        /// Risk-free rate in percent (default 6.5 India, 4.0 US)
+        #[arg(long)]
+        rate: Option<f64>,
+        /// Dividend yield in percent
+        #[arg(long, default_value_t = 0.0)]
+        div_yield: f64,
+        /// Volatility in percent for the probability of profit (default: ATM IV)
+        #[arg(long)]
+        iv: Option<f64>,
+        /// Also chart today's P/L (Black-Scholes at each leg's IV)
+        #[arg(long)]
+        today: bool,
+        /// Print JSON instead of a chart
+        #[arg(long)]
+        json: bool,
+    },
     /// Expected moves and strike ideas from realized volatility
     Moves {
         symbol: String,
         #[arg(short, long, default_value = "1mo", value_parser = PERIODS)]
         period: String,
     },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum StrategyArg {
+    /// Buy ATM call, sell call ATM+W
+    BullCall,
+    /// Buy ATM put, sell put ATM-W
+    BearPut,
+    /// Buy ATM call and put
+    Straddle,
+    /// Buy put ATM-W and call ATM+W
+    Strangle,
+    /// Short iron condor: credit between ATM±W, wings at ATM±2W
+    IronCondor,
+    /// Long call butterfly ATM-W / 2×ATM / ATM+W
+    Butterfly,
+    /// Underlying at spot plus a short call ATM+W
+    CoveredCall,
+}
+
+impl From<StrategyArg> for payoff::Preset {
+    fn from(s: StrategyArg) -> Self {
+        match s {
+            StrategyArg::BullCall => payoff::Preset::BullCall,
+            StrategyArg::BearPut => payoff::Preset::BearPut,
+            StrategyArg::Straddle => payoff::Preset::Straddle,
+            StrategyArg::Strangle => payoff::Preset::Strangle,
+            StrategyArg::IronCondor => payoff::Preset::IronCondor,
+            StrategyArg::Butterfly => payoff::Preset::Butterfly,
+            StrategyArg::CoveredCall => payoff::Preset::CoveredCall,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -1282,6 +1737,29 @@ enum TradeCmd {
         #[command(subcommand)]
         action: GttCmd,
     },
+    /// Read-only check of the broker integration against your account; prints a
+    /// redacted report to paste into a GitHub issue (never places an order)
+    Selftest {
+        /// Hide prices and order values in the report
+        #[arg(long)]
+        redact_amounts: bool,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
+    /// Pull today's executed trades (and GTT status) into the portfolio: preview, then --apply
+    Sync {
+        /// Ignore fills before this date (YYYY-MM-DD); Dhan also fetches its trade history
+        #[arg(long, value_name = "DATE")]
+        since: Option<String>,
+        /// Write the changes into the portfolio (default: preview only)
+        #[arg(long)]
+        apply: bool,
+        /// Notify (Telegram/Slack/Discord/email) about GTT changes and synced orders
+        #[arg(long)]
+        notify: bool,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1314,9 +1792,15 @@ enum GttCmd {
         #[command(flatten)]
         flags: OrderFlags,
     },
-    /// Your GTT orders
+    /// Your GTT orders, with status changes since the last look
     #[command(alias = "show")]
-    List,
+    List {
+        /// Notify (Telegram/Slack/Discord/email) about GTTs that triggered or were cancelled
+        #[arg(long)]
+        notify: bool,
+        #[command(flatten)]
+        out: JsonOutput,
+    },
     /// Cancel a GTT by id (asks for confirmation)
     Cancel {
         /// GTT id from `trade gtt list`
@@ -1412,7 +1896,8 @@ enum BacktestCmd {
 /// Options shared by every form of `backtest`.
 #[derive(Args, Clone)]
 struct BacktestFlags {
-    /// Strategy: rsi, macd, sma, bb, vwap, mr, a file in your strategies folder, or file:PATH.toml
+    /// Strategy: rsi, macd, sma, bb, vwap, mr, a file in your strategies folder, file:PATH.toml,
+    /// or wasm:PATH.wasm (a plugin; needs the wasm-plugins feature)
     #[arg(short, long, default_value = "rsi")]
     strategy: String,
     /// Set a strategy parameter, e.g. -P oversold=25 (repeatable)
@@ -1689,6 +2174,7 @@ const GROUPS: &[(&str, &[&str])] = &[
             "pcorr",
         ],
     ),
+    ("Planning", &["goal"]),
     ("Interfaces", &["tui", "serve"]),
     ("Live trading", &["trade"]),
     ("Setup", &["notify", "config", "completions", "man", "help"]),
@@ -1709,6 +2195,7 @@ fn group_msg(english: &str) -> Option<i18n::Msg> {
         "Interfaces" => Msg::GroupInterfaces,
         "Live trading" => Msg::GroupLiveTrading,
         "Setup" => Msg::GroupSetup,
+        "Planning" => Msg::GroupPlanning,
         _ => return None,
     })
 }
@@ -2071,6 +2558,7 @@ async fn main() {
                 category,
                 plan,
                 sort,
+                max_ter,
                 limit,
                 max,
                 json,
@@ -2080,12 +2568,14 @@ async fn main() {
                     MfPlan::Regular => commands::PlanFilter::Regular,
                     MfPlan::All => commands::PlanFilter::All,
                 };
-                let months = match sort {
-                    MfSort::Y1 => 12,
-                    MfSort::Y3 => 36,
-                    MfSort::Y5 => 60,
+                let sort = match sort {
+                    MfSort::Y1 => commands::ScreenSort::Return(12),
+                    MfSort::Y3 => commands::ScreenSort::Return(36),
+                    MfSort::Y5 => commands::ScreenSort::Return(60),
+                    MfSort::Ter => commands::ScreenSort::Ter,
                 };
-                commands::cmd_mf_screen(&category.join(" "), plan, months, limit, max, json).await
+                commands::cmd_mf_screen(&category.join(" "), plan, sort, max_ter, limit, max, json)
+                    .await
             }
             MfCmd::Overlap { a, b, json } => commands::cmd_mf_overlap(&a, &b, m, json).await,
         },
@@ -2115,6 +2605,35 @@ async fn main() {
                 expiry,
                 json,
             }) => commands::cmd_options_maxpain(&symbol, expiry, m, json).await,
+            Some(OptionsCmd::Payoff {
+                symbol,
+                legs,
+                strategy,
+                width,
+                expiry,
+                lots,
+                lot_size,
+                rate,
+                div_yield,
+                iv,
+                today,
+                json,
+            }) => {
+                let args = commands::PayoffArgs {
+                    legs,
+                    strategy: strategy.map(Into::into),
+                    width,
+                    expiry,
+                    lots,
+                    lot_size,
+                    rate_pct: rate,
+                    div_yield_pct: div_yield,
+                    iv_pct: iv,
+                    today,
+                    json,
+                };
+                commands::cmd_options_payoff(&symbol, args, m).await
+            }
             Some(OptionsCmd::Moves { symbol, period }) => {
                 commands::cmd_options(&symbol, &period, m).await
             }
@@ -2191,6 +2710,73 @@ async fn main() {
             Some(SimCmd::Status) => commands::cmd_sim("status", None, None, m).await,
             Some(SimCmd::Settle { now }) => commands::cmd_sim_settle(now).await,
             Some(SimCmd::History { out }) => commands::cmd_sim_history(m, out.into()),
+            Some(SimCmd::Replay { action }) => match action {
+                ReplayCmd::List { out } => commands::cmd_replay_list(out.into()),
+                ReplayCmd::Start {
+                    scenario,
+                    from,
+                    to,
+                    symbols,
+                    benchmark,
+                    capital,
+                    costs,
+                    out,
+                } => {
+                    let start = commands::ReplayStart {
+                        scenario,
+                        from,
+                        to,
+                        symbols,
+                        benchmark,
+                        capital,
+                        costs,
+                        fmt: out.into(),
+                    };
+                    commands::cmd_replay_start(start, m).await
+                }
+                ReplayCmd::Next { days, out } => commands::cmd_replay_next(days, out.into()),
+                ReplayCmd::Buy {
+                    symbol,
+                    qty,
+                    stop,
+                    target,
+                    out,
+                } => commands::cmd_replay_order(
+                    commands::OrderSide::Buy,
+                    &symbol,
+                    Some(qty),
+                    stop,
+                    target,
+                    out.into(),
+                ),
+                ReplayCmd::Sell { symbol, qty, out } => commands::cmd_replay_order(
+                    commands::OrderSide::Sell,
+                    &symbol,
+                    qty,
+                    None,
+                    None,
+                    out.into(),
+                ),
+                ReplayCmd::Cancel { id } => commands::cmd_replay_cancel(id),
+                ReplayCmd::Set {
+                    symbol,
+                    stop,
+                    target,
+                } => commands::cmd_replay_set(&symbol, stop, target),
+                ReplayCmd::Status { out } => commands::cmd_replay_status(out.into()),
+                ReplayCmd::Chart { symbol, days } => commands::cmd_replay_chart(&symbol, days),
+                ReplayCmd::End { out } => commands::cmd_replay_end(out.into()),
+            },
+            Some(SimCmd::Challenge { action }) => match action {
+                ChallengeCmd::List { out } => commands::cmd_challenge_list(out.into()),
+                ChallengeCmd::Start { name, out } => {
+                    commands::cmd_challenge_start(&name, m, out.into())
+                }
+                ChallengeCmd::Status { out } => commands::cmd_challenge_status(out.into()).await,
+                ChallengeCmd::End { out } => commands::cmd_challenge_end(out.into()).await,
+            },
+            Some(SimCmd::Profile { out }) => commands::cmd_sim_profile(out.into()),
+            Some(SimCmd::Card { svg, text }) => commands::cmd_sim_card(svg, text),
             None => commands::cmd_sim("help", None, None, m).await,
         },
         Commands::Report { what } => commands::cmd_report(&what, m).await,
@@ -2218,6 +2804,21 @@ async fn main() {
                 commands::cmd_portfolio_remove(&symbol, m).await
             }
             Some(PortfolioCmd::List) => commands::cmd_portfolio_list(),
+            Some(PortfolioCmd::Benchmark {
+                benchmark,
+                period,
+                out: bench,
+            }) => {
+                let base = base.map(|b| value_name(b).to_uppercase());
+                commands::cmd_portfolio_benchmark(
+                    benchmark.as_deref(),
+                    &period,
+                    m,
+                    base.as_deref(),
+                    bench.into(),
+                )
+                .await
+            }
             Some(PortfolioCmd::Show { out: show }) => {
                 let base = base.map(|b| value_name(b).to_uppercase());
                 commands::cmd_portfolio_show(m, base.as_deref(), out.or(show)).await
@@ -2277,9 +2878,81 @@ async fn main() {
         Commands::Wealth => commands::cmd_wealth(m).await,
         Commands::Rebalance => commands::cmd_rebalance(&[], m).await,
         Commands::Harvest => commands::cmd_harvest(m).await,
-        Commands::Tax { country, out } => {
-            commands::cmd_tax(&value_name(country), m, out.into()).await
-        }
+        Commands::Tax {
+            action,
+            country,
+            out,
+        } => match action {
+            Some(TaxCmd::Export {
+                country,
+                fy,
+                out,
+                json,
+            }) => {
+                let country = match country {
+                    Some(c) => value_name(c),
+                    None if m == Market::Us => "us".into(),
+                    None => "in".into(),
+                };
+                commands::cmd_tax_export(&country, fy.as_deref(), out.as_deref(), json).await
+            }
+            None => {
+                let country = country.expect("clap requires COUNTRY without a subcommand");
+                commands::cmd_tax(&value_name(country), m, out.into()).await
+            }
+        },
+        Commands::Goal { action } => match action {
+            GoalCmd::Sip {
+                target,
+                years,
+                return_pct,
+                sip,
+            } => commands::cmd_goal_sip(
+                target,
+                years,
+                return_pct,
+                sip.step_up,
+                sip.savings.unwrap_or(0.0),
+                m,
+                sip.out.json,
+            ),
+            GoalCmd::Retire {
+                monthly_expense,
+                years_to_retire,
+                years_in_retirement,
+                inflation,
+                return_pre,
+                return_post,
+                sip,
+            } => commands::cmd_goal_retire(
+                monthly_expense,
+                years_to_retire,
+                years_in_retirement,
+                inflation,
+                return_pre,
+                return_post,
+                sip.step_up,
+                sip.savings.unwrap_or(0.0),
+                m,
+                sip.out.json,
+            ),
+            GoalCmd::Education {
+                cost,
+                years,
+                inflation,
+                return_pct,
+                sip,
+            } => commands::cmd_goal_education(
+                cost,
+                years,
+                inflation,
+                return_pct,
+                sip.step_up,
+                sip.savings.unwrap_or(0.0),
+                m,
+                sip.out.json,
+            ),
+        },
         Commands::Divcal => commands::cmd_divcal(m).await,
         Commands::Pcorr => commands::cmd_pcorr(m).await,
 
@@ -2351,11 +3024,32 @@ async fn main() {
                         limit,
                         flags,
                     } => gtt(Side::Sell, symbol, qty, trigger, limit, flags),
-                    GttCmd::List => A::GttList,
+                    GttCmd::List { notify, out } => A::GttList {
+                        notify,
+                        format: out.into(),
+                    },
                     GttCmd::Cancel { id, flags } => A::GttCancel {
                         id,
                         opts: flags.into(),
                     },
+                },
+                TradeCmd::Selftest {
+                    redact_amounts,
+                    out,
+                } => A::Selftest {
+                    redact_amounts,
+                    format: out.into(),
+                },
+                TradeCmd::Sync {
+                    since,
+                    apply,
+                    notify,
+                    out,
+                } => A::Sync {
+                    since,
+                    apply,
+                    notify,
+                    format: out.into(),
                 },
             };
             commands::cmd_trade(broker, action, m).await
@@ -2815,6 +3509,152 @@ mod tests {
     }
 
     #[test]
+    fn practice_commands_parse() {
+        for args in [
+            vec!["stockwise", "sim", "replay", "list", "--json"],
+            vec!["stockwise", "sim", "replay", "scenarios"],
+            vec!["stockwise", "sim", "replay", "start", "covid-crash-2020"],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "start",
+                "file:my.toml",
+                "--capital",
+                "50000",
+            ],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "start",
+                "--from",
+                "2022-01-03",
+                "--to",
+                "2022-06-30",
+                "--symbols",
+                "TCS,INFY",
+                "--costs",
+                "none",
+                "--json",
+            ],
+            vec!["stockwise", "sim", "replay", "next"],
+            vec!["stockwise", "sim", "replay", "next", "5", "--json"],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "buy",
+                "TCS",
+                "10",
+                "--stop",
+                "3200",
+                "--target",
+                "3900",
+            ],
+            vec!["stockwise", "sim", "replay", "sell", "TCS"],
+            vec!["stockwise", "sim", "replay", "sell", "TCS", "5", "--json"],
+            vec!["stockwise", "sim", "replay", "cancel"],
+            vec!["stockwise", "sim", "replay", "cancel", "3"],
+            vec!["stockwise", "sim", "replay", "set", "TCS", "--stop", "3300"],
+            vec!["stockwise", "sim", "replay", "status", "--json"],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "chart",
+                "index",
+                "--days",
+                "30",
+            ],
+            vec!["stockwise", "sim", "replay", "end", "--json"],
+            vec!["stockwise", "sim", "challenge", "list"],
+            vec![
+                "stockwise",
+                "sim",
+                "challenge",
+                "start",
+                "steady-hands",
+                "--json",
+            ],
+            vec!["stockwise", "sim", "challenge", "status"],
+            vec!["stockwise", "sim", "challenge", "end", "--json"],
+            vec!["stockwise", "sim", "profile", "--json"],
+            vec!["stockwise", "sim", "card"],
+            vec!["stockwise", "sim", "card", "--svg", "card.svg", "--text"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
+        }
+        for args in [
+            vec!["stockwise", "sim", "replay", "start"],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "start",
+                "covid-crash-2020",
+                "--from",
+                "2020-01-01",
+                "--to",
+                "2020-02-01",
+            ],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "start",
+                "--from",
+                "2022-01-03",
+            ],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "start",
+                "--from",
+                "03/01/2022",
+                "--to",
+                "2022-06-30",
+            ],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "start",
+                "x",
+                "--costs",
+                "free",
+            ],
+            vec!["stockwise", "sim", "replay", "next", "0"],
+            vec!["stockwise", "sim", "replay", "buy", "TCS"],
+            vec!["stockwise", "sim", "replay", "buy", "TCS", "0"],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "buy",
+                "TCS",
+                "5",
+                "--stop",
+                "-1",
+            ],
+            vec![
+                "stockwise",
+                "sim",
+                "replay",
+                "sell",
+                "TCS",
+                "5",
+                "--stop",
+                "100",
+            ],
+            vec!["stockwise", "sim", "challenge", "start"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_err(), "{args:?} should fail");
+        }
+    }
+
+    #[test]
     fn technical_alerts_and_calendar_parse() {
         for args in [
             vec!["stockwise", "alert", "add", "INFY", "rsi-below", "30"],
@@ -2946,6 +3786,194 @@ mod tests {
         );
         assert!(Cli::try_parse_from(["stockwise", "portfolio", "--base", "eur"]).is_err());
         assert!(Cli::try_parse_from(["stockwise", "--portfolio", "../x", "portfolio"]).is_err());
+    }
+
+    #[test]
+    fn planning_commands_parse() {
+        for args in [
+            vec!["stockwise", "tax", "export"],
+            vec![
+                "stockwise",
+                "tax",
+                "export",
+                "in",
+                "--fy",
+                "2025-26",
+                "--out",
+                "cg.csv",
+            ],
+            vec!["stockwise", "tax", "export", "us", "--fy", "2025", "--json"],
+            vec![
+                "stockwise",
+                "tax",
+                "export",
+                "India",
+                "--portfolio",
+                "long-term",
+            ],
+            vec!["stockwise", "portfolio", "benchmark"],
+            vec![
+                "stockwise",
+                "portfolio",
+                "benchmark",
+                "SENSEX",
+                "-p",
+                "2y",
+                "--json",
+            ],
+            vec![
+                "stockwise",
+                "p",
+                "benchmark",
+                "SP500",
+                "--base",
+                "inr",
+                "--csv",
+            ],
+            vec![
+                "stockwise",
+                "goal",
+                "sip",
+                "--target",
+                "1cr",
+                "--years",
+                "15",
+            ],
+            vec![
+                "stockwise",
+                "goal",
+                "sip",
+                "--target",
+                "50L",
+                "--years",
+                "10",
+                "--return",
+                "11.5",
+                "--step-up",
+                "10",
+                "--savings",
+                "2L",
+                "--json",
+            ],
+            vec![
+                "stockwise",
+                "goal",
+                "retire",
+                "--monthly-expense",
+                "80000",
+                "--years-to-retire",
+                "20",
+                "--years-in-retirement",
+                "30",
+                "--inflation",
+                "6",
+                "--return-pre",
+                "12",
+                "--return-post",
+                "7",
+            ],
+            vec![
+                "stockwise",
+                "goal",
+                "education",
+                "--cost",
+                "25L",
+                "--years",
+                "10",
+                "--inflation",
+                "8",
+                "--json",
+            ],
+        ] {
+            assert!(parses(&args), "{args:?} should parse");
+        }
+        for args in [
+            vec!["stockwise", "tax"],
+            vec!["stockwise", "tax", "export", "uk"],
+            vec!["stockwise", "tax", "export", "in", "--csv"],
+            vec!["stockwise", "portfolio", "benchmark", "-p", "5d"],
+            vec!["stockwise", "portfolio", "--json", "benchmark"],
+            vec!["stockwise", "goal"],
+            vec!["stockwise", "goal", "sip", "--target", "1cr"],
+            vec![
+                "stockwise",
+                "goal",
+                "sip",
+                "--target",
+                "lots",
+                "--years",
+                "15",
+            ],
+            vec![
+                "stockwise",
+                "goal",
+                "sip",
+                "--target",
+                "1cr",
+                "--years",
+                "0",
+            ],
+            vec![
+                "stockwise",
+                "goal",
+                "sip",
+                "--target",
+                "1cr",
+                "--years",
+                "15",
+                "--return",
+                "80",
+            ],
+            vec![
+                "stockwise",
+                "goal",
+                "sip",
+                "--target",
+                "1cr",
+                "--years",
+                "15",
+                "--csv",
+            ],
+        ] {
+            assert!(!parses(&args), "{args:?} should be rejected");
+        }
+
+        let cli = Cli::try_parse_from([
+            "stockwise",
+            "goal",
+            "sip",
+            "--target",
+            "1cr",
+            "--years",
+            "15",
+        ])
+        .unwrap();
+        let Commands::Goal {
+            action:
+                GoalCmd::Sip {
+                    target,
+                    years,
+                    return_pct,
+                    sip,
+                },
+        } = cli.command
+        else {
+            panic!("expected goal sip");
+        };
+        assert_eq!((target, years, return_pct), (1e7, 15, 12.0));
+        assert_eq!(sip.step_up, 0.0);
+        assert!(sip.savings.is_none() && !sip.out.json);
+
+        let cli = Cli::try_parse_from(["stockwise", "tax", "export", "--fy", "2025-26"]).unwrap();
+        let Commands::Tax {
+            action: Some(TaxCmd::Export { country, fy, .. }),
+            ..
+        } = cli.command
+        else {
+            panic!("expected tax export");
+        };
+        assert!(country.is_none());
+        assert_eq!(fy.as_deref(), Some("2025-26"));
     }
 
     #[test]
@@ -3245,6 +4273,87 @@ mod tests {
         let (action, ..) = options_cmd(&["stockwise", "options", "pcr", "AAPL", "--json"]);
         assert!(matches!(action, Some(OptionsCmd::Pcr { json: true, .. })));
 
+        let (action, ..) = options_cmd(&[
+            "stockwise",
+            "options",
+            "payoff",
+            "NIFTY",
+            "--leg",
+            "buy call 24500",
+            "--leg",
+            "sell call 24800 @ 40",
+            "--lots",
+            "2",
+            "--today",
+        ]);
+        match action {
+            Some(OptionsCmd::Payoff {
+                symbol,
+                legs,
+                strategy,
+                lots,
+                today,
+                ..
+            }) => {
+                assert_eq!(symbol, "NIFTY");
+                assert_eq!(legs.len(), 2);
+                assert_eq!(legs[1].price, Some(40.0));
+                assert!(strategy.is_none());
+                assert_eq!(lots, 2);
+                assert!(today);
+            }
+            _ => panic!("expected options payoff"),
+        }
+        let (action, ..) = options_cmd(&[
+            "stockwise",
+            "options",
+            "payoff",
+            "SENSEX",
+            "--strategy",
+            "iron-condor",
+            "-w",
+            "500",
+        ]);
+        assert!(matches!(
+            action,
+            Some(OptionsCmd::Payoff {
+                strategy: Some(StrategyArg::IronCondor),
+                width: Some(w),
+                ..
+            }) if w == 500.0
+        ));
+        for bad in [
+            vec![
+                "stockwise",
+                "options",
+                "payoff",
+                "NIFTY",
+                "--leg",
+                "hold call 100",
+            ],
+            vec![
+                "stockwise",
+                "options",
+                "payoff",
+                "NIFTY",
+                "--strategy",
+                "condor",
+            ],
+            vec!["stockwise", "options", "payoff", "NIFTY", "-e", "27/10"],
+            vec![
+                "stockwise",
+                "options",
+                "payoff",
+                "NIFTY",
+                "-s",
+                "straddle",
+                "--lot-size",
+                "0",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(&bad).is_err(), "{bad:?}");
+        }
+
         assert!(Cli::try_parse_from(["stockwise", "options"]).is_err());
         assert!(
             Cli::try_parse_from(["stockwise", "options", "chain", "NIFTY", "-e", "27/10"]).is_err()
@@ -3278,6 +4387,34 @@ mod tests {
         assert!(Cli::try_parse_from(["stockwise", "mf", "history", "1", "-p", "3x"]).is_err());
         assert!(Cli::try_parse_from(["stockwise", "mf", "screen", "--sort", "2y"]).is_err());
         assert!(Cli::try_parse_from(["stockwise", "mf"]).is_err());
+
+        let cli = Cli::try_parse_from([
+            "stockwise",
+            "mf",
+            "screen",
+            "elss",
+            "--sort",
+            "ter",
+            "--max-ter",
+            "0.9%",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Mf {
+                action: MfCmd::Screen { sort, max_ter, .. },
+            } => {
+                assert!(matches!(sort, MfSort::Ter));
+                assert_eq!(max_ter, Some(0.9));
+            }
+            _ => panic!("expected mf screen"),
+        }
+        for bad in ["0", "-1", "9", "x"] {
+            assert!(
+                Cli::try_parse_from(["stockwise", "mf", "screen", "elss", "--max-ter", bad])
+                    .is_err(),
+                "--max-ter {bad}"
+            );
+        }
     }
 
     #[test]
@@ -3364,6 +4501,62 @@ mod tests {
             Cli::try_parse_from(["stockwise", "trade", "--broker", "robinhood", "holdings"])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn trade_selftest_sync_and_gtt_list_flags_parse() {
+        for args in [
+            vec!["stockwise", "trade", "selftest"],
+            vec![
+                "stockwise",
+                "trade",
+                "selftest",
+                "--broker",
+                "dhan",
+                "--json",
+            ],
+            vec!["stockwise", "trade", "selftest", "--redact-amounts"],
+            vec!["stockwise", "trade", "sync", "--broker", "zerodha"],
+            vec![
+                "stockwise",
+                "trade",
+                "sync",
+                "--since",
+                "2026-10-01",
+                "--apply",
+            ],
+            vec![
+                "stockwise",
+                "trade",
+                "sync",
+                "--apply",
+                "--notify",
+                "--json",
+            ],
+            vec!["stockwise", "trade", "gtt", "list", "--notify", "--json"],
+            vec!["stockwise", "trade", "gtt", "show"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
+        }
+        // Selftest never takes order flags.
+        assert!(Cli::try_parse_from(["stockwise", "trade", "selftest", "--yes"]).is_err());
+        let cli =
+            Cli::try_parse_from(["stockwise", "trade", "sync", "--since", "2026-10-01"]).unwrap();
+        let Commands::Trade {
+            action:
+                TradeCmd::Sync {
+                    since,
+                    apply,
+                    notify,
+                    ..
+                },
+            ..
+        } = cli.command
+        else {
+            panic!("expected trade sync");
+        };
+        assert_eq!(since.as_deref(), Some("2026-10-01"));
+        assert!(!apply && !notify, "sync previews by default");
     }
 
     #[test]
