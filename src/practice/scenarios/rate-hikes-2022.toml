@@ -1,0 +1,68 @@
+# Built-in replay scenario (see covid-crash-2020.toml for the format).
+name = "rate-hikes-2022"
+title = "The 2022 rate hikes"
+market = "us"
+from = "2022-01-03"
+to = "2022-10-31"
+benchmark = "^GSPC"
+benchmark_name = "S&P 500"
+capital = 100000
+description = """
+January 2022. The S&P 500 has just closed a year of record highs. US inflation \
+is the highest in decades and the Federal Reserve has signalled that interest \
+rates, near zero since 2020, will start to rise. You have $100,000 of paper \
+money and sixteen large US companies to choose from."""
+debrief = """
+The Fed raised rates from near zero to about 4% by early November 2022, including \
+four 0.75-point hikes in a row. The S&P 500 fell about 25% from its January high \
+to its October low; fast-growing tech stocks fell much further while energy \
+stocks rose. Rising rates hit the most richly valued companies hardest."""
+
+[[universe]]
+symbol = "AAPL"
+sector = "Technology"
+[[universe]]
+symbol = "MSFT"
+sector = "Technology"
+[[universe]]
+symbol = "NVDA"
+sector = "Technology"
+[[universe]]
+symbol = "GOOGL"
+sector = "Communication"
+[[universe]]
+symbol = "META"
+sector = "Communication"
+[[universe]]
+symbol = "NFLX"
+sector = "Communication"
+[[universe]]
+symbol = "AMZN"
+sector = "Consumer discretionary"
+[[universe]]
+symbol = "TSLA"
+sector = "Consumer discretionary"
+[[universe]]
+symbol = "JPM"
+sector = "Financials"
+[[universe]]
+symbol = "XOM"
+sector = "Energy"
+[[universe]]
+symbol = "CVX"
+sector = "Energy"
+[[universe]]
+symbol = "JNJ"
+sector = "Healthcare"
+[[universe]]
+symbol = "UNH"
+sector = "Healthcare"
+[[universe]]
+symbol = "PG"
+sector = "Consumer staples"
+[[universe]]
+symbol = "KO"
+sector = "Consumer staples"
+[[universe]]
+symbol = "WMT"
+sector = "Consumer staples"

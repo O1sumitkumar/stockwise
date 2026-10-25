@@ -1,0 +1,73 @@
+# Built-in replay scenario (see covid-crash-2020.toml for the format).
+name = "bull-run-2021"
+title = "The 2021 bull run"
+market = "in"
+from = "2021-01-01"
+to = "2021-10-29"
+benchmark = "^NSEI"
+benchmark_name = "NIFTY 50"
+capital = 100000
+description = """
+January 2021. Indian stocks have recovered from the 2020 crash, vaccines are \
+on the way and record numbers of new investors are opening demat accounts. \
+You have ₹1,00,000 of paper money and eighteen NIFTY 50 stocks to choose from."""
+debrief = """
+NIFTY 50 rose about 30% from January to its October 2021 peak near 18,500, \
+with a choppy spell during the second COVID wave in April and May. Metals, IT \
+and some financials led. In a strong market the hard part is staying invested \
+and letting winners run while still cutting losers."""
+
+[[universe]]
+symbol = "RELIANCE.NS"
+sector = "Energy"
+[[universe]]
+symbol = "HDFCBANK.NS"
+sector = "Financials"
+[[universe]]
+symbol = "ICICIBANK.NS"
+sector = "Financials"
+[[universe]]
+symbol = "SBIN.NS"
+sector = "Financials"
+[[universe]]
+symbol = "BAJFINANCE.NS"
+sector = "Financials"
+[[universe]]
+symbol = "TCS.NS"
+sector = "IT"
+[[universe]]
+symbol = "INFY.NS"
+sector = "IT"
+[[universe]]
+symbol = "HCLTECH.NS"
+sector = "IT"
+[[universe]]
+symbol = "WIPRO.NS"
+sector = "IT"
+[[universe]]
+symbol = "TATASTEEL.NS"
+sector = "Materials"
+[[universe]]
+symbol = "HINDALCO.NS"
+sector = "Materials"
+[[universe]]
+symbol = "ASIANPAINT.NS"
+sector = "Materials"
+[[universe]]
+symbol = "ITC.NS"
+sector = "Consumer staples"
+[[universe]]
+symbol = "TITAN.NS"
+sector = "Consumer discretionary"
+[[universe]]
+symbol = "MARUTI.NS"
+sector = "Autos"
+[[universe]]
+symbol = "SUNPHARMA.NS"
+sector = "Healthcare"
+[[universe]]
+symbol = "LT.NS"
+sector = "Industrials"
+[[universe]]
+symbol = "BHARTIARTL.NS"
+sector = "Telecom"

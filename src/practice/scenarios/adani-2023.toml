@@ -1,0 +1,69 @@
+# Built-in replay scenario (see covid-crash-2020.toml for the format).
+name = "adani-2023"
+title = "The Adani short-seller report"
+market = "in"
+from = "2023-01-02"
+to = "2023-04-28"
+benchmark = "^NSEI"
+benchmark_name = "NIFTY 50"
+capital = 100000
+description = """
+January 2023. The Adani group's listed companies have been among the best \
+performers of the last three years, and Adani Enterprises is about to launch a \
+large follow-on share sale. You have ₹1,00,000 of paper money, six Adani \
+companies and ten NIFTY 50 heavyweights to choose from."""
+debrief = """
+On 24 January 2023 a US short seller published a report accusing the Adani group \
+of stock manipulation and accounting fraud, which the group denied. Adani shares \
+lost well over $100 billion of market value within weeks, and Adani Enterprises \
+called off its fully subscribed share sale on 1 February. NIFTY 50 moved far less. \
+Concentration in one group is a risk that diversification exists to limit."""
+
+[[universe]]
+symbol = "ADANIENT.NS"
+sector = "Adani group"
+[[universe]]
+symbol = "ADANIPORTS.NS"
+sector = "Adani group"
+[[universe]]
+symbol = "ADANIGREEN.NS"
+sector = "Adani group"
+[[universe]]
+symbol = "ADANIPOWER.NS"
+sector = "Adani group"
+[[universe]]
+symbol = "ADANIENSOL.NS"
+sector = "Adani group"
+[[universe]]
+symbol = "ATGL.NS"
+sector = "Adani group"
+[[universe]]
+symbol = "RELIANCE.NS"
+sector = "Energy"
+[[universe]]
+symbol = "HDFCBANK.NS"
+sector = "Financials"
+[[universe]]
+symbol = "ICICIBANK.NS"
+sector = "Financials"
+[[universe]]
+symbol = "SBIN.NS"
+sector = "Financials"
+[[universe]]
+symbol = "TCS.NS"
+sector = "IT"
+[[universe]]
+symbol = "INFY.NS"
+sector = "IT"
+[[universe]]
+symbol = "ITC.NS"
+sector = "Consumer staples"
+[[universe]]
+symbol = "LT.NS"
+sector = "Industrials"
+[[universe]]
+symbol = "BHARTIARTL.NS"
+sector = "Telecom"
+[[universe]]
+symbol = "SUNPHARMA.NS"
+sector = "Healthcare"

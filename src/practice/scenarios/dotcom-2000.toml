@@ -1,0 +1,68 @@
+# Built-in replay scenario (see covid-crash-2020.toml for the format).
+name = "dotcom-2000"
+title = "The dot-com bust"
+market = "us"
+from = "2000-01-03"
+to = "2000-12-29"
+benchmark = "^IXIC"
+benchmark_name = "Nasdaq Composite"
+capital = 100000
+description = """
+January 2000. The Nasdaq Composite more than doubled last year on the promise \
+of the internet, and technology companies with little profit are worth billions. \
+You have $100,000 of paper money and sixteen US stocks, from chip makers and \
+software houses to oil, drug and soft-drink companies."""
+debrief = """
+The Nasdaq Composite peaked on 10 March 2000 above 5,000 and ended the year near \
+2,470, about half its peak value, while many 'old economy' stocks rose. It did not \
+regain its 2000 high until 2015. Valuations eventually matter, and a diversified \
+book softens a sector's collapse."""
+
+[[universe]]
+symbol = "MSFT"
+sector = "Software"
+[[universe]]
+symbol = "ORCL"
+sector = "Software"
+[[universe]]
+symbol = "CSCO"
+sector = "Hardware"
+[[universe]]
+symbol = "IBM"
+sector = "Hardware"
+[[universe]]
+symbol = "AAPL"
+sector = "Hardware"
+[[universe]]
+symbol = "INTC"
+sector = "Semiconductors"
+[[universe]]
+symbol = "QCOM"
+sector = "Semiconductors"
+[[universe]]
+symbol = "AMZN"
+sector = "Internet"
+[[universe]]
+symbol = "EBAY"
+sector = "Internet"
+[[universe]]
+symbol = "GE"
+sector = "Industrials"
+[[universe]]
+symbol = "XOM"
+sector = "Energy"
+[[universe]]
+symbol = "PFE"
+sector = "Healthcare"
+[[universe]]
+symbol = "JNJ"
+sector = "Healthcare"
+[[universe]]
+symbol = "KO"
+sector = "Consumer staples"
+[[universe]]
+symbol = "WMT"
+sector = "Consumer staples"
+[[universe]]
+symbol = "JPM"
+sector = "Financials"
