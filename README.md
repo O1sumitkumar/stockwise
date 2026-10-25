@@ -8,7 +8,7 @@
   <a href="https://crates.io/crates/stockwise"><img src="https://img.shields.io/crates/d/stockwise.svg" alt="Downloads"></a>
   <a href="https://github.com/iamsaquib8/stockwise/releases/latest"><img src="https://img.shields.io/github/v/release/iamsaquib8/stockwise?label=binaries" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="#install"><img src="https://img.shields.io/badge/rustc-1.88+-blue.svg" alt="MSRV 1.88"></a>
+  <a href="#install"><img src="https://img.shields.io/badge/rustc-1.97+-blue.svg" alt="MSRV 1.97"></a>
 </p>
 
 <p align="center">
@@ -56,8 +56,9 @@ stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR
 - **Scriptable.** `--json` on 21 data commands and `--csv` on their tables, a
   config file for your defaults, real exit codes, shell completions, and a
   read-only JSON API with Prometheus metrics (`stockwise serve`).
-- **Live dashboard.** `stockwise tui` keeps indices, watchlist, portfolio P&L,
-  alerts and a chart on one refreshing screen.
+- **Live dashboards.** `stockwise tui` keeps indices, watchlist, portfolio P&L,
+  alerts and a chart on one refreshing screen; `stockwise serve --open` shows
+  the same in your browser.
 - **Practice before money.** A paper-trading simulator and an intraday paper
   daemon with risk controls and notifications. Optional live orders via Angel
   One (Zerodha, Upstox, Dhan and Fyers experimental), always behind a preview
@@ -106,7 +107,7 @@ Portfolio, watchlist and alerts persist in the `stockwise-data` volume.
 
 ```bash
 cargo binstall stockwise    # prebuilt binary via cargo-binstall
-cargo install stockwise     # or build from source (Rust 1.88+)
+cargo install stockwise     # or build from source (Rust 1.97+)
 ```
 
 Then:
@@ -193,6 +194,20 @@ stockwise tui                # ↑↓ select · 1-6 chart period · / add to wat
 ```
 
 Read-only: the TUI never places orders. See [docs/tui.md](docs/tui.md).
+
+Prefer a browser? `stockwise serve --open` serves the same view as a web page —
+indices, a chart with period buttons, watchlist, portfolio with allocation and
+XIRR, alerts and search — refreshing every 30 seconds, on a phone too.
+
+<p align="center">
+  <img src="assets/web-dashboard.png" alt="StockWise web dashboard in a browser: indices, a price chart, watchlist, portfolio and alerts" width="760">
+</p>
+
+```bash
+stockwise serve --open       # http://127.0.0.1:8787/ — read-only, localhost only
+```
+
+See [docs/server.md](docs/server.md#web-dashboard).
 
 ### Script it
 
@@ -337,7 +352,7 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 ## Docs
 
 - [Commands reference](docs/commands.md)
-- [Terminal dashboard](docs/tui.md) and [HTTP API & metrics](docs/server.md)
+- [Terminal dashboard](docs/tui.md) and [web dashboard, HTTP API & metrics](docs/server.md)
 - [Trading bots](docs/bots.md) and [bot design](docs/bot-design.md)
 - [Brokers: live trading, keyring, imports](docs/brokers.md)
 - [AI: Ollama and cloud providers](docs/ai.md)

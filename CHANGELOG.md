@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Minimum supported Rust version is now **1.97** (was 1.88). StockWise
+  supports the latest stable Rust and the two releases before it. Prebuilt
+  binaries, Docker and Nix are unaffected.
+- `alert list --json/--csv` adds `period` and `description`; `alert check
+  --json/--csv` adds `period`, `description`, `value`, `reference` and the
+  status `no_data` (new CSV columns come after the old ones). Existing
+  `alerts.json` files load unchanged. Quotes carry Yahoo's
+  `regularMarketTime`.
+
 ### Added
+- Web dashboard at `/` of `stockwise serve`: indices, watchlist, portfolio
+  (P&L, XIRR, allocation, INR/USD totals, sortable columns), alerts, symbol
+  search and a price chart with period buttons and a keyboard-readable
+  crosshair. Refreshes every 30 seconds while visible; works at phone width;
+  follows the system light/dark theme; amounts in lakhs and crores for INR.
+  Plain HTML/CSS/JavaScript compiled into the binary — no build step or CDN.
+  Read-only. See [docs/server.md](docs/server.md#web-dashboard).
+- `stockwise serve --open` opens the dashboard in your browser; the startup
+  log prints its address.
 - Technical alerts: `alert add SYMBOL rsi-below|rsi-above LEVEL [--period N]`,
   `cross-above-sma|cross-below-sma|cross-above-ema|cross-below-ema DAYS`,
   `breakout-high|breakdown-low DAYS`, `change-above|change-below PCT`,
@@ -27,12 +46,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   issues (one polite session per run, cached for a day, Yahoo-only when NSE
   refuses).
 
-### Changed
-- `alert list --json/--csv` adds `period` and `description`; `alert check
-  --json/--csv` adds `period`, `description`, `value`, `reference` and the
-  status `no_data` (new CSV columns come after the old ones). Existing
-  `alerts.json` files load unchanged. Quotes carry Yahoo's
-  `regularMarketTime`.
+### Security
+- `serve` sends a strict Content-Security-Policy (no inline code, same-origin
+  only, Trusted Types), `X-Frame-Options: DENY`, `Referrer-Policy:
+  no-referrer` and same-origin COOP/CORP headers on every response, and
+  answers 403 to `/api/*` and `/metrics` requests a browser marks as
+  cross-origin (`Sec-Fetch-Site`). There is still no CORS. With
+  `STOCKWISE_API_TOKEN` set, the dashboard asks for the token and keeps it in
+  session storage, sending it only as an `Authorization` header.
 
 ## [0.4.0] - 2026-10-21
 

@@ -13,8 +13,10 @@ FROM rust:1.99-slim-trixie AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-# Built-in backtest strategies, embedded at compile time.
+# Built-in backtest strategies and the `serve` web dashboard, embedded at
+# compile time.
 COPY examples/strategies ./examples/strategies
+COPY web ./web
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked \

@@ -358,6 +358,10 @@ messages! {
     EventRights => "Rights issue", "राइट्स इश्यू";
     EventOther => "Corporate action", "कॉर्पोरेट एक्शन";
 
+    // ── Web dashboard (`serve`) ──
+    ServeDashboard => "Dashboard", "डैशबोर्ड";
+    ServeOpenFailed => "Could not open a browser ({0}); open {1} yourself", "ब्राउज़र नहीं खुल सका ({0}); {1} खुद खोलें";
+
     // ── Errors ──
     ErrorPrefix => "Error:", "त्रुटि:";
 }
