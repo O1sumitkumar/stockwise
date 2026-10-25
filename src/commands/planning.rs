@@ -354,9 +354,15 @@ struct History {
 }
 
 /// Turn a Yahoo chart response (daily bars, `events=splits`) into dated
-/// closes (one per day, the last bar of a day winning) and splits.
-fn history_from_chart(data: ChartData) -> History {
-    let to_date = |ts: i64| chrono::DateTime::from_timestamp(ts, 0).map(|d| d.date_naive());
+/// closes (one per day, the last bar of a day winning) and splits. Bars are
+/// dated in the exchange's time zone (`gmtoffset`, seconds east of UTC):
+/// FX bars start at midnight London time, which is the previous day in UTC.
+/// Three hours of slack absorb a daylight-saving change since `gmtoffset`
+/// was reported without moving any session start across midnight.
+fn history_from_chart(data: ChartData, gmtoffset: i64) -> History {
+    let to_date = |ts: i64| {
+        chrono::DateTime::from_timestamp(ts + gmtoffset + 3 * 3600, 0).map(|d| d.date_naive())
+    };
     let stamps = data.timestamp.unwrap_or_default();
     let closes_raw = data
         .indicators
@@ -438,6 +444,10 @@ async fn daily_history(client: &YahooClient, symbol: &str, span: Span<'_>) -> Re
         &query,
     );
     let v = client.raw_get(&url).await?;
+    let gmtoffset = v
+        .pointer("/chart/result/0/meta/gmtoffset")
+        .and_then(|o| o.as_i64())
+        .unwrap_or(0);
     let resp: ChartResponse =
         serde_json::from_value(v).context("Failed to parse chart response")?;
     let data = resp
@@ -445,7 +455,7 @@ async fn daily_history(client: &YahooClient, symbol: &str, span: Span<'_>) -> Re
         .result
         .and_then(|r| r.into_iter().next())
         .with_context(|| format!("No price history for {}", symbol))?;
-    Ok(history_from_chart(data))
+    Ok(history_from_chart(data, gmtoffset))
 }
 
 /// A fund's NAV history from api.mfapi.in, for `MF:<code>` holdings.
@@ -533,6 +543,20 @@ fn held_between(portfolio: &Portfolio, symbol: &str, start: &str, end: &str) -> 
         || portfolio.realized.iter().any(|s| {
             s.symbol == symbol && s.buy_date.as_str() <= end && s.sell_date.as_str() > start
         })
+}
+
+/// The first purchase date of `symbol` among its open lots and sales.
+fn earliest_purchase<'a>(portfolio: &'a Portfolio, symbol: &str) -> Option<&'a str> {
+    let open = portfolio
+        .holding(symbol)
+        .into_iter()
+        .flat_map(|h| h.lots.iter().map(|l| l.date.as_str()));
+    let sold = portfolio
+        .realized
+        .iter()
+        .filter(|s| s.symbol == symbol)
+        .map(|s| s.buy_date.as_str());
+    open.chain(sold).min()
 }
 
 /// Whether a purchase of `symbol` inside the period has an estimated date
@@ -774,6 +798,18 @@ pub async fn cmd_portfolio_benchmark(
                 continue;
             }
         };
+        // Splits before the period still matter for lots bought before them
+        // that `portfolio actions --apply` hasn't adjusted.
+        let mut splits = hist.splits.clone();
+        if let Some(since) = earliest_purchase(&portfolio, sym).filter(|d| *d < first.as_str())
+            && let Ok((earlier, _, _)) = super::portfolio::fetch_actions(&client, sym, since).await
+        {
+            for split in earlier {
+                if !splits.iter().any(|s| s.id() == split.id()) {
+                    splits.push(split);
+                }
+            }
+        }
         let mut price = benchmark::align(&calendar, &hist.closes);
         let currency = hist
             .currency
@@ -803,7 +839,7 @@ pub async fn cmd_portfolio_benchmark(
             .iter()
             .map(|d| {
                 let next = (*d + chrono::Days::new(1)).to_string();
-                portfolio.shares_on(sym, &next, &hist.splits)
+                portfolio.shares_on(sym, &next, &splits)
             })
             .collect();
         if estimated_in_period(&portfolio, sym, &first, &last) {
@@ -1263,7 +1299,7 @@ mod tests {
             "events":{"splits":{"1735788600":{"date":1735788600,"numerator":2,"denominator":1}}}
         }]}}"#;
         let resp: ChartResponse = serde_json::from_str(json).unwrap();
-        let h = history_from_chart(resp.chart.result.unwrap().remove(0));
+        let h = history_from_chart(resp.chart.result.unwrap().remove(0), 19_800);
         assert_eq!(h.currency.as_deref(), Some("INR"));
         let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
         // The null close is skipped; two bars on 3 Jan keep the later one.
@@ -1273,6 +1309,21 @@ mod tests {
         );
         assert_eq!(h.splits.len(), 1);
         assert_eq!(h.splits[0].date, "2025-01-02");
+
+        // An FX bar for 2 Jul 2025 starts at midnight London time (23:00 UTC
+        // on 1 Jul), whether gmtoffset says BST or, after the clocks change, GMT.
+        let fx = r#"{"chart":{"result":[{"meta":{"currency":"INR"},
+            "timestamp":[1751410800],
+            "indicators":{"quote":[{"close":[85.5]}]}}]}}"#;
+        for offset in [3600, 0] {
+            let resp: ChartResponse = serde_json::from_str(fx).unwrap();
+            let h = history_from_chart(resp.chart.result.unwrap().remove(0), offset);
+            assert_eq!(
+                h.closes,
+                vec![(d("2025-07-02"), 85.5)],
+                "gmtoffset {offset}"
+            );
+        }
         assert_eq!(h.splits[0].ratio(), 2.0);
     }
 

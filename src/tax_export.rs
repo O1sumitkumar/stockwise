@@ -23,6 +23,9 @@ const GRANDFATHER_DATE: (i32, u32, u32) = (2018, 1, 31);
 /// Rates changed on this day (STCG 15% → 20%, LTCG 10% → 12.5%).
 const INDIA_RATE_CHANGE: (i32, u32, u32) = (2024, 7, 23);
 
+/// The first year with the ₹1.25 lakh LTCG exemption (for the whole year).
+const FY_2024_25: (i32, u32, u32) = (2024, 4, 1);
+
 fn ymd((y, m, d): (i32, u32, u32)) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, d).expect("valid date")
 }
@@ -221,6 +224,8 @@ pub struct IndiaSchedule {
     pub summary: IndiaSummary,
     /// Symbols sold this year in another currency (not in 111A/112A).
     pub other_currency: Vec<String>,
+    /// Crypto sold this year: taxed under section 115BBH (Schedule VDA), not here.
+    pub virtual_digital_assets: Vec<String>,
     pub notes: Vec<String>,
 }
 
@@ -233,7 +238,14 @@ pub fn india_schedule(
 ) -> IndiaSchedule {
     let c = Country::India;
     let (from, to) = c.tax_year(start);
-    let (kept, other_currency) = sales_in_year(c, sales, start);
+    let (all, other_currency) = sales_in_year(c, sales, start);
+    let (vda, kept): (Vec<_>, Vec<_>) = all.into_iter().partition(|(s, _)| {
+        crate::market::AssetClass::of(&s.symbol) == crate::market::AssetClass::Crypto
+    });
+    let mut virtual_digital_assets: Vec<String> =
+        vda.iter().map(|(s, _)| s.symbol.clone()).collect();
+    virtual_digital_assets.sort();
+    virtual_digital_assets.dedup();
     let mut rows = Vec::new();
     let mut sum = IndiaSummary::default();
     let mut buckets = tax::Buckets::default();
@@ -300,7 +312,13 @@ pub fn india_schedule(
                 .into(),
         );
     }
-    if rows
+    if from < ymd(FY_2024_25) {
+        notes.push(
+            "Before FY 2024-25 the LTCG exemption was ₹1 lakh and the rates 15% (STCG) and 10% \
+             (LTCG); this estimate uses the current ones"
+                .into(),
+        );
+    } else if rows
         .iter()
         .any(|r| date(&r.sale_date).is_some_and(|d| d < ymd(INDIA_RATE_CHANGE)))
     {
@@ -324,6 +342,13 @@ pub fn india_schedule(
                 .into(),
         );
     }
+    if !virtual_digital_assets.is_empty() {
+        notes.push(format!(
+            "Not included (crypto is a virtual digital asset — 30% under section 115BBH, reported \
+             in Schedule VDA): {}",
+            virtual_digital_assets.join(", ")
+        ));
+    }
     if !other_currency.is_empty() {
         notes.push(format!(
             "Not included (not INR — foreign shares go in Schedule CG with a 24-month holding \
@@ -341,6 +366,7 @@ pub fn india_schedule(
         sales: rows,
         summary: sum,
         other_currency,
+        virtual_digital_assets,
         notes,
     }
 }
@@ -376,7 +402,8 @@ fn qty(q: f64) -> String {
 }
 
 fn money(x: f64) -> String {
-    format!("{:.2}", x)
+    // `+ 0.0` turns a negative zero into 0.00 instead of -0.00.
+    format!("{:.2}", x + 0.0)
 }
 
 fn yes_no(b: bool) -> &'static str {
@@ -725,7 +752,11 @@ pub fn parse_nse_equity_list(text: &str) -> Vec<(String, String)> {
     let Some(header) = lines.next() else {
         return Vec::new();
     };
-    let cols: Vec<String> = header.split(',').map(|c| c.trim().to_uppercase()).collect();
+    let cols: Vec<String> = header
+        .trim_start_matches('\u{feff}')
+        .split(',')
+        .map(|c| c.trim().to_uppercase())
+        .collect();
     let (Some(sym), Some(isin)) = (
         cols.iter().position(|c| c == "SYMBOL"),
         cols.iter().position(|c| c.starts_with("ISIN")),
@@ -822,6 +853,7 @@ mod tests {
             ),
             sale("ITC.NS", 10.0, ("2024-01-01", 400.0), ("2025-03-31", 450.0)),
             sale("AAPL", 5.0, ("2024-01-01", 180.0), ("2025-07-01", 210.0)),
+            sale("BTC-INR", 0.01, ("2025-01-01", 8e6), ("2025-07-01", 9e6)),
         ]
     }
 
@@ -836,6 +868,8 @@ mod tests {
             "ITC (FY 2024-25) and AAPL (USD) are left out"
         );
         assert_eq!(s.other_currency, vec!["AAPL".to_string()]);
+        assert_eq!(s.virtual_digital_assets, vec!["BTC-INR".to_string()]);
+        assert!(s.notes.iter().any(|n| n.contains("115BBH")));
 
         let tcs = &s.sales[0];
         assert_eq!((tcs.section, tcs.term), ("112A", "LTCG"));
@@ -927,6 +961,22 @@ mod tests {
         let s = india_schedule(&sales, d("2024-04-01"), |_| None);
         assert!(s.notes.iter().any(|n| n.contains("23 Jul 2024")));
         assert_eq!(s.sales[0].term, "STCG");
+        // Earlier years had a ₹1 lakh exemption.
+        let sales = vec![sale(
+            "A.NS",
+            1.0,
+            ("2022-01-01", 100.0),
+            ("2023-05-01", 120.0),
+        )];
+        let s = india_schedule(&sales, d("2023-04-01"), |_| None);
+        assert!(s.notes.iter().any(|n| n.contains("₹1 lakh")));
+        assert!(!s.notes.iter().any(|n| n.contains("23 Jul 2024")));
+    }
+
+    #[test]
+    fn negative_zero_prints_as_zero() {
+        assert_eq!(money(-0.0), "0.00");
+        assert_eq!(money(-1.5), "-1.50");
     }
 
     #[test]
@@ -987,6 +1037,8 @@ mod tests {
             parse_nse_equity_list(text),
             vec![("TCS".to_string(), "INE467B01029".to_string())]
         );
+        let bom = format!("\u{feff}{text}");
+        assert_eq!(parse_nse_equity_list(&bom).len(), 1);
         assert!(parse_nse_equity_list("").is_empty());
         assert!(parse_nse_equity_list("A,B\n1,2").is_empty());
     }

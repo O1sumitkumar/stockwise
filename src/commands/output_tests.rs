@@ -695,6 +695,7 @@ fn goal_and_tax_export_json_shapes() {
         "sales",
         "summary",
         "other_currency",
+        "virtual_digital_assets",
         "notes",
     ];
     assert_eq!(keys(&india), schedule_keys);
@@ -728,7 +729,12 @@ fn goal_and_tax_export_json_shapes() {
         day("2025-01-01"),
     ))
     .unwrap();
-    assert_eq!(keys(&us), schedule_keys);
+    let us_keys: Vec<&str> = schedule_keys
+        .iter()
+        .copied()
+        .filter(|k| *k != "virtual_digital_assets")
+        .collect();
+    assert_eq!(keys(&us), us_keys);
     assert_eq!(
         keys(&us["sales"][0]),
         [
