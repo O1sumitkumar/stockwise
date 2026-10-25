@@ -61,9 +61,15 @@ This comes first.
   publishing them needs the tap repository and package submissions. Then homebrew-core once
   eligible (75★ when a user submits it)
 - 📋 **`stockwise mcp` — an MCP server for AI assistants** — let Claude, ChatGPT, Cursor and other
-  agents read quotes, option chains, fund NAVs, your portfolio and tax estimates; read-only by
-  default, orders only through the existing preview-and-confirm flow. List it in the MCP
-  registries (Zerodha, Groww, Dhan, Upstox and Fyers ship MCP servers; Angel One doesn't)
+  agents use quotes, history and technicals, risk, fund NAVs and SIP returns, option chains and
+  payoffs, screens, backtests, your portfolio, tax estimates, the calendar and goal calculators as
+  tools; portfolio, watchlist and alerts as resources; ready-made prompts such as "review my
+  portfolio" and "tax-harvest check before 31 March". Read-only by default; live orders stay off
+  unless enabled, and then still go through the preview and typed confirmation. Listed in the
+  official MCP registry and awesome-mcp-servers, and shipped as a Claude Desktop extension
+  (Zerodha, Groww, Dhan, Upstox and Fyers ship MCP servers; Angel One doesn't)
+- 📋 **Findable by AI assistants** — an `llms.txt` index on the docs site and a published Agent
+  Skill (`SKILL.md`) so Claude Code and other agents know how to use StockWise
 - 📋 **`pipx install stockwise` / `uvx stockwise`** — PyPI wheels carrying the binary (maturin
   `bin`), where India's Python trading community already installs its tools
 - 📋 **Animated demo** (VHS) at the top of the README and terminal recordings in the docs
@@ -88,6 +94,9 @@ This comes first.
 - 🛠️ **Broker integrations verified against live accounts** — the read-only `trade selftest` and the
   [verification criteria](docs/brokers.md#help-verify-a-broker) are ready; we need 3 reports per
   broker plus one small live order a tester places themselves
+- 📋 **Educational AI wording** — reword `report` and `--ai` output from buy/hold/sell "verdicts" to
+  neutral analysis ("signals point to…, risks are…") with a disclaimer, in line with SEBI's
+  research-analyst and finfluencer rules
 - 📋 **SEBI retail-algo rules** (in force since 1 Apr 2026) in `trade` — order-rate limits,
   price-protected market orders, daily login and static-IP guidance
 - 📋 **Check the NSE/BSE parsers against live responses** and add SENSEX from BSE (the endpoints are
@@ -139,6 +148,13 @@ This comes first.
   `markets`, DXY and NRI cross-rates (AED, SGD, JPY, AUD, CAD, CHF vs INR) in `-m fx`, and an
   Indian REIT/InvIT list (these already quote by symbol; this adds names, aliases and lists)
 
+**AI**
+- 📋 **One tool layer for agents** — the same typed tool definitions power `stockwise mcp` and a new
+  `stockwise ask "which of my holdings fell most this month?"`, where a local Ollama model (with
+  tool calling) or an opt-in cloud model picks the commands, runs them and answers in plain English
+- 📋 **`--explain` for beginners** — plain-English notes under technicals, risk metrics, option greeks
+  and tax numbers (templates first, the local model optional)
+
 **Everywhere**
 - 📋 **Two-way Telegram bot and scheduled digests** — morning and post-market summaries, results
   and ex-dividend dates, GTT changes, and commands from your phone
@@ -154,6 +170,8 @@ This comes first.
   win-rate/expectancy, an R-multiple sizer
 - 💡 **Ownership signals** — well-known investors' portfolios, shareholding and pledge changes,
   alerts on phrases in filings, and local-LLM summaries of earnings calls
+- 💡 **AI in the dashboards** — an assistant pane in the TUI and web dashboard on top of the same
+  tool layer
 - 💡 **Editor and launcher extensions** — VS Code status bar, Raycast; an npm wrapper
   (`npx stockwise mcp`)
 - 💡 **Plugins and galleries** — WASM plugins for importers and data providers, and community
@@ -172,3 +190,5 @@ This comes first.
   NSE/BSE website provider stays opt-in because the exchanges' terms restrict automated
   collection
 - IPO grey-market premiums and Account Aggregator integration (needs an RBI licence)
+- AI that trades on its own — any order an AI tool proposes goes through the same preview and
+  typed confirmation as a human's
