@@ -283,6 +283,18 @@ pub async fn cmd_markets(
         print_header(section.title);
         let width = if section.region == "Global" { 26 } else { 16 };
         for r in &section.rows {
+            if r.symbol == views::INDIA_10Y {
+                // A yield, not a price: no currency, no day change.
+                println!(
+                    "  {} {}  {}",
+                    pad_end(&r.name, width).bold(),
+                    r.price
+                        .map_or_else(|| "N/A".dimmed().to_string(), |y| format!("{y:.2}%"))
+                        .bold(),
+                    "CCIL / RBI benchmark (`stockwise bonds`)".dimmed()
+                );
+                continue;
+            }
             let cur = r.currency.as_deref();
             // `--global` rows say whether that exchange is trading now.
             let session = views::benchmark_market(&r.symbol)

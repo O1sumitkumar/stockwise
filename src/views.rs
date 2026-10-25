@@ -37,6 +37,11 @@ pub trait DataSource: Send + Sync {
     ) -> impl Future<Output = Option<NaiveDate>> + Send {
         async { None }
     }
+    /// The India 10-year G-sec benchmark yield for `markets`. None unless
+    /// the source reads CCIL / RBI.
+    fn india_10y(&self) -> impl Future<Output = Option<crate::gsec::YieldRow>> + Send {
+        async { None }
+    }
 
     fn portfolio(&self) -> Result<Portfolio> {
         Portfolio::load()
@@ -66,6 +71,18 @@ impl DataSource for YahooClient {
     async fn next_results(&self, symbol: &str, today: NaiveDate) -> Option<NaiveDate> {
         crate::calendar::next_results(self, symbol, today).await
     }
+    async fn india_10y(&self) -> Option<crate::gsec::YieldRow> {
+        live_india_10y().await
+    }
+}
+
+/// The 10-year benchmark from CCIL (RBI fallback), cached for hours; a
+/// short timeout so a slow site never holds up `markets`.
+async fn live_india_10y() -> Option<crate::gsec::YieldRow> {
+    let set = crate::gsec::yields(std::time::Duration::from_secs(6))
+        .await
+        .ok()?;
+    crate::gsec::ten_year(&set.rows).cloned()
 }
 
 /// A [`YahooClient`] opened on first use. Long-running modes (`tui`,
@@ -103,6 +120,9 @@ impl DataSource for LiveSource {
     async fn next_results(&self, symbol: &str, today: NaiveDate) -> Option<NaiveDate> {
         let client = self.client().await.ok()?;
         crate::calendar::next_results(client, symbol, today).await
+    }
+    async fn india_10y(&self) -> Option<crate::gsec::YieldRow> {
+        live_india_10y().await
     }
 }
 
@@ -219,6 +239,23 @@ pub fn section_spec(kind: Market) -> SectionSpec {
     }
 }
 
+/// Symbol of the India 10-year G-sec yield row in `markets` (not a Yahoo
+/// symbol; its `price` is a yield in percent and it has no currency).
+pub const INDIA_10Y: &str = "IN10Y";
+
+/// The `markets` row for the India 10-year yield.
+pub fn india_10y_row(region: &str, y: &crate::gsec::YieldRow) -> IndexRow {
+    IndexRow {
+        region: region.to_string(),
+        symbol: INDIA_10Y.to_string(),
+        name: crate::i18n::t(crate::i18n::Msg::India10yName).to_string(),
+        price: y.ytm,
+        change: None,
+        change_percent: None,
+        currency: None,
+    }
+}
+
 /// `markets --global`: each exchange's main index, India and the US first.
 pub fn global_section_spec() -> SectionSpec {
     use crate::i18n::{Msg, t};
@@ -322,10 +359,16 @@ pub async fn market_sections(
     for spec in specs {
         let symbols: Vec<&str> = spec.items.iter().map(|(sym, _)| sym.as_str()).collect();
         let quotes = src.quotes(&symbols).await?;
+        let mut rows = index_rows(spec.region, &spec.items, &quotes);
+        if spec.region == "Indian Markets"
+            && let Some(y) = src.india_10y().await
+        {
+            rows.push(india_10y_row(spec.region, &y));
+        }
         out.push(MarketSection {
             region: spec.region,
             title: spec.title,
-            rows: index_rows(spec.region, &spec.items, &quotes),
+            rows,
         });
     }
     Ok(out)
@@ -742,6 +785,8 @@ pub mod fixtures {
         pub quote_calls: AtomicUsize,
         /// When set, every network call fails with this message.
         pub fail: Mutex<Option<String>>,
+        /// The India 10Y benchmark `markets` adds, if any.
+        pub ten_year: Option<crate::gsec::YieldRow>,
     }
 
     impl Default for Fixture {
@@ -774,6 +819,7 @@ pub mod fixtures {
                 daemon: Vec::new(),
                 quote_calls: AtomicUsize::new(0),
                 fail: Mutex::new(None),
+                ten_year: None,
             }
         }
     }
@@ -827,6 +873,9 @@ pub mod fixtures {
                     exchange: Some("NSI".into()),
                 })
                 .collect())
+        }
+        async fn india_10y(&self) -> Option<crate::gsec::YieldRow> {
+            self.ten_year.clone()
         }
         fn portfolio(&self) -> Result<Portfolio> {
             Ok(Portfolio {
@@ -932,6 +981,60 @@ mod tests {
         let set = block(quotes(&f, &["TCS.NS".into(), "NOPE.NS".into()])).unwrap();
         assert_eq!(set.quotes.len(), 1);
         assert_eq!(set.missing, vec!["NOPE.NS".to_string()]);
+    }
+
+    #[test]
+    fn markets_add_the_india_10y_and_global_benchmarks() {
+        let mut quotes = Fixture::default().quotes;
+        quotes.push(quote("^FTSE", Some(10_690.0), -0.3, "GBP"));
+        quotes.push(quote("^N225", Some(62_693.0), -0.3, "JPY"));
+        let f = Fixture {
+            quotes,
+            ten_year: Some(crate::gsec::YieldRow {
+                date: NaiveDate::from_ymd_opt(2026, 10, 23),
+                tenor: "9Y-10Y".into(),
+                kind: crate::gsec::Kind::Gsec,
+                security: "6.94% GS 2036".into(),
+                ytm: Some(7.4713),
+                source: "CCIL",
+            }),
+            ..Default::default()
+        };
+        let rows = block(markets(&f, Market::In, false, false, true)).unwrap();
+        let ten = rows.iter().find(|r| r.symbol == INDIA_10Y).unwrap();
+        assert_eq!(ten.region, "Indian Markets");
+        assert_eq!(ten.price, Some(7.4713));
+        assert_eq!(ten.currency, None);
+        assert_eq!(ten.change, None);
+        let global: Vec<&IndexRow> = rows.iter().filter(|r| r.region == "Global").collect();
+        let names: Vec<&str> = global.iter().map(|r| r.name.as_str()).collect();
+        // Rows without a quote are dropped, as in every section.
+        assert_eq!(
+            names,
+            [
+                "India — NIFTY 50",
+                "US — S&P 500",
+                "UK — FTSE 100",
+                "JP — Nikkei 225"
+            ]
+        );
+        assert_eq!(
+            benchmark_market("^FTSE"),
+            Some(Market::Global(market::Exchange::Uk))
+        );
+        assert_eq!(benchmark_market("^NSEI"), Some(Market::In));
+        assert_eq!(benchmark_market("TCS.NS"), None);
+        // A global market leads its own section, then India and the US.
+        let uk = block(markets(
+            &f,
+            Market::Global(market::Exchange::Uk),
+            false,
+            false,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(uk[0].region, "United Kingdom");
+        assert_eq!(uk[0].symbol, "^FTSE");
     }
 
     #[test]
