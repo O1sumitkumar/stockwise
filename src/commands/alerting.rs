@@ -4,6 +4,7 @@
 
 use super::worker::Feed;
 use super::*;
+use crate::alerts::alert_market;
 use crate::clock;
 use crate::daemon::Shutdown;
 use crate::notify::{Channel, Message, Notifier};
@@ -79,27 +80,12 @@ impl WatchState {
 }
 
 fn alert_key(a: &crate::alerts::Alert) -> String {
-    format!("{}|{}|{}|{}", a.symbol, a.condition, a.target, a.created_at)
-}
-
-/// The exchange whose hours apply to a symbol, or None for instruments that
-/// trade around the clock (crypto, FX) and other exchanges' listings.
-fn alert_market(symbol: &str) -> Option<Market> {
-    let s = symbol.to_uppercase();
-    if s.ends_with("-USD") || s.ends_with("-INR") || s.contains('=') {
-        None
-    } else if s.ends_with(".NS")
-        || s.ends_with(".BO")
-        || s.starts_with("^NSE")
-        || s.starts_with("^CNX")
-        || s == "^BSESN"
-    {
-        Some(Market::In)
-    } else if s.contains('.') {
-        None
-    } else {
-        Some(Market::Us)
+    let mut key = format!("{}|{}|{}|{}", a.symbol, a.condition, a.target, a.created_at);
+    // Alerts from before technical conditions have no period: same key as before.
+    if let Some(p) = a.period {
+        key.push_str(&format!("|{p}"));
     }
+    key
 }
 
 fn is_due(symbol: &str, now: DateTime<Utc>) -> bool {
@@ -127,21 +113,27 @@ struct Trigger {
     key: String,
     previous: Option<Fired>,
     symbol: String,
+    /// The condition in words (English: notifications aren't localized).
     condition: String,
-    target: f64,
-    price: f64,
+    price: Option<f64>,
     currency: Option<String>,
+    /// The indicator reading for technical alerts, e.g. "RSI 28.4".
+    reading: Option<String>,
 }
 
 impl Trigger {
     fn text(&self) -> String {
-        format!(
-            "{} {} {:.2} — now {}",
-            self.symbol,
-            self.condition,
-            self.target,
-            plain_price(self.price, self.currency.as_deref())
-        )
+        let mut text = format!("{} {}", self.symbol, self.condition);
+        if let Some(price) = self.price {
+            text.push_str(&format!(
+                " — now {}",
+                plain_price(price, self.currency.as_deref())
+            ));
+        }
+        if let Some(reading) = &self.reading {
+            text.push_str(&format!(" ({reading})"));
+        }
+        text
     }
 }
 
@@ -209,30 +201,41 @@ async fn check_alerts(
     let mut symbols: Vec<&str> = due.iter().map(|a| a.symbol.as_str()).collect();
     symbols.sort();
     symbols.dedup();
-    let quotes = feed.client().await?.get_quote(&symbols).await?;
+    let client = feed.client().await?;
+    let quotes = client.get_quote(&symbols).await?;
+    // Daily bars once per symbol per check, for the technical conditions.
+    let due_alerts: Vec<crate::alerts::Alert> = due.iter().map(|a| (*a).clone()).collect();
+    let data = views::alert_data(client, &due_alerts, &quotes, now).await;
 
     for alert in due {
-        let quote = quotes
-            .iter()
-            .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()));
-        let Some(price) = quote
-            .and_then(|q| q.regular_market_price)
-            .filter(|p| p.is_finite() && *p > 0.0)
-        else {
+        let d = data.get(&alert.symbol).cloned().unwrap_or_default();
+        let condition = alert.describe(crate::i18n::Lang::En);
+        let Some(reading) = alert.evaluate(&d) else {
             if verbose {
+                let why = if alert.condition.is_price() {
+                    "no live price"
+                } else if alert.needs_results() {
+                    "no upcoming results date"
+                } else {
+                    "not enough data"
+                };
                 println!(
-                    "  {} {} — no live price, skipped",
+                    "  {} {} {} — {}, skipped",
                     "?".yellow(),
-                    alert.symbol.cyan()
+                    alert.symbol.cyan(),
+                    condition,
+                    why
                 );
             }
             continue;
         };
-        let currency = quote.and_then(|q| q.currency.clone());
-        let hit = match alert.condition {
-            AlertCondition::Above => price >= alert.target,
-            AlertCondition::Below => price <= alert.target,
-        };
+        let hit = reading.hit;
+        let price = d
+            .price
+            .filter(|p| p.is_finite() && *p > 0.0)
+            .or_else(|| d.bars.as_ref().and_then(|b| b.close.last().copied()));
+        let currency = d.currency.clone();
+        let reading_text = alert.reading_text(&reading);
         let today = clock::session_date(alert_market(&alert.symbol).unwrap_or(market), now);
         let key = alert_key(alert);
         let previous = state.fired.get(&key).copied();
@@ -246,11 +249,17 @@ async fn check_alerts(
                 "waiting".dimmed().to_string()
             };
             println!(
-                "  {} {} {:.2} | Now: {} | {}",
+                "  {} {} | Now: {}{} | {}",
                 alert.symbol.cyan(),
-                alert.condition,
-                alert.target,
-                format_price(price, currency.as_deref()),
+                alert.describe(crate::i18n::lang()),
+                price.map_or_else(
+                    || "N/A".to_string(),
+                    |p| format_price(p, currency.as_deref())
+                ),
+                reading_text
+                    .as_deref()
+                    .map(|r| format!(" | {r}"))
+                    .unwrap_or_default(),
                 status
             );
         }
@@ -259,10 +268,10 @@ async fn check_alerts(
                 key,
                 previous,
                 symbol: alert.symbol.clone(),
-                condition: alert.condition.to_string(),
-                target: alert.target,
+                condition,
                 price,
                 currency,
+                reading: reading_text,
             });
         }
     }
@@ -283,10 +292,7 @@ pub async fn cmd_alert_watch(interval: u64, once: bool, market: Market) -> Resul
         let now = Utc::now();
         let pass = check_alerts(&mut feed, &mut state, market, now, true, true).await?;
         if pass.total == 0 {
-            println!(
-                "  {}",
-                "No alerts. Use 'stockwise alert add <SYMBOL> above/below <PRICE>'.".dimmed()
-            );
+            println!("  {}", NO_ALERTS.dimmed());
         } else {
             if pass.triggers.is_empty() {
                 println!("\n  {}", "No new triggers.".dimmed());
@@ -410,14 +416,23 @@ async fn report_triggers(
     }
     let now = clock::local(market, Utc::now()).format("%H:%M:%S");
     for t in triggers {
+        let price = t
+            .price
+            .map(|p| format!(" — now {}", format_price(p, t.currency.as_deref()).bold()))
+            .unwrap_or_default();
+        let reading = t
+            .reading
+            .as_deref()
+            .map(|r| format!(" ({r})"))
+            .unwrap_or_default();
         println!(
-            "  {} [{}] {} {} {:.2} — now {}",
+            "  {} [{}] {} {}{}{}",
             "⚠".yellow().bold(),
             now,
             t.symbol.cyan().bold(),
             t.condition,
-            t.target,
-            format_price(t.price, t.currency.as_deref()).bold()
+            price,
+            reading
         );
     }
     if let Some(msg) = trigger_message(triggers)
@@ -561,6 +576,22 @@ mod tests {
     }
 
     #[test]
+    fn watch_keys_of_old_alerts_do_not_change() {
+        let mut store = AlertStore::default();
+        store.add("TCS.NS", AlertCondition::Above, 4200.0);
+        store.add("TCS.NS", AlertCondition::RsiBelow, 30.0);
+        let created = store.alerts[0].created_at.clone();
+        assert_eq!(
+            alert_key(&store.alerts[0]),
+            format!("TCS.NS|above|4200|{created}")
+        );
+        assert_eq!(
+            alert_key(&store.alerts[1]),
+            format!("TCS.NS|rsi-below|30|{created}|14")
+        );
+    }
+
+    #[test]
     fn removed_alerts_are_forgotten() {
         let mut s = WatchState::default();
         s.should_notify("a", true, day(21));
@@ -569,17 +600,6 @@ mod tests {
         assert!(s.fired.contains_key("b") && !s.fired.contains_key("a"));
         // A re-added alert with the same key fires again.
         assert!(s.should_notify("a", true, day(21)));
-    }
-
-    #[test]
-    fn alert_markets_follow_the_symbol() {
-        assert_eq!(alert_market("TCS.NS"), Some(Market::In));
-        assert_eq!(alert_market("RELIANCE.BO"), Some(Market::In));
-        assert_eq!(alert_market("^NSEI"), Some(Market::In));
-        assert_eq!(alert_market("AAPL"), Some(Market::Us));
-        assert_eq!(alert_market("^GSPC"), Some(Market::Us));
-        assert_eq!(alert_market("BTC-USD"), None);
-        assert_eq!(alert_market("USDINR=X"), None);
     }
 
     #[test]
@@ -633,15 +653,24 @@ mod tests {
             key: s.into(),
             previous: None,
             symbol: s.into(),
-            condition: "above".into(),
-            target: 100.0,
-            price: 101.5,
+            condition: "above 100.00".into(),
+            price: Some(101.5),
             currency: Some("INR".into()),
+            reading: None,
         };
         let one = trigger_message(&[t("TCS.NS")]).unwrap();
         assert_eq!(
             one.title,
             "StockWise alert: TCS.NS above 100.00 — now ₹101.50"
+        );
+        let rsi = Trigger {
+            condition: "RSI(14) below 30".into(),
+            reading: Some("RSI 28.4".into()),
+            ..t("INFY.NS")
+        };
+        assert_eq!(
+            trigger_message(&[rsi]).unwrap().title,
+            "StockWise alert: INFY.NS RSI(14) below 30 — now ₹101.50 (RSI 28.4)"
         );
         let two = trigger_message(&[t("TCS.NS"), t("INFY.NS")]).unwrap();
         assert_eq!(two.title, "StockWise: 2 alerts triggered");

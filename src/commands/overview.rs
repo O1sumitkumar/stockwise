@@ -364,27 +364,14 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
         unique.sort();
         unique.dedup();
         let a_quotes = client.get_quote(&unique).await?;
-        let mut triggered = Vec::new();
-        for alert in &store.alerts {
-            // No live price: never report it as triggered.
-            let Some(price) = a_quotes
-                .iter()
-                .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()))
-                .and_then(|q| q.regular_market_price)
-            else {
-                continue;
-            };
-            let hit = match alert.condition {
-                AlertCondition::Above => price >= alert.target,
-                AlertCondition::Below => price <= alert.target,
-            };
-            if hit {
-                triggered.push(format!(
-                    "{} {} {:.2}",
-                    alert.symbol, alert.condition, alert.target
-                ));
-            }
-        }
+        // Missing data (no price, too little history) never reads as triggered.
+        let rows = views::alert_rows(&client, &store.alerts, &a_quotes, chrono::Utc::now()).await;
+        let triggered: Vec<String> = rows
+            .iter()
+            .zip(&store.alerts)
+            .filter(|(row, _)| row.status == "triggered")
+            .map(|(_, alert)| format!("{} {}", alert.symbol, alert.describe(crate::i18n::lang())))
+            .collect();
         if !triggered.is_empty() {
             print_section(t(Msg::TriggeredAlerts));
             for line in &triggered {

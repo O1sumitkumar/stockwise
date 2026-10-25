@@ -5,14 +5,16 @@
 //! the same shape. Nothing here prints. Market data and local files come
 //! through [`DataSource`], which tests replace with fixtures.
 
-use crate::alerts::AlertStore;
+use crate::alerts::{Alert, AlertStore, MarketData};
 use crate::api::{ChartData, Quote, SearchResult, YahooClient};
 use crate::daemon_status::DaemonStatus;
 use crate::market::{self, Market};
 use crate::portfolio::Portfolio;
 use crate::watchlist::Watchlist;
 use anyhow::{Result, bail};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::future::Future;
 
 /// Where market data and the local data files come from: Yahoo Finance and
@@ -26,6 +28,15 @@ pub trait DataSource: Send + Sync {
         interval: &str,
     ) -> impl Future<Output = Result<ChartData>> + Send;
     fn search(&self, query: &str) -> impl Future<Output = Result<Vec<SearchResult>>> + Send;
+    /// The next results date for `symbol` on or after `today`, for
+    /// `results-in` alerts. None unless the source has a calendar.
+    fn next_results(
+        &self,
+        _symbol: &str,
+        _today: NaiveDate,
+    ) -> impl Future<Output = Option<NaiveDate>> + Send {
+        async { None }
+    }
 
     fn portfolio(&self) -> Result<Portfolio> {
         Portfolio::load()
@@ -51,6 +62,9 @@ impl DataSource for YahooClient {
     }
     async fn search(&self, query: &str) -> Result<Vec<SearchResult>> {
         YahooClient::search(self, query).await
+    }
+    async fn next_results(&self, symbol: &str, today: NaiveDate) -> Option<NaiveDate> {
+        crate::calendar::next_results(self, symbol, today).await
     }
 }
 
@@ -85,6 +99,10 @@ impl DataSource for LiveSource {
     }
     async fn search(&self, query: &str) -> Result<Vec<SearchResult>> {
         self.client().await?.search(query).await
+    }
+    async fn next_results(&self, symbol: &str, today: NaiveDate) -> Option<NaiveDate> {
+        let client = self.client().await.ok()?;
+        crate::calendar::next_results(client, symbol, today).await
     }
 }
 
@@ -463,12 +481,73 @@ pub async fn watchlist(src: &impl DataSource) -> Result<Vec<WatchRow>> {
 }
 
 /// `alert check --json`: every alert with its live price and a `status` of
-/// `triggered`, `waiting` or `no_price`.
+/// `triggered`, `waiting`, `no_price` or `no_data`.
 pub async fn alerts(src: &impl DataSource) -> Result<Vec<AlertCheckRow>> {
     let store = local(src.alerts())?;
     let symbols = unique_symbols(store.alerts.iter().map(|a| a.symbol.as_str()));
     let quotes = quotes_for(src, &symbols).await?;
-    Ok(crate::commands::alert_check_rows(&store.alerts, &quotes))
+    Ok(alert_rows(src, &store.alerts, &quotes, Utc::now()).await)
+}
+
+/// Every alert evaluated: price alerts against `quotes`, technical ones
+/// against daily bars, `results-in` against the results calendar.
+pub async fn alert_rows(
+    src: &impl DataSource,
+    alerts: &[Alert],
+    quotes: &[Quote],
+    now: DateTime<Utc>,
+) -> Vec<AlertCheckRow> {
+    let data = alert_data(src, alerts, quotes, now).await;
+    crate::commands::alert_check_rows(alerts, &data)
+}
+
+/// What `alerts` need, by symbol: the quote; daily bars (one chart request
+/// per symbol, long enough for every alert on it and brought up to the live
+/// quote) for technical conditions; the next results date for `results-in`.
+/// A chart that fails leaves the symbol without bars, so its technical
+/// alerts read `no_data` rather than a guess.
+pub async fn alert_data(
+    src: &impl DataSource,
+    alerts: &[Alert],
+    quotes: &[Quote],
+    now: DateTime<Utc>,
+) -> HashMap<String, MarketData> {
+    let mut data = HashMap::new();
+    for alert in alerts {
+        if data.contains_key(&alert.symbol) {
+            continue;
+        }
+        let symbol = alert.symbol.as_str();
+        let on_symbol = || alerts.iter().filter(|a| a.symbol == symbol);
+        let quote = find_quote(quotes, symbol);
+        let market = crate::alerts::alert_market(symbol);
+        let today = crate::calendar::exchange_today(symbol, now);
+        let mut d = MarketData {
+            price: quote.and_then(|q| q.regular_market_price),
+            currency: quote.and_then(|q| q.currency.clone()),
+            change_percent: quote.and_then(|q| q.regular_market_change_percent),
+            today: Some(today),
+            ..Default::default()
+        };
+        let bars_needed = on_symbol().map(Alert::bars_needed).max().unwrap_or(0);
+        if bars_needed > 0
+            && let Ok(chart) = src
+                .chart(symbol, crate::alerts::chart_range(bars_needed), "1d")
+                .await
+        {
+            let mut bars = crate::backtest::Bars::from_chart(&chart);
+            if let Some(q) = quote {
+                let open = market.is_none_or(|m| crate::clock::is_open(m, now));
+                crate::alerts::patch_live_bar(&mut bars, q, today, open);
+            }
+            d.bars = Some(bars);
+        }
+        if on_symbol().any(Alert::needs_results) {
+            d.next_results = src.next_results(symbol, today).await;
+        }
+        data.insert(alert.symbol.clone(), d);
+    }
+    data
 }
 
 // ── dashboard snapshot ──
@@ -522,7 +601,7 @@ pub async fn snapshot(src: &impl DataSource, market: Market) -> Result<Snapshot>
         indices,
         watchlist: crate::commands::watch_rows(&wl.symbols, &quotes),
         portfolio: portfolio_view(src, &p, &quotes, market).await,
-        alerts: crate::commands::alert_check_rows(&store.alerts, &quotes),
+        alerts: alert_rows(src, &store.alerts, &quotes, Utc::now()).await,
     })
 }
 
@@ -750,6 +829,47 @@ mod tests {
         }
         assert_eq!(v["regularMarketPrice"], 4100.0);
         assert!(v["longName"].is_null());
+    }
+
+    #[test]
+    fn technical_alerts_read_daily_bars() {
+        use crate::alerts::AlertCondition as C;
+        let mut f = Fixture::default();
+        f.alerts = AlertStore::default();
+        // The fixture's daily closes: 100, 102, 101, 105, 107.5 (highs +1).
+        f.alerts.add("TCS.NS", C::BreakoutHigh, 3.0);
+        f.alerts.add("TCS.NS", C::CrossAboveSma, 3.0);
+        f.alerts.add("TCS.NS", C::RsiBelow, 30.0);
+        f.alerts.add("TCS.NS", C::ChangeAbove, 1.0);
+        f.alerts.add("TCS.NS", C::ResultsIn, 7.0);
+        f.alerts.add("DELISTED.NS", C::CrossAboveEma, 2.0);
+        // Saturday: NSE closed, so the bars are used as they are.
+        let saturday = DateTime::parse_from_rfc3339("2026-10-24T05:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let quotes = block(f.quotes(&["TCS.NS"])).unwrap();
+        let rows = block(alert_rows(&f, &f.alerts.alerts, &quotes, saturday));
+        let status: Vec<&str> = rows.iter().map(|r| r.status).collect();
+        assert_eq!(
+            status,
+            [
+                // 107.5 closes above the previous 3 highs (max 106).
+                "triggered",
+                // Above its 3-day SMA, but it was already above yesterday.
+                "waiting",
+                // Five bars are too few for RSI(14).
+                "no_data",
+                // Quote: +1.5% today.
+                "triggered",
+                // No calendar in the fixture.
+                "no_data",
+                // No chart for an unknown symbol.
+                "no_data",
+            ]
+        );
+        assert_eq!(rows[0].value, Some(107.5));
+        assert_eq!(rows[0].reference, Some(106.0));
+        assert_eq!(rows[0].price, Some(4100.0));
     }
 
     #[test]

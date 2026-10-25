@@ -15,6 +15,7 @@ mod alerts;
 mod api;
 mod backtest;
 mod brokers;
+mod calendar;
 mod charts;
 mod clock;
 mod commands;
@@ -485,11 +486,29 @@ stockwise options TCS                     expected moves (same as `options moves
         out: TableOutput,
     },
 
-    /// Price alerts (default: list)
+    /// Price and technical alerts (default: list)
     #[command(args_conflicts_with_subcommands = true)]
     Alert {
         #[command(subcommand)]
         action: Option<AlertCmd>,
+        #[command(flatten)]
+        out: TableOutput,
+    },
+
+    /// Upcoming results, ex-dividend dates and splits for your holdings and watchlist
+    #[command(after_help = CALENDAR_HELP)]
+    Calendar {
+        /// Symbols to look up (default: portfolio holdings and watchlist)
+        symbols: Vec<String>,
+        /// How many days ahead to show
+        #[arg(long, default_value = "30", value_parser = clap::value_parser!(u32).range(1..=365))]
+        days: u32,
+        /// Only portfolio holdings (the global --portfolio NAME picks which portfolio)
+        #[arg(long, conflicts_with_all = ["watchlist", "symbols"])]
+        holdings: bool,
+        /// Only the watchlist
+        #[arg(long, conflicts_with = "symbols")]
+        watchlist: bool,
         #[command(flatten)]
         out: TableOutput,
     },
@@ -686,15 +705,57 @@ enum WatchCmd {
     },
 }
 
+const ALERT_ADD_HELP: &str = "\
+Conditions (NUMBER is what follows the condition):
+  above / below PRICE         live price at or beyond a level
+  rsi-below / rsi-above LEVEL RSI (14-day, or --period) at or beyond LEVEL
+  cross-above-sma / cross-below-sma DAYS
+  cross-above-ema / cross-below-ema DAYS
+                              daily close crosses the moving average (fires on
+                              the crossing day only)
+  breakout-high / breakdown-low DAYS
+                              close beyond the previous DAYS-day high / low
+  change-above / change-below PCT
+                              day change of +PCT% or more / -PCT% or less
+  volume-spike MULTIPLE       volume at least MULTIPLE x its 20-day (--period)
+                              average
+  results-in DAYS             results due within DAYS days (see `calendar`)
+
+Technical conditions use daily bars, updated with the live price.
+
+Examples:
+  stockwise alert add TCS above 4200
+  stockwise alert add INFY rsi-below 30
+  stockwise alert add RELIANCE cross-above-sma 200
+  stockwise alert add AAPL -m us breakout-high 52
+  stockwise alert add HDFCBANK change-below 3
+  stockwise alert add TCS results-in 7";
+
+const CALENDAR_HELP: &str = "\
+Results and earnings dates, ex-dividend and payment dates come from Yahoo
+Finance. For Indian stocks, NSE board meetings and corporate actions add filed
+results dates, dividends, splits and bonus issues. Answers are cached for a day.
+
+Examples:
+  stockwise calendar
+  stockwise calendar --holdings --days 14
+  stockwise calendar TCS INFY
+  stockwise calendar AAPL MSFT -m us --json";
+
 #[derive(Subcommand)]
 enum AlertCmd {
-    /// Alert when a price crosses a level, e.g. `alert add TCS above 4200`
+    /// Alert on a price level or a technical condition, e.g. `alert add TCS rsi-below 30`
+    #[command(after_help = ALERT_ADD_HELP)]
     Add {
         symbol: String,
         #[arg(value_enum, ignore_case = true)]
         condition: AlertWhen,
-        /// Price level
+        /// The condition's number: a price, RSI level, days, percent or multiple
+        #[arg(allow_negative_numbers = true)]
         target: f64,
+        /// RSI period (default 14) or volume-average length (default 20)
+        #[arg(long, value_parser = clap::value_parser!(u32).range(2..=200))]
+        period: Option<u32>,
     },
     /// Remove an alert by its number from `alert list`
     #[command(alias = "rm")]
@@ -1359,6 +1420,18 @@ enum AlertWhen {
     Above,
     #[value(alias = "<")]
     Below,
+    RsiBelow,
+    RsiAbove,
+    CrossAboveSma,
+    CrossBelowSma,
+    CrossAboveEma,
+    CrossBelowEma,
+    BreakoutHigh,
+    BreakdownLow,
+    ChangeAbove,
+    ChangeBelow,
+    VolumeSpike,
+    ResultsIn,
 }
 
 /// A 3-letter currency code such as `usd` or `INR`, upper-cased.
@@ -1443,6 +1516,7 @@ const GROUPS: &[(&str, &[&str])] = &[
             "portfolio",
             "watch",
             "alert",
+            "calendar",
             "export",
             "import",
             "wealth",
@@ -1957,14 +2031,13 @@ async fn main() {
                 symbol,
                 condition,
                 target,
+                period,
             }) => {
                 let condition = value_name(condition);
-                commands::cmd_alert("add", Some(&symbol), Some(&condition), Some(target), m).await
+                let period = period.map(|p| p as usize);
+                commands::cmd_alert_add(&symbol, &condition, target, period, m).await
             }
-            Some(AlertCmd::Remove { index }) => {
-                let index = index.to_string();
-                commands::cmd_alert("remove", Some(&index), None, None, m).await
-            }
+            Some(AlertCmd::Remove { index }) => commands::cmd_alert_remove(index),
             Some(AlertCmd::Check { out: check }) => commands::cmd_alert_check(out.or(check)).await,
             Some(AlertCmd::List { out: list }) => commands::cmd_alert_list(out.or(list)),
             Some(AlertCmd::Watch { interval, once }) => {
@@ -1972,6 +2045,20 @@ async fn main() {
             }
             None => commands::cmd_alert_list(out.into()),
         },
+        Commands::Calendar {
+            symbols,
+            days,
+            holdings,
+            watchlist,
+            out,
+        } => {
+            let scope = match (holdings, watchlist) {
+                (true, _) => commands::CalendarScope::Portfolio,
+                (_, true) => commands::CalendarScope::Watchlist,
+                _ => commands::CalendarScope::Both,
+            };
+            commands::cmd_calendar(&symbols, days, scope, m, out.into()).await
+        }
         Commands::Export { what } => commands::cmd_export(&value_name(what), m).await,
         Commands::Import {
             source,
@@ -2405,6 +2492,86 @@ mod tests {
         }
         // Faster than every 10 seconds would hammer Yahoo.
         assert!(Cli::try_parse_from(["stockwise", "alert", "watch", "--interval", "5"]).is_err());
+    }
+
+    #[test]
+    fn technical_alerts_and_calendar_parse() {
+        for args in [
+            vec!["stockwise", "alert", "add", "INFY", "rsi-below", "30"],
+            vec![
+                "stockwise",
+                "alert",
+                "add",
+                "INFY",
+                "RSI-ABOVE",
+                "70",
+                "--period",
+                "9",
+            ],
+            vec!["stockwise", "alert", "add", "TCS", "cross-above-sma", "200"],
+            vec!["stockwise", "alert", "add", "TCS", "cross-below-ema", "20"],
+            vec![
+                "stockwise",
+                "-m",
+                "us",
+                "alert",
+                "add",
+                "AAPL",
+                "breakout-high",
+                "52",
+            ],
+            vec!["stockwise", "alert", "add", "TCS", "breakdown-low", "20"],
+            vec!["stockwise", "alert", "add", "TCS", "change-above", "3"],
+            vec!["stockwise", "alert", "add", "TCS", "change-below", "-3"],
+            vec!["stockwise", "alert", "add", "TCS", "volume-spike", "2.5"],
+            vec!["stockwise", "alert", "add", "TCS", "results-in", "7"],
+            vec!["stockwise", "calendar"],
+            vec!["stockwise", "calendar", "--days", "14", "--holdings"],
+            vec![
+                "stockwise",
+                "calendar",
+                "--holdings",
+                "--portfolio",
+                "long-term",
+            ],
+            vec!["stockwise", "calendar", "--watchlist", "--json"],
+            vec!["stockwise", "calendar", "TCS", "INFY", "--csv"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_ok(), "{args:?} should parse");
+        }
+        for args in [
+            vec!["stockwise", "alert", "add", "TCS", "sideways", "3"],
+            vec![
+                "stockwise",
+                "alert",
+                "add",
+                "TCS",
+                "rsi-below",
+                "30",
+                "--period",
+                "1",
+            ],
+            vec!["stockwise", "calendar", "--days", "0"],
+            vec!["stockwise", "calendar", "--holdings", "--watchlist"],
+            vec!["stockwise", "calendar", "TCS", "--holdings"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_err(), "{args:?} should fail");
+        }
+    }
+
+    #[test]
+    fn every_cli_alert_condition_is_a_stored_condition() {
+        for v in AlertWhen::value_variants() {
+            let name = value_name(*v);
+            assert!(
+                alerts::AlertCondition::parse(&name).is_some(),
+                "{name} has no AlertCondition"
+            );
+        }
+        assert_eq!(
+            AlertWhen::value_variants().len(),
+            alerts::AlertCondition::ALL.len()
+        );
     }
 
     #[test]
