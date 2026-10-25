@@ -32,6 +32,7 @@ mod longterm;
 mod market;
 mod notify;
 mod output;
+mod payoff;
 mod portfolio;
 mod providers;
 #[cfg(feature = "server")]
@@ -378,15 +379,18 @@ enum Commands {
         action: MfCmd,
     },
 
-    /// Option chains with greeks, PCR and max pain; `options SYMBOL` shows expected moves
+    /// Option chains with greeks, PCR, max pain and payoffs; `options SYMBOL` shows expected moves
     #[command(
         args_conflicts_with_subcommands = true,
         subcommand_negates_reqs = true,
         after_help = "Examples:\n  \
 stockwise options chain NIFTY             NSE index options, nearest expiry\n  \
+stockwise options chain SENSEX            BSE index options (also BANKEX, SENSEX50, RELIANCE.BO)\n  \
 stockwise options chain AAPL -m us -n 5   US options from Yahoo, 5 strikes each side\n  \
 stockwise options pcr BANKNIFTY           put/call ratio and open-interest walls\n  \
 stockwise options maxpain RELIANCE -e 2026-10-27\n  \
+stockwise options payoff NIFTY --strategy iron-condor --width 200\n  \
+stockwise options payoff NIFTY --leg \"buy call 24500\" --leg \"sell call 24800\" --today\n  \
 stockwise options TCS                     expected moves (same as `options moves TCS`)"
     )]
     Options {
@@ -974,12 +978,96 @@ enum OptionsCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Payoff of a multi-leg position priced from the live chain: P/L chart,
+    /// max profit/loss, breakevens, probability of profit, net greeks (no orders)
+    #[command(
+        after_help = "Legs: `buy|sell [QTY] call|put STRIKE [@PRICE]` or `buy|sell [QTY] stock [@PRICE]`.\n\
+STRIKE is a listed strike or atm, atm+N, atm-N (N strikes from the money). Without @PRICE a\n\
+leg is priced at the bid/ask mid, else the last trade (flagged `ltp`).\n\n\
+Presets (around the at-the-money strike, W = --width, default two strike steps):\n  \
+bull-call     buy call ATM, sell call ATM+W\n  \
+bear-put      buy put ATM, sell put ATM-W\n  \
+straddle      buy call and put ATM\n  \
+strangle      buy put ATM-W, buy call ATM+W\n  \
+iron-condor   sell put ATM-W and call ATM+W, buy put ATM-2W and call ATM+2W\n  \
+butterfly     buy calls ATM-W and ATM+W, sell 2 calls ATM\n  \
+covered-call  buy the underlying at spot, sell call ATM+W"
+    )]
+    Payoff {
+        /// NIFTY, BANKNIFTY, SENSEX, an F&O stock, or a US ticker with -m us
+        symbol: String,
+        /// A leg, e.g. "buy call 24500" (repeat for each leg)
+        #[arg(long = "leg", value_name = "LEG", value_parser = payoff::parse_leg)]
+        legs: Vec<payoff::LegSpec>,
+        /// A ready-made strategy around the at-the-money strike
+        #[arg(short, long, value_enum)]
+        strategy: Option<StrategyArg>,
+        /// Strike distance for --strategy, in points (default: two strike steps)
+        #[arg(short, long)]
+        width: Option<f64>,
+        /// Expiry date (default: nearest)
+        #[arg(short, long, value_parser = expiry_date)]
+        expiry: Option<chrono::NaiveDate>,
+        /// Number of lots (each leg's quantity is multiplied by this)
+        #[arg(short, long, default_value_t = 1)]
+        lots: u32,
+        /// Units per lot, when the chain does not show it (e.g. BSE after hours)
+        #[arg(long)]
+        lot_size: Option<u32>,
+        /// Risk-free rate in percent (default 6.5 India, 4.0 US)
+        #[arg(long)]
+        rate: Option<f64>,
+        /// Dividend yield in percent
+        #[arg(long, default_value_t = 0.0)]
+        div_yield: f64,
+        /// Volatility in percent for the probability of profit (default: ATM IV)
+        #[arg(long)]
+        iv: Option<f64>,
+        /// Also chart today's P/L (Black-Scholes at each leg's IV)
+        #[arg(long)]
+        today: bool,
+        /// Print JSON instead of a chart
+        #[arg(long)]
+        json: bool,
+    },
     /// Expected moves and strike ideas from realized volatility
     Moves {
         symbol: String,
         #[arg(short, long, default_value = "1mo", value_parser = PERIODS)]
         period: String,
     },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum StrategyArg {
+    /// Buy ATM call, sell call ATM+W
+    BullCall,
+    /// Buy ATM put, sell put ATM-W
+    BearPut,
+    /// Buy ATM call and put
+    Straddle,
+    /// Buy put ATM-W and call ATM+W
+    Strangle,
+    /// Short iron condor: credit between ATM±W, wings at ATM±2W
+    IronCondor,
+    /// Long call butterfly ATM-W / 2×ATM / ATM+W
+    Butterfly,
+    /// Underlying at spot plus a short call ATM+W
+    CoveredCall,
+}
+
+impl From<StrategyArg> for payoff::Preset {
+    fn from(s: StrategyArg) -> Self {
+        match s {
+            StrategyArg::BullCall => payoff::Preset::BullCall,
+            StrategyArg::BearPut => payoff::Preset::BearPut,
+            StrategyArg::Straddle => payoff::Preset::Straddle,
+            StrategyArg::Strangle => payoff::Preset::Strangle,
+            StrategyArg::IronCondor => payoff::Preset::IronCondor,
+            StrategyArg::Butterfly => payoff::Preset::Butterfly,
+            StrategyArg::CoveredCall => payoff::Preset::CoveredCall,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -1850,6 +1938,35 @@ async fn main() {
                 expiry,
                 json,
             }) => commands::cmd_options_maxpain(&symbol, expiry, m, json).await,
+            Some(OptionsCmd::Payoff {
+                symbol,
+                legs,
+                strategy,
+                width,
+                expiry,
+                lots,
+                lot_size,
+                rate,
+                div_yield,
+                iv,
+                today,
+                json,
+            }) => {
+                let args = commands::PayoffArgs {
+                    legs,
+                    strategy: strategy.map(Into::into),
+                    width,
+                    expiry,
+                    lots,
+                    lot_size,
+                    rate_pct: rate,
+                    div_yield_pct: div_yield,
+                    iv_pct: iv,
+                    today,
+                    json,
+                };
+                commands::cmd_options_payoff(&symbol, args, m).await
+            }
             Some(OptionsCmd::Moves { symbol, period }) => {
                 commands::cmd_options(&symbol, &period, m).await
             }
@@ -2743,6 +2860,77 @@ mod tests {
         assert!(matches!(action, Some(OptionsCmd::Maxpain { .. })));
         let (action, ..) = options_cmd(&["stockwise", "options", "pcr", "AAPL", "--json"]);
         assert!(matches!(action, Some(OptionsCmd::Pcr { json: true, .. })));
+
+        let (action, ..) = options_cmd(&[
+            "stockwise",
+            "options",
+            "payoff",
+            "NIFTY",
+            "--leg",
+            "buy call 24500",
+            "--leg",
+            "sell call 24800 @ 40",
+            "--lots",
+            "2",
+            "--today",
+        ]);
+        match action {
+            Some(OptionsCmd::Payoff {
+                symbol,
+                legs,
+                strategy,
+                lots,
+                today,
+                ..
+            }) => {
+                assert_eq!(symbol, "NIFTY");
+                assert_eq!(legs.len(), 2);
+                assert_eq!(legs[1].price, Some(40.0));
+                assert!(strategy.is_none());
+                assert_eq!(lots, 2);
+                assert!(today);
+            }
+            _ => panic!("expected options payoff"),
+        }
+        let (action, ..) = options_cmd(&[
+            "stockwise",
+            "options",
+            "payoff",
+            "SENSEX",
+            "--strategy",
+            "iron-condor",
+            "-w",
+            "500",
+        ]);
+        assert!(matches!(
+            action,
+            Some(OptionsCmd::Payoff {
+                strategy: Some(StrategyArg::IronCondor),
+                width: Some(w),
+                ..
+            }) if w == 500.0
+        ));
+        for bad in [
+            vec![
+                "stockwise",
+                "options",
+                "payoff",
+                "NIFTY",
+                "--leg",
+                "hold call 100",
+            ],
+            vec![
+                "stockwise",
+                "options",
+                "payoff",
+                "NIFTY",
+                "--strategy",
+                "condor",
+            ],
+            vec!["stockwise", "options", "payoff", "NIFTY", "-e", "27/10"],
+        ] {
+            assert!(Cli::try_parse_from(&bad).is_err(), "{bad:?}");
+        }
 
         assert!(Cli::try_parse_from(["stockwise", "options"]).is_err());
         assert!(
