@@ -87,9 +87,9 @@ network, invalid config file), `2` invalid arguments.
 
 | Command | Description |
 |---------|-------------|
-| `movers [--json\|--csv]` | Top gainers and losers among 30 large caps |
+| `movers [--universe INDEX] [--json\|--csv]` | Top gainers and losers among 30 large caps, or an NSE index's members (see below) |
 | `sectors [--json\|--csv]` | Sector ETF/index performance with bars |
-| `heatmap` | Heatmap of the 30-stock universe |
+| `heatmap [--universe INDEX]` | Heatmap of the 30-stock universe, or an NSE index's members |
 | `sentiment` | Fear & Greed style gauge from VIX, momentum and trend |
 | `news <SYMBOL>` | Headlines collated from Yahoo Finance and Google News |
 | `rotation` | Sector rotation vs 50-day average |
@@ -101,8 +101,18 @@ network, invalid config file), `2` invalid arguments.
 | `surprise` | Earnings momentum — accelerating vs decelerating |
 | `matrix` | Quality vs growth quadrants |
 | `picks` | Large caps ranked on 8 fundamental + technical factors |
-| `screen <CATEGORY> [--json\|--csv]` | `undervalued` (P/E<15), `growth` (forward EPS > trailing), `dividend` (yield>2%), `momentum` (top gainers), `bluechip` (>$100B / >₹5L Cr) |
+| `screen <CATEGORY> [--universe INDEX] [--json\|--csv]` | `undervalued` (P/E<15), `growth` (forward EPS > trailing), `dividend` (yield>2%), `momentum` (top gainers), `bluechip` (>$100B / >₹5L Cr) |
 | `dividends <SYMBOL> [--json]` | Yield, income projection, 10-year DRIP growth |
+
+**`--universe`** (Indian market): scan the current members of an NSE index
+instead of the built-in 30 large caps — `nifty50`, `niftynext50` (`next50`),
+`nifty100`, `banknifty` (`niftybank`) or `niftyit`. The member list comes from
+NSE's website (one request) whichever data provider you use; prices still come
+from your provider, and with `STOCKWISE_DATA_PROVIDER=nse` or `exchange` the
+members' prices arrive with that same request. When NSE can't be reached or
+refuses, StockWise says so on stderr and scans a built-in list instead (the 30
+large caps for `nifty50` / `nifty100`, a built-in member list for `banknifty`
+and `niftyit`); `niftynext50` has no built-in list and fails with the reason.
 
 ## Funds & F&O
 
@@ -206,8 +216,9 @@ Data lives in the directory shown by `stockwise doctor`.
 | `portfolio list` | Your portfolios: the default one and every named one |
 | `portfolio remove <SYMBOL>` | Remove a holding and its lots without recording a sale |
 | `watch [show] [--json\|--csv]` / `watch add <SYMBOLS...>` / `watch remove <SYMBOLS...>` (`w`) | Watchlist |
-| `alert [list] [--json\|--csv]` / `alert add <SYMBOL> <above\|below> <PRICE>` / `alert check [--json\|--csv]` / `alert remove <N>` | Price alerts |
+| `alert [list] [--json\|--csv]` / `alert add <SYMBOL> <CONDITION> <NUMBER> [--period N]` / `alert check [--json\|--csv]` / `alert remove <N>` | Price and technical alerts — conditions below; `alert list` shows each condition in words |
 | `alert watch [--interval 60] [--once]` | Check alerts while their market is open and notify each trigger once (see [notifications](bots.md#notifications)). `--once` checks every alert once and exits, for cron |
+| `calendar [SYMBOLS...] [--days 30] [--holdings\|--watchlist] [--json\|--csv]` | Upcoming results, ex-dividend and dividend payment dates, splits and bonus issues for your holdings and watchlist (or the named symbols), sorted by date, with today and the next 7 days marked. See [the calendar](#results-and-corporate-calendar) |
 | `import <kite\|indmoney\|groww\|upstox\|cas\|csv> <FILE> [--replace]` | Import broker holdings, a lot list, a tradebook or a CAS (casparser JSON/CSV); re-importing updates instead of doubling (see below and [brokers.md](brokers.md#importing-holdings)) |
 | `export <portfolio\|watchlist>` | Write a CSV to the current directory |
 | `wealth` | Save today's portfolio value and show growth (run daily) |
@@ -371,7 +382,7 @@ stockwise options chain NIFTY -n 2 --json | jq '.rows[] | {strike, delta: .call.
 
 | Command | `--json` | `--csv` — one row per |
 |---------|----------|-----------------------|
-| `quote` | `[quote]` — Yahoo's quote fields, plus `dataSource` when another provider supplied the price | quote: `symbol, name, currency, price, change, change_percent, open, day_low, day_high, year_low, year_high, volume, avg_volume_3m, market_cap, pe_ttm, eps_ttm, dividend_yield` |
+| `quote` | `[quote]` — Yahoo's quote fields, plus `dataSource` when another provider supplied the price, and `deliveryPercent`, `lowerCircuit`, `upperCircuit` when NSE did ([data-providers.md](data-providers.md#nse-and-bse)) | quote: `symbol, name, currency, price, change, change_percent, open, day_low, day_high, year_low, year_high, volume, avg_volume_3m, market_cap, pe_ttm, eps_ttm, dividend_yield, delivery_percent, lower_circuit, upper_circuit` (the last three empty unless NSE answered) |
 | `markets` | `[{region, symbol, name, price, change, change_percent, currency}]` — `region` is `Indian Markets`, `US Markets`, `Crypto` or `FX` | index |
 | `search` | `[hit]` — Yahoo's search fields | hit: `symbol, name, quote_type, exchange` |
 | `history` | `{symbol, currency, period, interval, bars: [{time, open, high, low, close, volume}]}` | bar |
@@ -389,14 +400,79 @@ stockwise options chain NIFTY -n 2 --json | jq '.rows[] | {strike, delta: .call.
 | `whatif` | `{symbol, currency, amount, date, buy_date, buy_price, shares, invested, current_price, value, pnl, pnl_percent, cagr_percent, days, years}` — `buy_date` is the trading day closest to `date` | — |
 | `portfolio` | `{holdings: [holding], totals: {cost_basis, value, pnl, pnl_percent, currency}, unpriced: [symbol], unconverted: [symbol]}`, holding = `{symbol, shares, avg_cost, cost_basis, price, value, pnl, pnl_percent, weight_percent, xirr_percent, currency}` — a holding's money values are in its own currency; `totals` and `weight_percent` are in the base currency (`--base`); `unconverted` holdings had no exchange rate | holding |
 | `watch` | `[{symbol, price, change, change_percent, volume, currency}]`, in watchlist order | symbol |
-| `alert list` | `[{index, symbol, condition, target, created_at}]` — `index` is what `alert remove` takes | alert |
-| `alert check` | `[{index, symbol, condition, target, price, currency, status}]` — `status` is `triggered`, `waiting` or `no_price` | alert |
+| `alert list` | `[{index, symbol, condition, target, created_at, period, description}]` — `index` is what `alert remove` takes; `condition` is the CLI name (`above`, `rsi-below`, ...), `period` the RSI or volume-average length (else null), `description` the condition in English words | alert |
+| `alert check` | `[{index, symbol, condition, target, price, currency, status, period, description, value, reference}]` — `status` is `triggered`, `waiting`, `no_price` (price alert without a live price) or `no_data` (too little history, or no results date); `value` is what the condition compared (price, RSI, day change %, volume multiple, days to results; the close for crosses and breakouts) and `reference` the moving average, previous high/low or average volume | alert |
+| `calendar` | `[{date, days_until, when, symbol, event, detail, source, estimate}]` — `when` is `today`, `tomorrow`, `this_week` (within 7 days) or `later`; `event` is `results`, `board_meeting`, `ex_dividend`, `dividend_paid`, `split`, `bonus`, `rights` or `other`; `source` is `yahoo` or `nse`; `estimate` marks Yahoo's unconfirmed earnings dates. Notes (e.g. NSE refused) go to stderr | event |
 | `tax` | `{country, tax_year, currency, sales: [{symbol, qty, bought, bought_estimated, sold, gain, term}], holdings: [{symbol, cost, value, short_term_gain, long_term_gain, estimated_dates}], realized: estimate, if_sold_today: estimate, ltcg_exemption_left, unpriced: [symbol], other_currency: [symbol]}`, estimate = `{short_term_gains, short_term_losses, long_term_gains, long_term_losses, taxable_short_term, taxable_long_term, exemption_used, short_term_tax, long_term_tax, total_tax, loss_carried_forward}` — `term` is `short`, `long`, or null (UK); `ltcg_exemption_left` is India only | open holding |
 | `sim history` | `{stats: {days, winning_days, day_win_rate_percent, total_pnl, avg_daily_pnl, best_day, worst_day, trades, winning_trades, losing_trades, trade_win_rate_percent, sharpe, max_win_streak, max_loss_streak}, confidence, sessions: [{date, market, capital, target_percent, settled, trades, pnl, pnl_percent, wins, losses}]}` — `confidence` is `high`, `moderate`, `low`, or null before 5 settled days | — |
 | `trade selftest` | `{stockwise, os, date, market, broker, broker_name, experimental, account, secrets, orders_enabled, max_order_value_set, amounts_redacted, read_only, checks: [{name, status, detail}], shapes: [{endpoint, status, rows, missing, unknown, error}], summary: {pass, warn, fail, skip}}` — `status` is `pass`, `warn`, `fail` or `skip`; `account` is the last 2 characters only | — |
 | `trade sync` | `{broker, experimental, portfolio, since, applied, orders: [{symbol, order_id, side, date, time, qty, price, fills, result, sales?, held?}], already_synced, skipped: [{order_id, symbol, reason}], open_orders: [{order_id, symbol, side, status, qty, filled_qty}], quantity_check: [{symbol, portfolio_qty, broker_qty}], gtt_changes: [change], notes}` — `result` is `lot`, `sold` (with `sales`) or `unmatched` (with `held`); `applied` is true only when `--apply` wrote something | — |
 | `trade gtt list` | `{broker, experimental, gtts: [{id, symbol, side, qty, trigger, limit, status}], changes: [change], first_check, last_checked}`, change = `{kind, id, symbol, side, qty, trigger, from, to, state}` — `kind` is `new`, `status` or `gone`; `state` is `active`, `triggered`, `cancelled`, `expired`, `rejected` or `other` | — |
 | `config show` | `{path, status, error, settings: [{key, value, source}]}` — `status` is `loaded`, `missing` or `invalid`; `source` is `flag`, `env`, `file` or `default` | — |
+
+## Alert conditions
+
+`stockwise alert add <SYMBOL> <CONDITION> <NUMBER>`:
+
+| Condition | NUMBER | Fires when |
+|-----------|--------|------------|
+| `above` / `below` (`>` / `<`) | price | the live price is at or beyond the level |
+| `rsi-below` / `rsi-above` | RSI level (0–100) | RSI (14-day, or `--period N`) is at or beyond the level |
+| `cross-above-sma` / `cross-below-sma` | days (2–400) | the daily close crosses its simple moving average — on the crossing day only |
+| `cross-above-ema` / `cross-below-ema` | days (2–400) | the same with an exponential moving average |
+| `breakout-high` / `breakdown-low` | days (2–1000) | the close is above the highest high (below the lowest low) of the previous N sessions |
+| `change-above` / `change-below` | percent | the day's change is +N% or more / −N% or less (`change-below 3` and `change-below -3` are the same) |
+| `volume-spike` | multiple (1–100) | today's volume is at least N times its 20-day (`--period`) average |
+| `results-in` | days (0–90) | the next results date is at most N days away (from [`calendar`](#results-and-corporate-calendar)) |
+
+Technical conditions read daily bars (one chart request per symbol per
+check), with the last bar updated to the live quote, so a cross or breakout
+fires on the session it happens in. A symbol with too little history reads
+`no_data` and never triggers. `alert watch` notifies each alert once until it
+re-arms, at most once per trading day.
+
+```bash
+stockwise alert add INFY rsi-below 30
+stockwise alert add INFY rsi-above 70 --period 9
+stockwise alert add RELIANCE cross-above-sma 200
+stockwise alert add AAPL -m us breakout-high 52
+stockwise alert add HDFCBANK change-below 3
+stockwise alert add TCS volume-spike 2
+stockwise alert add TCS results-in 7
+```
+
+Alerts saved by earlier versions keep working unchanged.
+
+## Results and corporate calendar
+
+`stockwise calendar` lists what is coming up for your holdings and watchlist
+(`--holdings` or `--watchlist` for one of them, or name symbols), over the
+next 30 days (`--days 1-365`):
+
+| Source | Covers | Events |
+|--------|--------|--------|
+| Yahoo Finance (`quoteSummary` calendarEvents) | US and Indian stocks | results (earnings) date or expected window with the EPS estimate, ex-dividend date, dividend payment date |
+| NSE board meetings | `.NS` / `.BO` stocks (looked up by their NSE symbol) | board meetings; those that consider results are listed as results |
+| NSE corporate actions | `.NS` / `.BO` stocks | ex-dates of dividends, splits, bonus and rights issues, other actions |
+
+- For an Indian stock, NSE's filed results date replaces Yahoo's estimate,
+  and NSE's ex-dividend date replaces Yahoo's.
+- Upcoming splits come from NSE only; Yahoo lists splits after they happen,
+  so US splits don't appear in advance.
+- BSE filings are not read; a `.BO` symbol uses the same company's NSE
+  filings.
+- NSE's API serves browser sessions. StockWise opens one session per run,
+  waits a second between requests and caches every answer for a day in
+  `calendar_cache.json` (failures for an hour). When NSE refuses, the table
+  says so and shows Yahoo's dates.
+- Crypto, FX and indices have no calendar and are skipped.
+
+```bash
+stockwise calendar
+stockwise calendar --holdings --days 14
+stockwise calendar TCS INFY
+stockwise calendar AAPL MSFT -m us --json
+```
 
 ## Configuration file
 
