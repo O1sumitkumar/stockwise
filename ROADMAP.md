@@ -65,7 +65,7 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 
 - 💡 Official NSE / BSE data feeds as a data provider
 - 💡 Broker-side GTT and order-status sync into the portfolio
-- 💡 A small web dashboard served by `stockwise serve`
+- ✅ A small web dashboard served by `stockwise serve` (`serve --open`)
 - 💡 WASM strategy plugins (TOML strategies cover most cases today)
 - ✅ Options strategy builder — `options payoff`: legs or presets (spreads, straddle, strangle,
   iron condor, butterfly, covered call) priced from the live chain, payoff chart, breakevens,

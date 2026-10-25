@@ -569,7 +569,7 @@ stockwise options TCS                     expected moves (same as `options moves
         snapshot: Option<String>,
     },
 
-    /// Read-only JSON API and Prometheus metrics over HTTP
+    /// Read-only web dashboard, JSON API and Prometheus metrics over HTTP
     Serve {
         /// Address to listen on. Non-loopback needs --allow-remote
         #[arg(long, default_value = "127.0.0.1:8787", env = "STOCKWISE_BIND")]
@@ -577,6 +577,9 @@ stockwise options TCS                     expected moves (same as `options moves
         /// Allow a non-loopback --bind; requires a STOCKWISE_API_TOKEN bearer token
         #[arg(long)]
         allow_remote: bool,
+        /// Open the dashboard in your browser once the server is listening
+        #[arg(long)]
+        open: bool,
     },
 
     // ── Setup ──
@@ -2203,7 +2206,11 @@ async fn main() {
         Commands::Tui { interval, snapshot } => {
             commands::cmd_tui(interval, snapshot.as_deref(), m).await
         }
-        Commands::Serve { bind, allow_remote } => commands::cmd_serve(&bind, allow_remote, m).await,
+        Commands::Serve {
+            bind,
+            allow_remote,
+            open,
+        } => commands::cmd_serve(&bind, allow_remote, open, m).await,
         Commands::Config { action } => match action {
             Some(ConfigCmd::Path) => commands::cmd_config_path(),
             Some(ConfigCmd::Init { force }) => commands::cmd_config_init(force),
@@ -2608,6 +2615,7 @@ mod tests {
         assert!(Cli::try_parse_from(["stockwise", "tui", "-i", "60"]).is_ok());
         assert!(Cli::try_parse_from(["stockwise", "tui", "-i", "1"]).is_err());
         assert!(Cli::try_parse_from(["stockwise", "serve"]).is_ok());
+        assert!(Cli::try_parse_from(["stockwise", "serve", "--open"]).is_ok());
         assert!(
             Cli::try_parse_from([
                 "stockwise",
