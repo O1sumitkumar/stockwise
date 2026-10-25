@@ -17,6 +17,23 @@ To re-render the PNG after editing the SVG (needs Google Chrome):
 
 ## Screenshots (README)
 
+`web-dashboard.png` is the `stockwise serve` dashboard captured with headless
+Chrome against a scratch data directory (sample holdings, live prices):
+
+```bash
+export STOCKWISE_HOME=$(mktemp -d)
+cargo run -- portfolio add TCS 10 2300 --date 2023-04-12   # ...a few more holdings,
+cargo run -- watch add RELIANCE TCS INFY                  # a watchlist and alerts
+cargo run -- serve &
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+  --hide-scrollbars --window-size=1280,1000 --virtual-time-budget=8000 \
+  --screenshot=assets/web-dashboard.png "http://127.0.0.1:8787/#symbol=RELIANCE.NS&period=6mo"
+```
+
+`sim-card.svg` is the card `stockwise sim card --svg assets/sim-card.svg` wrote after
+playing `covid-crash-2020` with the `crash-survivor` challenge (a scratch
+`STOCKWISE_HOME`; see docs/simulator.md for the commands). Re-create it the same way.
+
 `history.svg`, `markets.svg`, `backtest.svg` and `tui.svg` are real StockWise output
 rendered to SVG by `ansi2svg.py` (no dependencies beyond Python 3). To
 regenerate one:

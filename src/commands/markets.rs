@@ -60,9 +60,58 @@ pub(crate) fn mover_rows(quotes: &[crate::api::Quote], n: usize) -> (Vec<MoverRo
     (gainers, losers)
 }
 
-pub async fn cmd_movers(market: Market, fmt: Format) -> Result<()> {
+/// `--universe` names NSE indices: fail before any request elsewhere.
+fn check_universe(market: Market, universe: Option<market::Universe>) -> Result<()> {
+    if universe.is_some() && market != Market::In {
+        bail!(
+            "--universe lists NSE index members; use it with the Indian market (-m in), not {}",
+            market.label()
+        );
+    }
+    Ok(())
+}
+
+/// Symbols a scan covers and its title: the members of an NSE index with
+/// `--universe` (from NSE; the built-in list when NSE can't answer), else
+/// the market's built-in list.
+async fn scan_symbols(
+    client: &YahooClient,
+    market: Market,
+    universe: Option<market::Universe>,
+) -> Result<(Vec<String>, String)> {
+    let Some(u) = universe else {
+        return Ok((market.universe(), market.label().to_string()));
+    };
+    let index = u.nse_index();
+    match client.index_constituents(index).await {
+        Ok(symbols) => Ok((symbols, index.to_string())),
+        Err(e) => match u.fallback() {
+            Some(list) => {
+                eprintln!(
+                    "  \u{24d8} {}",
+                    tf(
+                        Msg::UniverseFallback,
+                        &[&index, &format!("{:#}", e), &list.len()]
+                    )
+                );
+                Ok((list, index.to_string()))
+            }
+            None => Err(e.context(format!(
+                "NSE's {} member list is unavailable and StockWise has no built-in copy of it",
+                index
+            ))),
+        },
+    }
+}
+
+pub async fn cmd_movers(
+    market: Market,
+    universe: Option<market::Universe>,
+    fmt: Format,
+) -> Result<()> {
+    check_universe(market, universe)?;
     let client = YahooClient::new().await?;
-    let symbols = market.universe();
+    let (symbols, scope) = scan_symbols(&client, market, universe).await?;
     let sym_refs: Vec<&str> = symbols.iter().map(String::as_str).collect();
     let quotes = client.get_quote(&sym_refs).await?;
     let (gainers, losers) = mover_rows(&quotes, 10);
@@ -80,10 +129,8 @@ pub async fn cmd_movers(market: Market, fmt: Format) -> Result<()> {
         Format::Table => {}
     }
 
-    let market_name = market.label();
-
     for (title, rows) in [("Top Gainers", &gainers), ("Top Losers", &losers)] {
-        print_header(&format!("{} — {}", title, market_name));
+        print_header(&format!("{} — {}", title, scope));
         println!(
             "  {:<14} {:>10} {:>10} {:>14}",
             "Symbol".bold(),
@@ -129,7 +176,7 @@ impl CsvRow for SectorRow {
 }
 
 pub async fn cmd_sectors(market: Market, fmt: Format) -> Result<()> {
-    market.require_stocks("sectors")?;
+    market.require_sectors("sectors")?;
     let client = YahooClient::new().await?;
     let sectors = market.sectors();
     let title = format!("{} Sector Performance", market.label());
@@ -648,10 +695,16 @@ impl CsvRow for ScreenRow {
     ];
 }
 
-pub async fn cmd_screen(category: &str, market: Market, fmt: Format) -> Result<()> {
+pub async fn cmd_screen(
+    category: &str,
+    market: Market,
+    universe: Option<market::Universe>,
+    fmt: Format,
+) -> Result<()> {
     market.require_stocks("screen")?;
+    check_universe(market, universe)?;
     let client = YahooClient::new().await?;
-    let symbols = market.universe();
+    let (symbols, scope) = scan_symbols(&client, market, universe).await?;
     let sym_refs: Vec<&str> = symbols.iter().map(String::as_str).collect();
     let quotes = client.get_quote(&sym_refs).await?;
 
@@ -707,6 +760,11 @@ pub async fn cmd_screen(category: &str, market: Market, fmt: Format) -> Result<(
         };
     }
 
+    let title = if universe.is_some() {
+        format!("{} — {}", title, scope)
+    } else {
+        title
+    };
     print_header(&title);
     if filtered.is_empty() {
         println!("  {}", "No stocks match this screen.".dimmed());
@@ -997,7 +1055,7 @@ pub async fn cmd_earnings(_market: Market) -> Result<()> {
 // ── Long-Term Wealth Bot ──
 
 pub async fn cmd_rotation(market: Market) -> Result<()> {
-    market.require_stocks("rotation")?;
+    market.require_sectors("rotation")?;
     let client = YahooClient::new().await?;
     let sectors = market.sectors();
     let title = format!("{} Sector Rotation", market.label());
@@ -1214,9 +1272,10 @@ pub async fn cmd_surprise(market: Market) -> Result<()> {
 
 // ── Dividend Calendar ──
 
-pub async fn cmd_heatmap(market: Market) -> Result<()> {
+pub async fn cmd_heatmap(market: Market, universe: Option<market::Universe>) -> Result<()> {
+    check_universe(market, universe)?;
     let client = YahooClient::new().await?;
-    let symbols = market.universe();
+    let (symbols, scope) = scan_symbols(&client, market, universe).await?;
     let refs: Vec<&str> = symbols.iter().map(String::as_str).collect();
     let mut quotes = client.get_quote(&refs).await?;
     quotes.sort_by(|a, b| {
@@ -1226,7 +1285,7 @@ pub async fn cmd_heatmap(market: Market) -> Result<()> {
             .unwrap()
     });
 
-    print_header(&format!("{} Market Heatmap", market.label()));
+    print_header(&format!("{} Market Heatmap", scope));
     println!();
 
     for q in &quotes {
@@ -1255,7 +1314,7 @@ pub async fn cmd_heatmap(market: Market) -> Result<()> {
 // ── Patterns (candlestick pattern detection) ──
 
 pub async fn cmd_sectorcmp(sector1: &str, sector2: &str, market: Market) -> Result<()> {
-    market.require_stocks("sectorcmp")?;
+    market.require_sectors("sectorcmp")?;
     let client = YahooClient::new().await?;
     let sectors = market.sectors();
     let find = |name: &str| -> Option<&str> {
@@ -1359,3 +1418,18 @@ pub async fn cmd_ipo() -> Result<()> {
 }
 
 // ── Options Overview (Put/Call data from quote) ──
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn universes_are_for_the_indian_market_only() {
+        assert!(check_universe(Market::In, Some(market::Universe::Nifty50)).is_ok());
+        assert!(check_universe(Market::Us, None).is_ok());
+        let err = check_universe(Market::Us, Some(market::Universe::BankNifty))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("-m in"), "{err}");
+    }
+}

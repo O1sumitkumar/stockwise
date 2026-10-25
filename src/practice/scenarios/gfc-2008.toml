@@ -1,0 +1,77 @@
+# Built-in replay scenario (see covid-crash-2020.toml for the format).
+name = "gfc-2008"
+title = "The global financial crisis"
+market = "in"
+from = "2008-08-01"
+to = "2009-03-31"
+benchmark = "^NSEI"
+benchmark_name = "NIFTY 50"
+capital = 100000
+description = """
+August 2008. NIFTY 50 is well off its January high after a rough first half, \
+oil prices have spiked, and American lenders are in trouble over bad mortgage \
+loans. Some say the worst is over. You have ₹1,00,000 of paper money and \
+nineteen large Indian companies to choose from."""
+debrief = """
+Lehman Brothers filed for bankruptcy on 15 September 2008 and credit markets \
+froze worldwide. NIFTY 50 fell to about 2,500 by late October, roughly 60% below \
+its January 2008 peak, and was still near those lows in March 2009 before a \
+strong recovery began. Long bear markets punish averaging down without a stop."""
+
+[[universe]]
+symbol = "RELIANCE.NS"
+sector = "Energy"
+[[universe]]
+symbol = "ONGC.NS"
+sector = "Energy"
+[[universe]]
+symbol = "NTPC.NS"
+sector = "Utilities"
+[[universe]]
+symbol = "HDFCBANK.NS"
+sector = "Financials"
+[[universe]]
+symbol = "ICICIBANK.NS"
+sector = "Financials"
+[[universe]]
+symbol = "SBIN.NS"
+sector = "Financials"
+[[universe]]
+symbol = "AXISBANK.NS"
+sector = "Financials"
+[[universe]]
+symbol = "TCS.NS"
+sector = "IT"
+[[universe]]
+symbol = "INFY.NS"
+sector = "IT"
+[[universe]]
+symbol = "WIPRO.NS"
+sector = "IT"
+[[universe]]
+symbol = "HINDUNILVR.NS"
+sector = "Consumer staples"
+[[universe]]
+symbol = "ITC.NS"
+sector = "Consumer staples"
+[[universe]]
+symbol = "MARUTI.NS"
+sector = "Autos"
+[[universe]]
+symbol = "SUNPHARMA.NS"
+sector = "Healthcare"
+[[universe]]
+symbol = "LT.NS"
+sector = "Industrials"
+[[universe]]
+symbol = "BHEL.NS"
+sector = "Industrials"
+[[universe]]
+symbol = "BHARTIARTL.NS"
+sector = "Telecom"
+[[universe]]
+symbol = "TATASTEEL.NS"
+sector = "Materials"
+[[universe]]
+symbol = "DLF.NS"
+sector = "Real estate"

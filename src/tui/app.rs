@@ -106,6 +106,8 @@ fn home_listing(symbol: &str, market: Market) -> bool {
         Market::Us => !symbol.contains('.'),
         Market::Crypto => symbol.contains('-'),
         Market::Fx => symbol.ends_with("=X"),
+        Market::Commodity => symbol.ends_with("=F") || symbol.ends_with(".NS"),
+        Market::Global(x) => symbol.ends_with(x.info().suffix),
     }
 }
 

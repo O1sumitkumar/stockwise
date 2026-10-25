@@ -1,0 +1,81 @@
+# Built-in replay scenario. `description` is shown before and during the
+# replay, so it must not give away what happens next; `debrief` is shown only
+# once the replay has ended.
+name = "covid-crash-2020"
+title = "The COVID crash"
+market = "in"
+from = "2020-02-03"
+to = "2020-06-30"
+benchmark = "^NSEI"
+benchmark_name = "NIFTY 50"
+capital = 100000
+description = """
+February 2020. Indian stocks are close to their all-time highs and the Union \
+Budget has just been presented. A new virus spreading in China is in the news. \
+You have ₹1,00,000 of paper money and twenty NIFTY 50 stocks to choose from."""
+debrief = """
+NIFTY 50 fell about 38% from its January 2020 high to its low on 23 March 2020, \
+the day before India announced a nationwide lockdown. Rate cuts, relief packages \
+and a global rebound then lifted it back above 10,000 by the end of June. Crashes \
+reward having a plan and position sizes you can sit through, not perfect timing."""
+
+[[universe]]
+symbol = "RELIANCE.NS"
+sector = "Energy"
+[[universe]]
+symbol = "ONGC.NS"
+sector = "Energy"
+[[universe]]
+symbol = "HDFCBANK.NS"
+sector = "Financials"
+[[universe]]
+symbol = "ICICIBANK.NS"
+sector = "Financials"
+[[universe]]
+symbol = "SBIN.NS"
+sector = "Financials"
+[[universe]]
+symbol = "BAJFINANCE.NS"
+sector = "Financials"
+[[universe]]
+symbol = "TCS.NS"
+sector = "IT"
+[[universe]]
+symbol = "INFY.NS"
+sector = "IT"
+[[universe]]
+symbol = "HCLTECH.NS"
+sector = "IT"
+[[universe]]
+symbol = "HINDUNILVR.NS"
+sector = "Consumer staples"
+[[universe]]
+symbol = "ITC.NS"
+sector = "Consumer staples"
+[[universe]]
+symbol = "NESTLEIND.NS"
+sector = "Consumer staples"
+[[universe]]
+symbol = "MARUTI.NS"
+sector = "Autos"
+[[universe]]
+symbol = "M&M.NS"
+sector = "Autos"
+[[universe]]
+symbol = "SUNPHARMA.NS"
+sector = "Healthcare"
+[[universe]]
+symbol = "DRREDDY.NS"
+sector = "Healthcare"
+[[universe]]
+symbol = "LT.NS"
+sector = "Industrials"
+[[universe]]
+symbol = "BHARTIARTL.NS"
+sector = "Telecom"
+[[universe]]
+symbol = "TATASTEEL.NS"
+sector = "Materials"
+[[universe]]
+symbol = "ASIANPAINT.NS"
+sector = "Materials"

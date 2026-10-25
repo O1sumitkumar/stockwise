@@ -603,6 +603,156 @@ pub fn allocation_chart(items: &[(&str, f64)]) -> Vec<String> {
     output
 }
 
+/// Option payoff chart: profit/loss against the underlying's price. The
+/// expiry curve is green above zero and red below; the optional
+/// before-expiry curve is yellow; a dotted zero line and a dotted line at
+/// `spot` are dimmed. `prices` are ascending and line up with the curves.
+pub fn payoff_chart(
+    prices: &[f64],
+    at_expiry: &[f64],
+    today: Option<&[f64]>,
+    spot: f64,
+    width: usize,
+    height: usize,
+) -> Vec<String> {
+    if prices.len() < 2 || at_expiry.len() != prices.len() || width < 2 || height < 2 {
+        return vec!["  No data".to_string()];
+    }
+    let today = today.filter(|t| t.len() == prices.len());
+    let finite = |v: &&f64| v.is_finite();
+    let values = at_expiry
+        .iter()
+        .chain(today.into_iter().flatten())
+        .filter(finite);
+    // Always show the zero line.
+    let (lo, hi) = values.fold((0.0f64, 0.0f64), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
+    let (lo, hi) = if (hi - lo).abs() < f64::EPSILON {
+        (lo - 1.0, hi + 1.0)
+    } else {
+        (lo, hi)
+    };
+    let (px_w, px_h) = (width * 2, height * 4);
+    let (x0, x1) = (prices[0], prices[prices.len() - 1]);
+    let to_px = |i: usize, v: f64| -> (usize, usize) {
+        let x = (i as f64 / (prices.len() - 1) as f64 * (px_w - 1) as f64).round() as usize;
+        let y = ((hi - v) / (hi - lo) * (px_h - 1) as f64).round() as usize;
+        (x, y.min(px_h - 1))
+    };
+    let zero_y = to_px(0, 0.0).1;
+
+    let draw = |curve: &[f64]| {
+        let mut c = BrailleCanvas::new(width, height);
+        let pts: Vec<(usize, usize)> = curve
+            .iter()
+            .enumerate()
+            .map(|(i, v)| to_px(i, *v))
+            .collect();
+        for p in pts.windows(2) {
+            c.line(p[0].0, p[0].1, p[1].0, p[1].1);
+        }
+        c
+    };
+    let expiry = draw(at_expiry);
+    let before = today.map(draw);
+    let mut axes = BrailleCanvas::new(width, height);
+    for x in (0..px_w).step_by(2) {
+        axes.set(x, zero_y);
+    }
+    if x1 > x0 && (x0..=x1).contains(&spot) {
+        let sx = ((spot - x0) / (x1 - x0) * (px_w - 1) as f64).round() as usize;
+        for y in (0..px_h).step_by(2) {
+            axes.set(sx, y);
+        }
+    }
+
+    // Colour each column of the expiry curve by the payoff's sign there.
+    let column_value = |cx: usize| {
+        let i = ((cx * 2) as f64 / (px_w - 1) as f64 * (prices.len() - 1) as f64).round() as usize;
+        at_expiry[i.min(prices.len() - 1)]
+    };
+    let label = |v: f64| {
+        if v == 0.0 {
+            format!("{:>10}", 0)
+        } else if v.abs() >= 100.0 {
+            format!("{:>10.0}", v)
+        } else {
+            format!("{:>10.2}", v)
+        }
+    };
+    let zero_row = zero_y / 4;
+    let mut out = Vec::with_capacity(height + 2);
+    for row in 0..height {
+        let mut line = String::new();
+        for cx in 0..width {
+            let i = row * width + cx;
+            let (e, a) = (expiry.cells[i], axes.cells[i]);
+            let b = before.as_ref().map_or(0, |c| c.cells[i]);
+            let glyph = |bits: u32| {
+                char::from_u32(BRAILLE_BASE + bits)
+                    .unwrap_or(' ')
+                    .to_string()
+            };
+            if e != 0 {
+                let g = glyph(e | b);
+                line.push_str(&if column_value(cx) >= 0.0 {
+                    g.green().to_string()
+                } else {
+                    g.red().to_string()
+                });
+            } else if b != 0 {
+                line.push_str(&glyph(b).yellow().to_string());
+            } else if a != 0 {
+                line.push_str(&glyph(a).dimmed().to_string());
+            } else {
+                line.push(' ');
+            }
+        }
+        let tick = if row == 0 {
+            label(hi)
+        } else if row == height - 1 {
+            label(lo)
+        } else if row == zero_row {
+            label(0.0)
+        } else {
+            " ".repeat(10)
+        };
+        out.push(format!("  {} {}{}", tick.dimmed(), "│".dimmed(), line));
+    }
+    out.push(
+        format!("  {} └{}", " ".repeat(10), "─".repeat(width))
+            .dimmed()
+            .to_string(),
+    );
+    let (left, right) = (format!("{:.0}", x0), format!("{:.0}", x1));
+    let mut axis = vec![' '; width + 1];
+    let mut put = |at: usize, text: &str| {
+        for (k, ch) in text.chars().enumerate() {
+            if let Some(slot) = axis.get_mut(at + k) {
+                *slot = ch;
+            }
+        }
+    };
+    put(0, &left);
+    put((width + 1).saturating_sub(right.len()), &right);
+    if x1 > x0 && (x0..=x1).contains(&spot) {
+        let s = format!("▲{:.0}", spot);
+        let at = ((spot - x0) / (x1 - x0) * width as f64).round() as usize;
+        let at = at.clamp(
+            left.len() + 1,
+            (width + 1)
+                .saturating_sub(right.len() + s.chars().count() + 1)
+                .max(left.len() + 1),
+        );
+        put(at, &s);
+    }
+    out.push(
+        format!("  {}  {}", " ".repeat(10), axis.iter().collect::<String>())
+            .dimmed()
+            .to_string(),
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,5 +859,37 @@ mod tests {
         ];
         let result = bar_chart(&items, 30);
         assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn payoff_chart_shape() {
+        let prices: Vec<f64> = (0..=40).map(|i| 90.0 + i as f64 * 0.5).collect();
+        let expiry: Vec<f64> = prices
+            .iter()
+            .map(|s| (s - 100.0).clamp(0.0, 10.0) - 3.0)
+            .collect();
+        let today: Vec<f64> = expiry.iter().map(|v| v * 0.8).collect();
+        // Compare plain text: colours are on when tests run under a terminal
+        // (e.g. Nix builds), and escape codes would split the labels.
+        let lines: Vec<String> = payoff_chart(&prices, &expiry, Some(&today), 101.0, 40, 8)
+            .iter()
+            .map(|l| strip_ansi(l))
+            .collect();
+        assert_eq!(lines.len(), 8 + 2, "rows, axis line, price labels");
+        assert!(lines[0].contains("7.00"), "{lines:?}");
+        assert!(lines[7].contains("-3.00"), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("         0 ")),
+            "zero is labelled"
+        );
+        let labels = lines.last().unwrap();
+        assert!(
+            labels.contains("90") && labels.contains("110") && labels.contains("▲101"),
+            "{labels}"
+        );
+        assert_eq!(
+            payoff_chart(&prices, &expiry[1..], None, 101.0, 40, 8).len(),
+            1
+        );
     }
 }

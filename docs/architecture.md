@@ -12,40 +12,64 @@ src/
     fundamentals.rs  analyze, compare, peers, dividends, insider, deep
     technicals.rs    technical, history, chart, timeframes, patterns, support, fibs, volume, gaps, stoploss
     risk.rs          risk, correlate, returns, forecast, options moves
-    funds.rs         mf search, nav, history, sip, screen, overlap
-    fno.rs           options chain, pcr, maxpain
+    funds.rs         mf search, nav, history, sip, screen, overlap (TER in nav/history/screen)
+    fno.rs           options chain, pcr, maxpain, payoff
+    commodities.rs   commodity spot, futures, etfs, sgb
+    bonds.rs         bonds yields, list, calc
     markets.rs       movers, sectors, news, sentiment, screen, picks, earnings, rotation, matrix, surprise, heatmap, sectorcmp, ipo
     backtests.rs     backtest (single, portfolio, walkforward, strategies)
     strategies.rs    sip, whatif, intraday, longterm, report
     portfolio.rs     portfolio (show, add, sell, lots, actions, list) and valuation in a base currency
+    planning.rs      tax export, portfolio benchmark (history, FX, sectors), goal sip/retire/education
     holdings.rs      watch, alert, import, export, wealth, rebalance, harvest, tax, divcal, pcorr
     imports.rs       Groww / Upstox CSV and CAS (casparser JSON/CSV) import parsers
     sim.rs           paper-trading simulator (settle replays intraday bars)
+    practice.rs      sim replay / challenge / profile / card (practice mode)
     worker.rs        daemon intraday / longterm loops
     alerting.rs      alert watch loop, notify status/test
     trade.rs         Live orders for every broker: place_live_order (validation, preview, cap, confirmation)
+    broker_selftest.rs  trade selftest: read-only checks + redacted report for broker test reports
+    broker_sync.rs   trade sync (trade book → lots/sales, idempotent) and trade gtt list status changes
     interfaces.rs    tui and serve (behind the `tui` / `server` cargo features)
   views.rs           Data behind quote/history/markets/portfolio/watchlist/alerts as structs,
                      shared by the CLI printers, the TUI and the server; `DataSource` trait
   tui/               `stockwise tui`: app.rs (state + key handling, no I/O), ui.rs (ratatui
                      drawing), mod.rs (event loop, fetches)
-  server/            `stockwise serve`: axum routes, bearer auth, Prometheus metrics
+  server/            `stockwise serve`: axum routes, bearer auth, Prometheus metrics; web.rs serves
+                     the dashboard (web/, embedded with include_str!) and sets CSP/security headers
   daemon_status.rs   Reads the intraday daemon's daemon_state.json for /metrics
   store.rs           Atomic JSON persistence, data directory (STOCKWISE_HOME)
   config.rs          Optional config.toml: defaults for market, AI, cache, data dir, periods
   output.rs          --json / --csv rendering (Format, CsvRow, RFC 4180 quoting)
   portfolio.rs       Lots, FIFO sales, splits/dividends, XIRR cash flows, FX, named portfolios
   tax.rs             Capital-gains rules: holding periods, tax years, set-off (India/US/UK)
+  tax_export.rs      ITR Schedule CG / 112A and Form 8949 schedules from realized sales, as CSV/JSON
+  benchmark.rs       Daily time-weighted return vs an index, alpha/beta/tracking error, Carino attribution
+  goals.rs           SIP / step-up, retirement and education math; Indian amounts (1cr, 25L, 50k)
   api.rs             Yahoo Finance client (session, quotes, charts, search, cache, retries); routes to a provider
   providers/         MarketData trait + opt-in Alpha Vantage, Massive (Polygon), Twelve Data; Yahoo fills gaps
+    nse.rs, bse.rs   NSE / BSE website JSON (quotes, intraday + daily bars, search, NIFTY index members)
+    session.rs       Polite exchange HTTP: one cookie session per site, ≤3 req/s with jitter, retries, refusal = stop
   i18n.rs            Typed English/Hindi message catalog, --lang / STOCKWISE_LANG / locale detection
   brokers/           Broker trait + clients: angel (SmartAPI, TOTP), zerodha, upstox, dhan, fyers
-                     (experimental), secrets.rs (OS keyring / owner-only file), mock.rs (test HTTP server)
+                     (experimental), secrets.rs (OS keyring / owner-only file), mock.rs (test HTTP server),
+                     readonly.rs (session wrapper that refuses every order/GTT/cancel), gtt_watch.rs
+                     (GTT status changes between looks), per-endpoint response shapes for selftest
   funds.rs           AMFI NAV file + api.mfapi.in history (cached), returns, SIP, ETF holdings overlap
-  derivatives.rs     Option chains from NSE / Yahoo, PCR, max pain, per-contract IV and greeks
+  funds.rs           AMFI NAV file + api.mfapi.in history (cached), AMFI TER disclosure (cached a day),
+                     returns, SIP, ETF holdings overlap
+  xlsx.rs            Minimal .xlsx reader (zip via flate2 + sheet cells) for AMFI's TER export
+  derivatives.rs     Option chains from NSE / BSE / Yahoo, lot sizes, PCR, max pain, per-contract IV and greeks
   greeks.rs          Black-Scholes pricing, greeks, implied-volatility solver
+  payoff.rs          Multi-leg option payoffs: presets, max profit/loss, breakevens, probability of profit
+  commodity.rs       Gold/silver spot in ₹ from COMEX × USDINR, futures and ETF lists, SGB tranches
+                     and NSE's SGB list parser (pure, fixture-tested)
+  bonds.rs           Bond math: price ↔ YTM (half-yearly, 30/360), accrued interest, duration, T-bills
+  gsec.rs            CCIL tenor-wise yields, RBI benchmarks and outstanding G-sec list (HTML parsers)
+  pagecache.rs       Cached fetch of public pages (CCIL, RBI, NSE SGB list) with a stale-copy fallback
   ai.rs              AI: Ollama (default) or opt-in OpenAI / Anthropic / Gemini; prompts, opt-in flag, model checks
-  clock.rs           Exchange clock: IST / US Eastern, NSE + NYSE holidays, session phases
+  clock.rs           Exchange clock: IST / US Eastern / European / Sydney time, NSE, NYSE and global
+                     exchange holidays and half days, lunch breaks, session phases
   daemon.rs          Worker state: positions, risk manager, daemon_state.json, shutdown, retry
   notify.rs          Notifications: Telegram, Slack, Discord, SMTP email, desktop
   technical.rs       Indicators and statistics (SMA, EMA, RSI, MACD, BB, ATR, VWAP, OBV, VaR, Sharpe, XIRR, ...)
@@ -56,14 +80,26 @@ src/
     costs.rs         Indian delivery/intraday and US cost models, slippage
     engine.rs        Simulator (single symbol or portfolio, fills, stops, rebalancing) and metrics
     walkforward.rs   Rolling train/test optimisation and the overfitting verdict
+    plugin.rs        WASM strategy plugins: wasmi sandbox, ABI v1 (`wasm-plugins` feature)
   intraday.rs        Intraday bot (9 strategies, regime detection, Kelly sizing)
   longterm.rs        Long-term bot (6-pillar scoring, Monte Carlo, DRIP)
   simulator.rs       Paper-trading sessions and confidence rating
+  practice/          Practice mode (see docs/simulator.md): scenarios/*.toml and challenges.toml
+                     (embedded), scenario.rs, tape.rs (cached daily bars; reads stop at the replay
+                     date), replay.rs (next-open fills with backtest costs, stops, marks),
+                     challenge.rs + live.rs (rules and goals), score.rs (0–100 score, badges),
+                     profile.rs (streaks, best scores), card.rs (text and SVG cards)
   insights.rs        Rule-based plain-English insights
-  charts.rs          Braille line charts, volume bars, gauges
+  charts.rs          Braille line charts, option payoff chart, volume bars, gauges
   display.rs         Currency- and asset-aware formatting (₹/$/€/£/¥, FX and crypto decimals), width-aware padding
-  market.rs          Market enum (in/us/crypto/fx), asset classes, symbol resolution, index/sector/coin/pair lists
-  watchlist.rs, alerts.rs, wealth.rs   Data models persisted via store.rs
+  market.rs          Market enum (in/us/crypto/fx/commodity + global exchanges), the MarketInfo table
+                     (uk/de/jp/hk/sg/ca/au: suffix, currency, indices, sectors, hours, holidays, tax),
+                     asset classes, symbol resolution, index/sector/coin/pair lists
+  alerts.rs          Alert conditions (price, RSI, MA crosses, breakouts, day change, volume, results)
+                     and their evaluation on quotes / daily bars; persisted via store.rs
+  calendar.rs        Results, dividend and split dates: Yahoo calendarEvents + NSE board meetings and
+                     corporate actions (one rate-limited session), day cache in calendar_cache.json
+  watchlist.rs, wealth.rs   Data models persisted via store.rs
 ```
 
 Adding a command: define it in `Commands` in `main.rs` (and in the `GROUPS`
@@ -87,9 +123,11 @@ config file > default.
 ```
 User Input → clap CLI → commands/* → views.rs → api.rs → Yahoo Finance
               tui/, server/ ───────────↗
-                                   → funds.rs → AMFI NAVAll.txt, api.mfapi.in
-                                   → derivatives.rs → NSE option chain (India), Yahoo (US)
-                                            → providers/* → Alpha Vantage / Massive / Twelve Data (opt-in)
+                                   → funds.rs → AMFI NAVAll.txt + TER disclosure, api.mfapi.in
+                                   → derivatives.rs → NSE / BSE option chains (India), Yahoo (US)
+                                   → gsec.rs → CCIL yields, RBI benchmarks and G-sec list (pagecache.rs)
+                                   → commodity.rs ← NSE SGB list (providers/nse session)
+                                            → providers/* → Alpha Vantage / Massive / Twelve Data / NSE / BSE (opt-in)
                                    → brokers/* → Angel One, Kite, Upstox, Dhan, Fyers
                                    → ai.rs → Local Ollama (or opt-in OpenAI / Anthropic / Gemini)
                                    → technical.rs (indicators)
@@ -146,11 +184,14 @@ the OS keyring when one is available (`STOCKWISE_KEYRING=off` keeps them in the 
 | `alerts.json` | Price alerts (symbol, condition, target) |
 | `wealth_history.json` | Daily value snapshots of the default portfolio |
 | `sim_history.json` | Paper trading sessions and results |
+| `sim_replay.json` / `sim_replay_tape.json` | The running historical replay and its cached daily prices (removed by `sim replay end`) |
+| `sim_challenge.json` | A challenge running over live paper sessions |
+| `sim_profile.json` | Practice badges, streaks, best scores and recent runs |
 | `daemon_state.json` / `daemon_state_us.json` | The intraday daemon's current day (positions, risk), saved every tick |
 | `alert_watch.json` | Which alerts `alert watch` already announced |
 | `angel_config.json` | Angel One API credentials (secrets in the OS keyring when available) |
 | `zerodha_config.json`, `upstox_config.json`, `dhan_config.json`, `fyers_config.json` | Experimental broker apps and daily sessions (secrets in the keyring when available) |
-| `cache/` | AMFI NAV file and per-scheme NAV history, re-downloaded after 12 hours (safe to delete) |
+| `cache/` | AMFI NAV file and per-scheme NAV history, re-downloaded after 12 hours; CCIL/RBI pages (6–24 hours) and NSE's SGB list (5 minutes) (safe to delete) |
 
 ## Dependencies
 
@@ -174,9 +215,11 @@ the OS keyring when one is available (`STOCKWISE_KEYRING=off` keeps them in the 
 | `notify-rust` | Desktop notifications (optional `desktop-notify` feature) |
 | `ratatui` | Terminal UI for `tui` (re-exports crossterm; `tui` feature) |
 | `axum` | HTTP server for `serve` (`server` feature) |
+| `wasmi` | WebAssembly interpreter for strategy plugins (optional `wasm-plugins` feature) |
 
-Both features are on by default; `cargo build --no-default-features` leaves
-them out. CI-style checks should run clippy for both builds.
+`tui` and `server` are on by default; `cargo build --no-default-features`
+leaves them out. `wasm-plugins` is off by default. CI-style checks should run
+clippy for all three builds.
 
 ## Releases and packaging
 

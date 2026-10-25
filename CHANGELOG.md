@@ -7,6 +7,228 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-25
+
+Planning, reporting and more markets: tax exports, benchmarks and goal
+planning, technical alerts and a results calendar, NSE/BSE data, more
+exchanges and commodities, a web dashboard, a simulator you can play,
+broker sync with a read-only self-test, and WASM strategy plugins. The
+minimum Rust version is now 1.97. Command-line forms from 0.4 keep working.
+
+### Added
+- `stockwise tax export [in|us] [--fy 2025-26] [--out FILE] [--json]` — the
+  capital-gains schedule of a tax year's realized sales. India: one row per
+  lot sold, laid out for ITR Schedule CG / Schedule 112A (section 111A/112A,
+  ISIN from NSE's equity list or AMFI, scrip, quantity, sale value, cost, days
+  held, gain), then the summary — STCG, LTCG, set-off, the ₹1.25 lakh
+  exemption, estimated tax, carry-forward. US: a Form 8949 worksheet (Part I /
+  Part II) with Schedule D totals and the $3,000 loss deduction. Labelled an
+  estimate to verify against your broker's tax P&L; flags grandfathered
+  (pre-Feb-2018) shares, pre-23-Jul-2024 sales and estimated purchase dates.
+- `stockwise portfolio benchmark [NIFTY|SENSEX|SP500|symbol] [-p 1y]` — the
+  portfolio's time-weighted return against an index, rebuilt from the lots held
+  at each close; alpha, beta, tracking error, information ratio and correlation
+  from daily returns; attribution by holding and by sector (Carino-linked, so
+  contributions add up to the totals); a growth-of-100 chart; other currencies
+  converted at daily exchange rates; holdings with partial history flagged.
+  `--json` / `--csv`.
+- `stockwise goal sip|retire|education` — goal planner: the monthly SIP for a
+  target corpus (with a yearly step-up and existing savings), the retirement
+  corpus for today's monthly expenses and the SIP that builds it, and an
+  education cost grown by inflation. Amounts in Indian units (`50k`, `25L`,
+  `1cr`), results in lakhs and crores; `--json`. New **Planning** help group.
+- `stockwise trade selftest [--broker NAME] [--redact-amounts] [--json]` — a
+  strictly read-only check of a broker integration against your own account:
+  login / session, profile, holdings, positions, order book, trade book, GTT
+  list, exact instrument lookup for RELIANCE, TCS and NIFTYBEES, a 1-share
+  LIMIT buy run through every order check without being sent, and
+  response-shape checks (missing and new field names, never values). Prints a
+  redacted Markdown report for a GitHub issue: no credentials or tokens, the
+  account id cut to its last 2 characters, e-mails and long numbers masked in
+  error messages, amounts hidden with `--redact-amounts`. The session is
+  wrapped so that every order, GTT or cancel call fails before reaching the
+  broker. See [Help verify a broker](docs/brokers.md#help-verify-a-broker).
+- Community testing kit: a "Broker test report" issue template, a
+  verification-status table per broker in docs/brokers.md, and the criteria for
+  dropping the experimental label (3 independent self-test reports plus one
+  small live order a tester chose to place themselves).
+- `stockwise trade sync [--since DATE] [--apply] [--notify] [--json]` — pulls
+  the broker's executed trades into the lot-based portfolio: delivery buys
+  become dated lots (fill date, average fill price, broker order id), sells
+  come out FIFO as realized sales. Previews by default; `--apply` writes.
+  Idempotent: applied fills are remembered by broker, order and trade id, so re-running,
+  or syncing the rest of a partly filled order, never double-counts. Intraday,
+  margin and F&O fills are skipped; sells wait while a split or bonus is not
+  yet applied to the lots; open and partly filled orders are listed;
+  quantities are compared with the broker's holdings. Dhan reads older fills
+  with `--since`; the other brokers return today's trades only.
+- `trade gtt list` shows what changed since the last look (triggered,
+  cancelled, expired, no longer listed), with `--notify` to send the changes
+  to your notification channels and `--json`. `trade sync --apply` tracks the
+  same changes.
+- `Broker` trait: `profile`, `trades` (trade book), raw read-only `rows` and
+  per-endpoint response shapes for all five brokers; order-book rows now carry
+  filled quantity, average price and product. Experimental on Zerodha, Upstox,
+  Dhan and Fyers like the rest of those integrations — the new endpoints were
+  built from the brokers' public docs and tested against fixtures only.
+- Portfolio lots and realized sales record the broker order id they came
+  from (`order_id`); the portfolio file keeps the list of synced fills
+  (`broker_fills`). Older files load unchanged.
+- Practice mode for the paper-trading simulator ([docs/simulator.md](docs/simulator.md)):
+  - `sim replay`: trade a past market day by day with the future hidden. Six
+    built-in scenarios (`covid-crash-2020`, `gfc-2008`, `adani-2023`,
+    `dotcom-2000`, `bull-run-2021`, `rate-hikes-2022`), your own window
+    (`--from --to --symbols`) or a scenario file. Daily history is fetched once
+    and every view, `--json` included, stops at the replay date. Orders fill at
+    the next open with the backtest cost models; stops and targets are checked
+    on each day's range.
+  - `sim challenge`: goal-based challenges with hard and soft rules — beat the
+    index, keep drawdown under 10%, no position above 20%, always set a
+    stop-loss, SIP discipline vs timing, survive the crash — over a replay or
+    over live paper sessions. Rules are data (TOML).
+  - A 0–100 score and grade from risk-adjusted return against the benchmark
+    (Sharpe, Sortino), drawdown control, discipline and diversification —
+    never raw return alone — plus badges and streaks (`sim profile`).
+  - `sim card [--svg FILE]`: a shareable text or SVG result card. Paper
+    money only; every scorecard and card carries the disclaimer.
+- Web dashboard at `/` of `stockwise serve`: indices, watchlist, portfolio
+  (P&L, XIRR, allocation, INR/USD totals, sortable columns), alerts, symbol
+  search and a price chart with period buttons and a keyboard-readable
+  crosshair. Refreshes every 30 seconds while visible; works at phone width;
+  follows the system light/dark theme; amounts in lakhs and crores for INR.
+  Plain HTML/CSS/JavaScript compiled into the binary — no build step or CDN.
+  Read-only. See [docs/server.md](docs/server.md#web-dashboard).
+- `stockwise serve --open` opens the dashboard in your browser; the startup
+  log prints its address.
+- Expense ratios for Indian mutual funds from AMFI's monthly TER disclosure:
+  `mf nav` and `mf history` show the plan's total expense ratio (and the
+  other plan's), `mf screen` adds a TER column, `--sort ter` (lowest first)
+  and `--max-ter PERCENT`. The disclosure is downloaded once a day (~3 MB
+  spreadsheet export) and cached in `cache/amfi_ter.json`; `--json` adds a
+  `ter` object with the April 2026 breakdown (base expense ratio, brokerage,
+  transaction costs, statutory levies). When AMFI can't be reached, NAVs and
+  returns still print with a note.
+- BSE options: `options chain|pcr|maxpain SENSEX` (also `BANKEX`, `SENSEX50`,
+  `^BSESN`) and BSE stock options as `SYMBOL.BO`, from BSE's public
+  derivatives API with one session, spaced calls, a one-minute cache and a
+  clear error when BSE refuses scripted requests. NSE indices and stocks stay
+  on NSE, `-m us` on Yahoo.
+- Lot sizes in option chains: inferred from NSE/BSE order-book quantities
+  (always whole lots), 100 for US contracts; `options chain` shows them and
+  adds `lot_size` to `--json`.
+- `options payoff SYMBOL` — a strategy builder on the live chain. Legs as
+  `--leg "buy call 24500" --leg "sell call 24800"` (`atm±N` strikes and
+  `@PRICE` overrides too) or presets `--strategy bull-call|bear-put|straddle|
+  strangle|iron-condor|butterfly|covered-call --width W`. Shows each leg's
+  price (bid/ask mid, else last trade, flagged), net debit or credit, max
+  profit and loss (or unlimited), breakevens, probability of profit from IV
+  (lognormal), position greeks, and a braille P/L chart at expiry with an
+  optional `--today` curve (Black-Scholes). Sized by `--lots` and the lot
+  size; `--json` for scripts. Read-only — it never places orders.
+- Technical alerts: `alert add SYMBOL rsi-below|rsi-above LEVEL [--period N]`,
+  `cross-above-sma|cross-below-sma|cross-above-ema|cross-below-ema DAYS`,
+  `breakout-high|breakdown-low DAYS`, `change-above|change-below PCT`,
+  `volume-spike MULTIPLE [--period N]` and `results-in DAYS`. They are
+  evaluated on daily bars (one chart request per symbol per check, updated
+  with the live quote) by `alert check`, `alert watch`, `dashboard`, the
+  `tui`, `serve` (`/api/alerts`) and `daemon longterm`; crosses fire only on
+  the crossing session, and `alert watch` notifies once per trading day.
+  `alert list` shows each condition in words. See
+  [docs/commands.md](docs/commands.md#alert-conditions).
+- `stockwise calendar [SYMBOLS] [--days 30] [--holdings|--watchlist]` —
+  upcoming results, ex-dividend and payment dates, splits and bonus issues
+  for holdings and the watchlist, sorted by date with today and the next
+  7 days marked; `--json` / `--csv`. Yahoo Finance supplies earnings and
+  dividend dates for US and Indian stocks; for `.NS` / `.BO` stocks NSE board
+  meetings and corporate actions add filed results dates, splits and bonus
+  issues (one polite session per run, cached for a day, Yahoo-only when NSE
+  refuses).
+- Data providers that read the exchanges' own websites, no API key needed:
+  `STOCKWISE_DATA_PROVIDER=nse` (or `data_provider = "nse"`), `bse`, and
+  `exchange` (NSE for `.NS` and NSE indices, BSE for `.BO`, Yahoo for the
+  rest). NSE serves quotes with circuit limits and delivery %, NSE index
+  quotes, today's intraday bars, up to five years of daily bars and search;
+  BSE serves quotes, intraday and daily bars and search by scrip id, code or
+  name. These are unofficial website endpoints: StockWise keeps one session per
+  site, at most three requests a second with jitter, retries timeouts and 5xx
+  with backoff, caches answers, and stops asking (with one notice) as soon as a
+  site refuses — Yahoo answers instead. See
+  [docs/data-providers.md](docs/data-providers.md#nse-and-bse) and
+  [docs/exchange-responses.md](docs/exchange-responses.md).
+- `quote` shows **Circuit Limits** and **Delivery** when NSE answered;
+  `--json` adds `deliveryPercent`, `lowerCircuit`, `upperCircuit`, `--csv`
+  adds `delivery_percent`, `lower_circuit`, `upper_circuit` (empty otherwise).
+- `movers`, `heatmap` and `screen` take `--universe nifty50|niftynext50|nifty100|banknifty|niftyit`
+  to scan an NSE index's current members (from NSE, whichever provider is set)
+  instead of the built-in 30 large caps, which stay as the offline fallback.
+- `doctor` checks NSE and BSE separately in `exchange` mode.
+- Global exchanges from one market table: `-m uk`, `de`, `jp`, `hk`, `sg`,
+  `ca`, `au` resolve bare tickers with the exchange's Yahoo suffix (`-m uk
+  VOD` → `VOD.L`, `-m jp 7203` → `7203.T`, `-m hk 5` → `0005.HK`). Each
+  exchange brings its currency (London prices in pence print as `118.20p`;
+  `£`, `€`, `¥`, `HK$`, `S$`, `C$`, `A$`), benchmark indices, sector indices or
+  ETFs where Yahoo has them (Japan, Hong Kong, Canada, Australia), a large-cap
+  universe for `movers`/`screen`, trading hours with lunch breaks and half
+  days, and 2026–27 holiday tables from the exchanges' own calendars (weekday
+  fallback with a warning for years not bundled). `tax` names listings it has
+  no rules for (rules exist for India, the US and the UK). See
+  [docs/markets.md](docs/markets.md).
+- `markets --global`: one row per exchange's main index — NIFTY 50, S&P 500,
+  FTSE 100, DAX, Nikkei 225, Hang Seng, Straits Times, S&P/TSX, S&P/ASX 200 —
+  with whether it is open now and its local time.
+- `markets` shows the India 10-year G-sec yield (CCIL, RBI fallback; `IN10Y`
+  in `--json`/`--csv`).
+- `stockwise commodity [spot|futures|etfs|sgb]` and `-m commodity`: gold and
+  silver in ₹ per g / 10 g / kg and USD per ounce (COMEX front month at
+  USD/INR, before import duty and GST — clearly noted), COMEX futures with the
+  front contract month (MCX has no free feed), NSE gold and silver ETFs, and
+  Sovereign Gold Bonds with price, premium to gold spot, 2.5% interest yield
+  and maturity from NSE's SGB list — or, when NSE refuses, the outstanding
+  tranches without prices. With `-m commodity`, `GOLD`/`SILVER` resolve to
+  `GC=F`/`SI=F` for `history`, `chart`, `technical` and alerts. `--json`/`--csv`.
+- `stockwise bonds [yields|list|calc]`: T-bill, G-sec and SDL benchmark yields
+  from CCIL's tenor-wise indicative yields (RBI's benchmarks as fallback;
+  cached 6 hours), RBI's list of outstanding Government of India securities,
+  and a calculator for price ↔ yield to maturity, accrued interest, dirty
+  price, duration and T-bill discount yields, looking securities up by NSE
+  symbol (`718GS2033`), name or ISIN. Individual bond prices are not shown:
+  no public source publishes them. See
+  [docs/commands.md](docs/commands.md#commodities--bonds).
+- **WASM strategy plugins** (experimental, cargo feature `wasm-plugins`, off by
+  default): `backtest SYMBOL -s wasm:path/to/strategy.wasm` runs a
+  WebAssembly strategy in single, portfolio and walk-forward backtests, with
+  `-P name=value` and grid tuning, and `intraday -s wasm:...` uses it as an
+  extra vote. A plugin exports a small versioned ABI (`stockwise_abi_version`,
+  `stockwise_on_bar`, optional `stockwise_meta` / `stockwise_init`) and runs
+  in the wasmi interpreter with no imports (no WASI, files or network), a
+  64 MB memory cap and a fuel budget per call: a trap, an endless loop or bad
+  output is an error naming the bar, never a hang or a crash.
+  `backtest strategies` lists `.wasm` plugins in the strategies folder with
+  their name and ABI version. Example plugin (RSI mean reversion, identical
+  to the built-in `rsi`) in `examples/wasm-strategy-rsi/`; ABI and limits in
+  docs/backtesting.md ("WASM plugins").
+
+### Changed
+- Minimum supported Rust version is now **1.97** (was 1.88). StockWise
+  supports the latest stable Rust and the two releases before it. Prebuilt
+  binaries, Docker and Nix are unaffected.
+- `alert list --json/--csv` adds `period` and `description`; `alert check
+  --json/--csv` adds `period`, `description`, `value`, `reference` and the
+  status `no_data` (new CSV columns come after the old ones). Existing
+  `alerts.json` files load unchanged. Quotes carry Yahoo's
+  `regularMarketTime`.
+- In the Indian market a bare BSE scrip code resolves to BSE: `quote 500325`
+  is `500325.BO` (it used to become the invalid `500325.NS`).
+
+### Security
+- `serve` sends a strict Content-Security-Policy (no inline code, same-origin
+  only, Trusted Types), `X-Frame-Options: DENY`, `Referrer-Policy:
+  no-referrer` and same-origin COOP/CORP headers on every response, and
+  answers 403 to `/api/*` and `/metrics` requests a browser marks as
+  cross-origin (`Sec-Fetch-Site`). There is still no CORS. With
+  `STOCKWISE_API_TOKEN` set, the dashboard asks for the token and keeps it in
+  session storage, sending it only as an `Authorization` header.
+
 ## [0.4.0] - 2026-10-21
 
 Everything on the 0.3 roadmap: new markets and asset classes, a lot-based
@@ -407,7 +629,8 @@ Initial development. Not published. Highlights that landed during this phase:
 - Multi-timeframe and braille terminal charts; `-p/--period` flag on chart commands.
 - `deep` command — full report on a single stock in one shot.
 
-[Unreleased]: https://github.com/iamsaquib8/stockwise/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/iamsaquib8/stockwise/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/iamsaquib8/stockwise/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/iamsaquib8/stockwise/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/iamsaquib8/stockwise/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/iamsaquib8/stockwise/releases/tag/v0.2.0

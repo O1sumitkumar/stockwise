@@ -283,7 +283,7 @@ impl Config {
             && crate::providers::ProviderKind::parse(p).is_none()
         {
             bail!(
-                "`data_provider` = \"{}\" is not a provider; use yahoo, alphavantage, massive or twelvedata",
+                "`data_provider` = \"{}\" is not a provider; use yahoo, alphavantage, massive, twelvedata, nse, bse or exchange",
                 p
             );
         }
@@ -318,12 +318,10 @@ impl Config {
 /// The clap spelling (`in` / `us`) of a market name from the file.
 pub fn market_value(s: &str) -> Result<&'static str> {
     match crate::market::Market::from_str(s, true) {
-        Ok(crate::market::Market::In) => Ok("in"),
-        Ok(crate::market::Market::Us) => Ok("us"),
-        Ok(crate::market::Market::Crypto) => Ok("crypto"),
-        Ok(crate::market::Market::Fx) => Ok("fx"),
+        Ok(market) => Ok(market.code()),
         Err(_) => bail!(
-            "`market` = \"{}\" is not a market; use \"in\", \"us\", \"crypto\" or \"fx\"",
+            "`market` = \"{}\" is not a market; use \"in\", \"us\", \"crypto\", \"fx\", \"commodity\" \
+             or a global exchange (\"uk\", \"de\", \"jp\", \"hk\", \"sg\", \"ca\", \"au\")",
             s
         ),
     }
@@ -442,8 +440,10 @@ pub const TEMPLATE: &str = r#"# StockWise configuration.
 # (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY). Env: STOCKWISE_AI_PROVIDER.
 # ai_provider = "ollama"
 
-# Market-data provider: "yahoo" (default), "alphavantage", "massive" or
-# "twelvedata". API keys stay in environment variables. Env: STOCKWISE_DATA_PROVIDER.
+# Market-data provider: "yahoo" (default), "alphavantage", "massive",
+# "twelvedata", or the exchanges' own websites: "nse", "bse" or "exchange"
+# (NSE for .NS, BSE for .BO; no key). API keys stay in environment variables.
+# Env: STOCKWISE_DATA_PROVIDER.
 # data_provider = "yahoo"
 
 # Default --period per command. Periods: 1d 5d 1w 1mo 3mo 6mo ytd 1y 2y 5y 10y max.
@@ -575,8 +575,12 @@ mod tests {
 
     #[test]
     fn bad_market_is_named() {
-        let e = err("market = \"uk\"");
-        assert!(e.contains("`market`") && e.contains("uk"), "{e}");
+        let e = err("market = \"mars\"");
+        assert!(e.contains("`market`") && e.contains("mars"), "{e}");
+        // Global exchanges and commodities are markets too.
+        assert_eq!(market_value("UK").unwrap(), "uk");
+        assert_eq!(market_value("japan").unwrap(), "jp");
+        assert_eq!(market_value("commodity").unwrap(), "commodity");
     }
 
     #[test]
@@ -658,6 +662,8 @@ mod tests {
             Some("42")
         );
         assert!(parse("data_provider = \"yahoo\"\n", CMDS).is_ok());
+        assert!(parse("data_provider = \"nse\"\n", CMDS).is_ok());
+        assert!(parse("data_provider = \"exchange\"\n", CMDS).is_ok());
 
         assert!(err("lang = \"klingon\"\n").contains("`lang`"));
         assert!(err("quote_currency = \"dollars\"\n").contains("`quote_currency`"));

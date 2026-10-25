@@ -1,0 +1,42 @@
+[
+  {
+    "dhanClientId": "1000000003",
+    "orderId": "112111182045",
+    "exchangeOrderId": "15112111182045",
+    "exchangeTradeId": "15112111182046",
+    "transactionType": "BUY",
+    "exchangeSegment": "NSE_EQ",
+    "productType": "CNC",
+    "orderType": "LIMIT",
+    "tradingSymbol": "TCS",
+    "securityId": "11536",
+    "tradedQuantity": 2,
+    "tradedPrice": 3345.8,
+    "createTime": "2026-10-20 11:20:06",
+    "updateTime": "2026-10-20 11:20:06",
+    "exchangeTime": "2026-10-20 11:20:06",
+    "drvExpiryDate": null,
+    "drvOptionType": null,
+    "drvStrikePrice": 0.0
+  },
+  {
+    "dhanClientId": "1000000003",
+    "orderId": "112111182046",
+    "exchangeOrderId": "15112111182047",
+    "exchangeTradeId": "15112111182048",
+    "transactionType": "SELL",
+    "exchangeSegment": "NSE_FNO",
+    "productType": "MARGIN",
+    "orderType": "MARKET",
+    "tradingSymbol": "NIFTY-Oct2026-25000-CE",
+    "securityId": "52175",
+    "tradedQuantity": 75,
+    "tradedPrice": 120.0,
+    "createTime": "2026-10-20 12:00:00",
+    "updateTime": "2026-10-20 12:00:00",
+    "exchangeTime": "2026-10-20 12:00:00",
+    "drvExpiryDate": "2026-10-27",
+    "drvOptionType": "CALL",
+    "drvStrikePrice": 25000.0
+  }
+]

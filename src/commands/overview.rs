@@ -9,6 +9,8 @@ fn market_title(market: Market) -> &'static str {
         Market::Us => Msg::MarketUs,
         Market::Crypto => Msg::MarketCrypto,
         Market::Fx => Msg::MarketFx,
+        Market::Commodity => Msg::MarketCommodity,
+        Market::Global(x) => x.info().title,
     })
 }
 
@@ -52,6 +54,10 @@ pub(crate) struct QuoteRow {
     pub(crate) pe_ttm: Option<f64>,
     pub(crate) eps_ttm: Option<f64>,
     pub(crate) dividend_yield: Option<f64>,
+    /// NSE provider only (`STOCKWISE_DATA_PROVIDER=nse`); empty otherwise.
+    pub(crate) delivery_percent: Option<f64>,
+    pub(crate) lower_circuit: Option<f64>,
+    pub(crate) upper_circuit: Option<f64>,
 }
 
 impl CsvRow for QuoteRow {
@@ -73,6 +79,9 @@ impl CsvRow for QuoteRow {
         "pe_ttm",
         "eps_ttm",
         "dividend_yield",
+        "delivery_percent",
+        "lower_circuit",
+        "upper_circuit",
     ];
 }
 
@@ -96,6 +105,9 @@ impl From<&crate::api::Quote> for QuoteRow {
             pe_ttm: q.trailing_pe,
             eps_ttm: q.eps_trailing_twelve_months,
             dividend_yield: q.trailing_annual_dividend_yield,
+            delivery_percent: q.delivery_percent,
+            lower_circuit: q.lower_circuit,
+            upper_circuit: q.upper_circuit,
         }
     }
 }
@@ -174,6 +186,13 @@ pub async fn cmd_quote(symbols: &[String], market: Market, fmt: Format) -> Resul
                 px(q.fifty_two_week_high)
             ),
         );
+        // NSE's price band, when the NSE provider answered.
+        if q.lower_circuit.is_some() || q.upper_circuit.is_some() {
+            print_kv(
+                t(Msg::CircuitLimits),
+                &format!("{} — {}", px(q.lower_circuit), px(q.upper_circuit)),
+            );
+        }
         // FX has no exchange volume (Yahoo reports 0).
         if market::AssetClass::of(symbol) != market::AssetClass::Fx {
             print_kv(
@@ -185,6 +204,9 @@ pub async fn cmd_quote(symbols: &[String], market: Market, fmt: Format) -> Resul
                 &q.average_daily_volume_3_month
                     .map_or_else(na, format_volume),
             );
+            if let Some(delivery) = q.delivery_percent {
+                print_kv(t(Msg::DeliveryPercent), &format!("{:.2}%", delivery));
+            }
         }
         print_kv(
             t(Msg::MarketCap),
@@ -238,9 +260,15 @@ fn row_change(r: &views::IndexRow) -> String {
     )
 }
 
-pub async fn cmd_markets(market: Market, fmt: Format, crypto: bool, fx: bool) -> Result<()> {
+pub async fn cmd_markets(
+    market: Market,
+    fmt: Format,
+    crypto: bool,
+    fx: bool,
+    global: bool,
+) -> Result<()> {
     let client = YahooClient::new().await?;
-    let sections = views::market_sections(&client, market, crypto, fx).await?;
+    let sections = views::market_sections(&client, market, crypto, fx, global).await?;
 
     if !fmt.is_table() {
         let rows: Vec<views::IndexRow> = sections.into_iter().flat_map(|s| s.rows).collect();
@@ -250,20 +278,87 @@ pub async fn cmd_markets(market: Market, fmt: Format, crypto: bool, fx: bool) ->
         };
     }
 
+    let now = chrono::Utc::now();
     for section in &sections {
         print_header(section.title);
+        let width = if section.region == "Global" { 26 } else { 16 };
         for r in &section.rows {
+            if r.symbol == views::INDIA_10Y {
+                // A yield, not a price: no currency, no day change.
+                println!(
+                    "  {} {}  {}",
+                    pad_end(&r.name, width).bold(),
+                    r.price
+                        .map_or_else(|| "N/A".dimmed().to_string(), |y| format!("{y:.2}%"))
+                        .bold(),
+                    "CCIL / RBI benchmark (`stockwise bonds`)".dimmed()
+                );
+                continue;
+            }
             let cur = r.currency.as_deref();
+            // `--global` rows say whether that exchange is trading now.
+            let session = views::benchmark_market(&r.symbol)
+                .filter(|_| section.region == "Global")
+                .map(|m| format!("  {}", session_label(m, now)))
+                .unwrap_or_default();
             println!(
-                "  {} {}  {}",
-                pad_end(&r.name, 16).bold(),
+                "  {} {}  {}{}",
+                pad_end(&r.name, width).bold(),
                 price_or_na(r.price, cur, &r.symbol).bold(),
-                row_change(r)
+                row_change(r),
+                session
             );
+        }
+        for warning in coverage_notes(section, now) {
+            println!("  {} {}", "!".yellow(), warning.dimmed());
         }
     }
     println!();
     Ok(())
+}
+
+/// "open · 14:05 JST" or "closed (lunch break) · 12:10 HKT" for an exchange.
+fn session_label(market: Market, now: chrono::DateTime<chrono::Utc>) -> String {
+    let local = crate::clock::local(market, now).format("%H:%M");
+    let tz = crate::clock::tz_label(market);
+    if crate::clock::is_open(market, now) {
+        format!("{} · {} {}", "open".green(), local, tz)
+    } else {
+        format!(
+            "{} · {} {}",
+            format!("closed ({})", crate::clock::closed_reason(market, now)).dimmed(),
+            local,
+            tz
+        )
+    }
+}
+
+/// Holiday-table coverage warnings for the exchanges a `markets --global`
+/// section shows (once per exchange).
+fn coverage_notes(
+    section: &views::MarketSection,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<String> {
+    if section.region != "Global" {
+        return Vec::new();
+    }
+    let missing: Vec<&str> = section
+        .rows
+        .iter()
+        .filter_map(|r| views::benchmark_market(&r.symbol))
+        .filter(|m| {
+            let year = chrono::Datelike::year(&crate::clock::session_date(*m, now));
+            crate::clock::calendar_coverage(*m, year) == crate::clock::CalendarCoverage::Missing
+        })
+        .map(crate::clock::exchange)
+        .collect();
+    if missing.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "No holiday list bundled for {} — open/closed assumes every weekday trades.",
+        missing.join(", ")
+    )]
 }
 
 // ── Watchlist ──
@@ -276,9 +371,10 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
 
     print_header(&tf(Msg::DashboardTitle, &[&market_title(market)]));
     print_section(t(match market {
-        Market::In | Market::Us => Msg::MarketIndices,
+        Market::In | Market::Us | Market::Global(_) => Msg::MarketIndices,
         Market::Crypto => Msg::TopCoins,
         Market::Fx => Msg::MajorPairs,
+        Market::Commodity => Msg::SectionCommodities,
     }));
     for q in &idx_quotes {
         // Match by symbol: Yahoo may reorder or drop symbols.
@@ -364,27 +460,14 @@ pub async fn cmd_dashboard(market: Market) -> Result<()> {
         unique.sort();
         unique.dedup();
         let a_quotes = client.get_quote(&unique).await?;
-        let mut triggered = Vec::new();
-        for alert in &store.alerts {
-            // No live price: never report it as triggered.
-            let Some(price) = a_quotes
-                .iter()
-                .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()))
-                .and_then(|q| q.regular_market_price)
-            else {
-                continue;
-            };
-            let hit = match alert.condition {
-                AlertCondition::Above => price >= alert.target,
-                AlertCondition::Below => price <= alert.target,
-            };
-            if hit {
-                triggered.push(format!(
-                    "{} {} {:.2}",
-                    alert.symbol, alert.condition, alert.target
-                ));
-            }
-        }
+        // Missing data (no price, too little history) never reads as triggered.
+        let rows = views::alert_rows(&client, &store.alerts, &a_quotes, chrono::Utc::now()).await;
+        let triggered: Vec<String> = rows
+            .iter()
+            .zip(&store.alerts)
+            .filter(|(row, _)| row.status == "triggered")
+            .map(|(_, alert)| format!("{} {}", alert.symbol, alert.describe(crate::i18n::lang())))
+            .collect();
         if !triggered.is_empty() {
             print_section(t(Msg::TriggeredAlerts));
             for line in &triggered {
@@ -530,15 +613,14 @@ pub async fn cmd_doctor(market: Market, sources: crate::config::CliSources) -> R
         crate::config::Source::Default => t(Msg::DoctorMarketDefault),
     };
     let market_name = match market {
-        Market::In => "in (India, NSE)",
-        Market::Us => "us",
-        Market::Crypto => "crypto",
-        Market::Fx => "fx",
-    };
-    let market_name = if market == Market::Crypto {
-        format!("{} (vs {})", market_name, market::quote_currency())
-    } else {
-        market_name.to_string()
+        Market::In => "in (India, NSE)".to_string(),
+        Market::Crypto => format!("crypto (vs {})", market::quote_currency()),
+        Market::Commodity => "commodity (COMEX gold/silver, NSE ETFs and SGBs)".to_string(),
+        Market::Global(x) => {
+            let info = x.info();
+            format!("{} ({}, {})", info.code, info.country, info.exchange_name)
+        }
+        Market::Us | Market::Fx => market.code().to_string(),
     };
     print_kv(
         t(Msg::DoctorMarket),
@@ -605,33 +687,49 @@ pub async fn cmd_doctor(market: Market, sources: crate::config::CliSources) -> R
 
     // Optional data provider
     use crate::providers::{MarketData, Selection};
-    let provider_line = match Selection::from_env() {
-        Selection::Yahoo => t(Msg::DoctorProviderDefault).dimmed().to_string(),
-        Selection::Unknown(value) => warn(&tf(Msg::DoctorProviderUnknown, &[&value])),
-        Selection::MissingKey(kind) => warn(&tf(
+    let provider_lines = match Selection::from_env() {
+        Selection::Yahoo => vec![t(Msg::DoctorProviderDefault).dimmed().to_string()],
+        Selection::Unknown(value) => vec![warn(&tf(Msg::DoctorProviderUnknown, &[&value]))],
+        Selection::MissingKey(kind) => vec![warn(&tf(
             Msg::DoctorProviderNoKey,
             &[&kind.name(), &kind.key_env()],
-        )),
+        ))],
         Selection::Ready(provider) => {
-            let probe = provider.probe_symbol();
-            let started = std::time::Instant::now();
-            match provider.quotes(&[probe]).await {
-                Ok(q) if q.iter().any(|q| q.regular_market_price.is_some()) => ok(&tf(
-                    Msg::DoctorProviderAnswered,
-                    &[&provider.name(), &probe, &started.elapsed().as_millis()],
-                )),
-                Ok(_) => warn(&tf(
-                    Msg::DoctorProviderFellBack,
-                    &[&provider.name(), &"no price returned"],
-                )),
-                Err(e) => warn(&tf(
-                    Msg::DoctorProviderFellBack,
-                    &[&provider.name(), &format!("{:#}", e)],
-                )),
+            // One probe per source: NSE and BSE separately in mixed mode.
+            let mut lines = Vec::new();
+            for (source, probe) in provider.probes() {
+                let started = std::time::Instant::now();
+                lines.push(match provider.quotes(&[probe]).await {
+                    Ok(q) if q.iter().any(|q| q.regular_market_price.is_some()) => ok(&tf(
+                        Msg::DoctorProviderAnswered,
+                        &[&source, &probe, &started.elapsed().as_millis()],
+                    )),
+                    Ok(_) => warn(&tf(
+                        Msg::DoctorProviderFellBack,
+                        &[&source, &"no price returned"],
+                    )),
+                    Err(e) => warn(&tf(
+                        Msg::DoctorProviderFellBack,
+                        &[&source, &format!("{:#}", e)],
+                    )),
+                });
             }
+            if !provider.kind().needs_key() {
+                lines.push(t(Msg::DoctorExchangeNote).dimmed().to_string());
+            }
+            lines
         }
     };
-    print_kv(t(Msg::DoctorDataProvider), &provider_line);
+    for (i, line) in provider_lines.iter().enumerate() {
+        print_kv(
+            if i == 0 {
+                t(Msg::DoctorDataProvider)
+            } else {
+                ""
+            },
+            line,
+        );
+    }
 
     // Cache
     let redis = crate::api::connect_redis().await.is_some();

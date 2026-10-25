@@ -1,0 +1,101 @@
+# Built-in challenges for `stockwise sim challenge`.
+#
+# Each challenge is a list of rules. Constraint rules (max_drawdown,
+# max_position, stop_loss_required, invest_each_month) are checked as you
+# trade; a rule with `hard = true` ends the challenge when broken, a soft
+# one costs discipline points. Goal rules (beat_benchmark, beat_sip,
+# min_exposure, min_positions, min_trades, drawdown_vs_benchmark) are
+# checked when the challenge ends. `days = 0` runs until the replay ends.
+# `modes` says whether the challenge can run over a historical replay, over
+# live paper sessions (`sim start` / `sim settle`), or both.
+
+[[challenge]]
+name = "beat-the-index"
+title = "Beat the index"
+description = "Finish 30 trading days ahead of the benchmark while staying at least 30% invested."
+days = 30
+modes = ["replay", "live"]
+
+[[challenge.rules]]
+kind = "beat_benchmark"
+
+[[challenge.rules]]
+kind = "min_exposure"
+percent = 30
+
+[[challenge]]
+name = "steady-hands"
+title = "Steady hands"
+description = "Keep your drawdown under 10% for 30 trading days while staying at least half invested."
+days = 30
+modes = ["replay", "live"]
+
+[[challenge.rules]]
+kind = "max_drawdown"
+percent = 10
+hard = true
+
+[[challenge.rules]]
+kind = "min_exposure"
+percent = 50
+
+[[challenge]]
+name = "position-limit"
+title = "No position above 20%"
+description = "For 30 trading days, never put more than 20% of your capital in one stock, and hold at least five at once."
+days = 30
+modes = ["replay", "live"]
+
+[[challenge.rules]]
+kind = "max_position"
+percent = 20
+hard = true
+
+[[challenge.rules]]
+kind = "min_positions"
+count = 5
+
+[[challenge]]
+name = "stop-loss"
+title = "Always set a stop-loss"
+description = "For 30 trading days, every buy carries a stop-loss. Make at least five buys."
+days = 30
+modes = ["replay", "live"]
+
+[[challenge.rules]]
+kind = "stop_loss_required"
+hard = true
+
+[[challenge.rules]]
+kind = "min_trades"
+count = 5
+
+[[challenge]]
+name = "sip-discipline"
+title = "SIP discipline vs timing"
+description = "Start with one month's contribution and add the same again on the first trading day of every month. Keep at least 90% of it invested, and try to beat a plain monthly SIP into the benchmark."
+days = 0
+modes = ["replay"]
+monthly_contribution = 10000
+
+[[challenge.rules]]
+kind = "invest_each_month"
+percent = 90
+
+[[challenge.rules]]
+kind = "beat_sip"
+
+[[challenge]]
+name = "crash-survivor"
+title = "Survive the crash"
+description = "Until the replay ends, lose less than half of what the benchmark loses at its worst, while staying at least 30% invested."
+days = 0
+modes = ["replay"]
+
+[[challenge.rules]]
+kind = "drawdown_vs_benchmark"
+ratio = 0.5
+
+[[challenge.rules]]
+kind = "min_exposure"
+percent = 30

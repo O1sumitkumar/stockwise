@@ -8,7 +8,7 @@
   <a href="https://crates.io/crates/stockwise"><img src="https://img.shields.io/crates/d/stockwise.svg" alt="Downloads"></a>
   <a href="https://github.com/iamsaquib8/stockwise/releases/latest"><img src="https://img.shields.io/github/v/release/iamsaquib8/stockwise?label=binaries" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="#install"><img src="https://img.shields.io/badge/rustc-1.88+-blue.svg" alt="MSRV 1.88"></a>
+  <a href="#install"><img src="https://img.shields.io/badge/rustc-1.97+-blue.svg" alt="MSRV 1.97"></a>
 </p>
 
 <p align="center">
@@ -45,21 +45,26 @@ stockwise sip NIFTYBEES 5000 -p 5y      # what a ₹5,000/month SIP became (XIRR
 - **India-first, US too.** `TCS` means `TCS.NS`; rupee formatting in lakhs and
   crores; NIFTY/SENSEX sectors; mutual funds from AMFI; NSE option chains;
   Indian tax years with LTCG/STCG set-off; imports from Kite, Groww, INDmoney,
-  Upstox and CAS statements. `-m us`, `-m crypto` or `-m fx` for other markets.
+  Upstox and CAS statements; gold in ₹/10 g, Sovereign Gold Bonds and G-sec
+  yields. `-m us`, `-m crypto`, `-m fx`, `-m commodity` or a global exchange
+  (`-m uk`, `de`, `jp`, `hk`, `sg`, `ca`, `au`) for other markets.
 - **Zero setup.** Public market data, no API key or sign-up. One binary for
   macOS, Linux and Windows. `stockwise doctor` checks everything.
-- **65+ commands, one muscle memory.** Fundamentals, technicals, risk, screeners,
+- **75+ commands, one muscle memory.** Fundamentals, technicals, risk, screeners,
   sector rotation, mutual funds, options greeks, backtests, SIP/what-if
-  calculators, alerts, tax estimates — in English or Hindi (`--lang hi`).
+  calculators, goal planning, alerts, tax estimates and ITR-ready capital-gains
+  exports — in English or Hindi (`--lang hi`).
 - **Backtests that count costs.** STT, brokerage, stamp duty and slippage;
   next-day fills; portfolios and walk-forward; strategies as small TOML files.
 - **Scriptable.** `--json` on 21 data commands and `--csv` on their tables, a
   config file for your defaults, real exit codes, shell completions, and a
   read-only JSON API with Prometheus metrics (`stockwise serve`).
-- **Live dashboard.** `stockwise tui` keeps indices, watchlist, portfolio P&L,
-  alerts and a chart on one refreshing screen.
-- **Practice before money.** A paper-trading simulator and an intraday paper
-  daemon with risk controls and notifications. Optional live orders via Angel
+- **Live dashboards.** `stockwise tui` keeps indices, watchlist, portfolio P&L,
+  alerts and a chart on one refreshing screen; `stockwise serve --open` shows
+  the same in your browser.
+- **Practice before money.** A paper-trading simulator, an intraday paper
+  daemon with risk controls and notifications, and historical replays — trade
+  the 2020 crash with the future hidden — scored on risk, not raw return. Optional live orders via Angel
   One (Zerodha, Upstox, Dhan and Fyers experimental), always behind a preview
   and a typed confirmation.
 - **Private by design.** Your portfolio stays in local files; broker secrets in
@@ -106,7 +111,7 @@ Portfolio, watchlist and alerts persist in the `stockwise-data` volume.
 
 ```bash
 cargo binstall stockwise    # prebuilt binary via cargo-binstall
-cargo install stockwise     # or build from source (Rust 1.88+)
+cargo install stockwise     # or build from source (Rust 1.97+)
 ```
 
 Then:
@@ -131,9 +136,11 @@ Homebrew, AUR and Nix install the man pages and completions for you.
 | **Start here** | `quote`, `deep`, `markets`, `dashboard`, `search`, `doctor` |
 | **Analysis** | `analyze`, `technical`, `history`, `chart`, `compare`, `risk`, `correlate`, `timeframes`, `returns`, `patterns`, `support`, `fibs`, `volume`, `gaps`, `stoploss`, `forecast` |
 | **Market** | `movers`, `sectors`, `heatmap`, `sentiment`, `news`, `rotation`, `sectorcmp`, `peers`, `insider`, `ipo`, `earnings`, `surprise`, `matrix`, `picks`, `screen`, `dividends` |
-| **Funds & F&O** | `mf` (search, nav, history, sip, screen, overlap), `options` (chain, pcr, maxpain, moves) |
+| **Funds & F&O** | `mf` (search, nav, history, sip, screen, overlap — with AMFI expense ratios), `options` (chain, pcr, maxpain, payoff, moves; NSE, BSE and US) |
+| **Commodities & bonds** | `commodity` (spot, futures, etfs, sgb), `bonds` (yields, list, calc) |
 | **Strategies & bots** | `backtest`, `sip`, `whatif`, `intraday`, `longterm`, `daemon`, `sim`, `report` |
-| **Portfolio** | `portfolio`, `watch`, `alert`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
+| **Portfolio** | `portfolio`, `watch`, `alert`, `calendar`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
+| **Planning** | `goal` (sip, retire, education) |
 | **Interfaces** | `tui`, `serve` |
 | **Live trading** | `trade` (Angel One; Zerodha, Upstox, Dhan, Fyers experimental) |
 
@@ -148,6 +155,8 @@ stockwise portfolio                              # live P&L, XIRR + allocation
 stockwise portfolio sell TCS 5 3900              # FIFO sale, realized P&L kept for tax
 stockwise portfolio actions --apply              # splits, bonuses and dividends since you bought
 stockwise tax in                                 # LTCG/STCG per lot, set-off, realized vs unrealized
+stockwise tax export in --fy 2025-26 > cg.csv    # ITR Schedule CG / 112A CSV of your sales
+stockwise portfolio benchmark NIFTY -p 1y        # time-weighted return vs the index, alpha/beta, attribution
 stockwise --portfolio us portfolio add AAPL 3 190 -m us   # a second, named portfolio
 stockwise dashboard                              # indices + portfolio + watchlist + alerts
 ```
@@ -156,18 +165,42 @@ Every purchase is a lot with its own date, so holding periods, FIFO sales and
 XIRR are exact. Holdings in INR and USD are totalled in one currency
 (`portfolio --base usd`) at the live `USDINR=X` rate.
 
+### Plan a goal
+
+```bash
+stockwise goal sip --target 1cr --years 15 --step-up 10       # SIP for ₹1 crore, rising 10% a year
+stockwise goal retire --monthly-expense 80k --years-to-retire 20 --years-in-retirement 30
+stockwise goal education --cost 25L --years 10                # cost after 8% education inflation
+```
+
 ### Mutual funds and options
 
 ```bash
 stockwise mf search parag flexi direct     # AMFI scheme codes
 stockwise mf sip 122639 5000 -p 5y         # monthly SIP with XIRR
-stockwise mf screen flexi cap              # rank a category by 3Y CAGR
-stockwise options chain NIFTY              # NSE chain with IV and greeks
+stockwise mf screen flexi cap              # rank a category by 3Y CAGR, with TERs
+stockwise mf screen elss -s ter --max-ter 1  # cheapest ELSS funds by expense ratio
+stockwise options chain NIFTY              # NSE chain with IV and greeks (SENSEX → BSE)
 stockwise options maxpain BANKNIFTY        # or: options pcr, options chain AAPL -m us
+stockwise options payoff NIFTY -s iron-condor -w 200   # P/L chart, breakevens, POP
 ```
 
-NAVs come from AMFI, option chains from NSE (India) or Yahoo (US). See
+NAVs and expense ratios come from AMFI, option chains from NSE or BSE (India) or Yahoo (US). See
 [docs/commands.md](docs/commands.md#funds--fo) for what has data and what doesn't.
+
+### Gold, SGBs and G-secs
+
+```bash
+stockwise commodity                          # gold ₹/10 g, silver ₹/kg, and USD/oz
+stockwise commodity sgb                      # Sovereign Gold Bonds vs gold spot
+stockwise history gold -m commodity -p 1y    # COMEX gold (GC=F); also chart, technical, alerts
+stockwise bonds                              # T-bill and G-sec yields, India 10Y
+stockwise bonds calc 718GS2033 --price 101.25   # yield to maturity, accrued interest, duration
+```
+
+Spot is COMEX futures at the USD/INR rate, before import duty and GST; MCX has
+no free feed. Yields come from CCIL (RBI as fallback). Nothing is invented when
+a source is down — see [what has data](docs/commands.md#commodities--bonds).
 
 ### Backtest a strategy
 
@@ -180,7 +213,10 @@ stockwise backtest TCS -s file:my_rules.toml       # your own TOML rules
 
 Strategies are TOML files of entry and exit rules over RSI, MACD, moving
 averages, Bollinger Bands, ATR and VWAP — see
-[docs/backtesting.md](docs/backtesting.md).
+[docs/backtesting.md](docs/backtesting.md). For logic rules can't express,
+an experimental build (`--features wasm-plugins`) runs sandboxed WebAssembly
+strategies: `-s wasm:strategy.wasm`
+([example](examples/wasm-strategy-rsi/)).
 
 ### Watch it live
 
@@ -193,6 +229,20 @@ stockwise tui                # ↑↓ select · 1-6 chart period · / add to wat
 ```
 
 Read-only: the TUI never places orders. See [docs/tui.md](docs/tui.md).
+
+Prefer a browser? `stockwise serve --open` serves the same view as a web page —
+indices, a chart with period buttons, watchlist, portfolio with allocation and
+XIRR, alerts and search — refreshing every 30 seconds, on a phone too.
+
+<p align="center">
+  <img src="assets/web-dashboard.png" alt="StockWise web dashboard in a browser: indices, a price chart, watchlist, portfolio and alerts" width="760">
+</p>
+
+```bash
+stockwise serve --open       # http://127.0.0.1:8787/ — read-only, localhost only
+```
+
+See [docs/server.md](docs/server.md#web-dashboard).
 
 ### Script it
 
@@ -235,10 +285,32 @@ NSE holidays included), survives network blips, resumes after a restart, and
 squares off on Ctrl+C. Read [docs/bot-design.md](docs/bot-design.md) for how
 it decides.
 
+### Practise on past markets
+
+```bash
+stockwise sim replay start covid-crash-2020      # Feb 2020, ₹1,00,000 of paper money, future hidden
+stockwise sim challenge start crash-survivor     # optional goal: lose less than half of what NIFTY loses
+stockwise sim replay buy TCS 10 --stop 1900      # fills at the next day's open, with Indian charges
+stockwise sim replay next 5                      # step through trading days
+stockwise sim replay end                         # 0–100 score, badges, and what really happened
+stockwise sim card --svg card.svg                # share the result
+```
+
+<p align="center"><img src="assets/sim-card.svg" alt="A StockWise replay result card: the COVID crash, score 74, grade B" width="560"></p>
+
+Six built-in scenarios (2008, the dot-com bust, the COVID crash, the 2021 bull
+run, the Adani report, the 2022 rate hikes) or your own dates and stocks. The
+score rewards risk-adjusted return, small drawdowns, stop-losses, sensible
+position sizes and diversification — never raw return alone. Paper money
+only; see [docs/simulator.md](docs/simulator.md).
+
 ### Alerts and notifications
 
 ```bash
 stockwise alert add TCS above 4200
+stockwise alert add INFY rsi-below 30         # also: SMA/EMA crosses, breakouts, volume spikes
+stockwise alert add TCS results-in 7          # results due within a week
+stockwise calendar                  # results, ex-dividend dates and splits for your holdings
 export STOCKWISE_TELEGRAM_TOKEN=... STOCKWISE_TELEGRAM_CHAT_ID=...
 stockwise notify test               # Telegram, Slack, Discord, email or desktop
 stockwise alert watch               # checks during market hours, notifies once per trigger
@@ -254,6 +326,8 @@ stockwise trade buy RELIANCE 10 --dry-run      # resolve + preview, send nothing
 stockwise trade buy RELIANCE 10                # preview, then type "yes" to send
 stockwise trade sell RELIANCE 10 --trigger 1250            # stop-loss (SL-M)
 stockwise trade holdings --broker zerodha      # also: upstox, dhan, fyers (experimental)
+stockwise trade sync --broker zerodha --apply  # today's fills → dated lots and FIFO sales
+stockwise trade selftest --broker zerodha      # read-only check; paste the report in an issue
 ```
 
 Orders resolve the exact NSE instrument, show the estimated value, respect an
@@ -271,9 +345,12 @@ Prefer a hosted model? Set `STOCKWISE_AI_PROVIDER` to `openai`, `anthropic` or
 `gemini` with your key — still only for `report` and `--ai`, with a notice
 whenever data is sent. See [docs/ai.md](docs/ai.md).
 
-### Crypto, forex and Hindi
+### Global exchanges, crypto, forex and Hindi
 
 ```bash
+stockwise quote VOD BARC -m uk                       # VOD.L, BARC.L — London, in pence
+stockwise quote 7203 -m jp                           # Toyota, 7203.T (also de, hk, sg, ca, au)
+stockwise markets --global                           # FTSE, DAX, Nikkei, Hang Seng, ... open or closed now
 stockwise quote BTC ETH -m crypto                    # BTC-USD, ETH-USD — trades 24/7
 stockwise quote BTC -m crypto --quote-currency inr   # BTC-INR
 stockwise quote USDINR EURUSD -m fx                  # USDINR=X, EURUSD=X, 4 decimals
@@ -305,12 +382,12 @@ Precedence: **flag > environment variable > config file > built-in default.**
 
 | Config key | Env var | Flag | Purpose |
 |------------|---------|------|---------|
-| `market` | `STOCKWISE_MARKET` | `-m` | Default market: `in` (default), `us`, `crypto` or `fx` |
+| `market` | `STOCKWISE_MARKET` | `-m` | Default market: `in` (default), `us`, `crypto`, `fx`, `commodity`, or a global exchange: `uk`, `de`, `jp`, `hk`, `sg`, `ca`, `au` |
 | `quote_currency` | `STOCKWISE_QUOTE_CURRENCY` | `--quote-currency` | Currency for bare crypto tickers with `-m crypto` (default `usd`; `inr` gives `BTC-INR`) |
 | `lang` | `STOCKWISE_LANG` | `--lang` | Output language: `en` or `hi` (Hindi). Default: your locale (`LANG=hi_IN…` picks Hindi) |
 | `home` | `STOCKWISE_HOME` | | Where portfolio, watchlist, alerts and history are stored |
 | `portfolio` | `STOCKWISE_PORTFOLIO` | `--portfolio` | Named portfolio to use |
-| `data_provider` | `STOCKWISE_DATA_PROVIDER` | | Opt-in data provider: `alphavantage`, `massive` (Polygon) or `twelvedata`, with its API key in the environment — see [docs/data-providers.md](docs/data-providers.md) |
+| `data_provider` | `STOCKWISE_DATA_PROVIDER` | | Opt-in data provider: `alphavantage`, `massive` (Polygon) or `twelvedata` with its API key in the environment, or the exchanges' own websites — `nse`, `bse` or `exchange` (no key) — see [docs/data-providers.md](docs/data-providers.md) |
 | `ai` | `STOCKWISE_AI` | `--ai` / `--no-ai` | Add AI sections by default |
 | `ai_provider` | `STOCKWISE_AI_PROVIDER` | | `ollama` (default, local), or opt-in cloud: `openai`, `anthropic`, `gemini` with `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` in the environment — see [docs/ai.md](docs/ai.md) |
 | `model` | `STOCKWISE_MODEL` | | AI model (Ollama default `qwen3:14b`) |
@@ -334,8 +411,10 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 ## Docs
 
 - [Commands reference](docs/commands.md)
-- [Terminal dashboard](docs/tui.md) and [HTTP API & metrics](docs/server.md)
+- [Markets: global exchanges, commodities, bonds](docs/markets.md)
+- [Terminal dashboard](docs/tui.md) and [web dashboard, HTTP API & metrics](docs/server.md)
 - [Trading bots](docs/bots.md) and [bot design](docs/bot-design.md)
+- [Practice mode: replays, challenges and scores](docs/simulator.md)
 - [Brokers: live trading, keyring, imports](docs/brokers.md)
 - [AI: Ollama and cloud providers](docs/ai.md)
 - [Data providers](docs/data-providers.md)
@@ -343,7 +422,7 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 
 ## Roadmap & contributing
 
-Next up: Hindi for every command, live-tested broker integrations, tax exports and goal planning — see the
+Next up: Hindi and more Indian languages, live-tested brokers, custom rebalancing and income tracking — see the
 [ROADMAP](ROADMAP.md). Ideas and bug reports are
 welcome in [Discussions](https://github.com/iamsaquib8/stockwise/discussions) and
 [Issues](https://github.com/iamsaquib8/stockwise/issues); start with

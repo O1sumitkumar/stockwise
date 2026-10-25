@@ -5,14 +5,16 @@
 //! the same shape. Nothing here prints. Market data and local files come
 //! through [`DataSource`], which tests replace with fixtures.
 
-use crate::alerts::AlertStore;
+use crate::alerts::{Alert, AlertStore, MarketData};
 use crate::api::{ChartData, Quote, SearchResult, YahooClient};
 use crate::daemon_status::DaemonStatus;
 use crate::market::{self, Market};
 use crate::portfolio::Portfolio;
 use crate::watchlist::Watchlist;
 use anyhow::{Result, bail};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::future::Future;
 
 /// Where market data and the local data files come from: Yahoo Finance and
@@ -26,6 +28,20 @@ pub trait DataSource: Send + Sync {
         interval: &str,
     ) -> impl Future<Output = Result<ChartData>> + Send;
     fn search(&self, query: &str) -> impl Future<Output = Result<Vec<SearchResult>>> + Send;
+    /// The next results date for `symbol` on or after `today`, for
+    /// `results-in` alerts. None unless the source has a calendar.
+    fn next_results(
+        &self,
+        _symbol: &str,
+        _today: NaiveDate,
+    ) -> impl Future<Output = Option<NaiveDate>> + Send {
+        async { None }
+    }
+    /// The India 10-year G-sec benchmark yield for `markets`. None unless
+    /// the source reads CCIL / RBI.
+    fn india_10y(&self) -> impl Future<Output = Option<crate::gsec::YieldRow>> + Send {
+        async { None }
+    }
 
     fn portfolio(&self) -> Result<Portfolio> {
         Portfolio::load()
@@ -52,6 +68,21 @@ impl DataSource for YahooClient {
     async fn search(&self, query: &str) -> Result<Vec<SearchResult>> {
         YahooClient::search(self, query).await
     }
+    async fn next_results(&self, symbol: &str, today: NaiveDate) -> Option<NaiveDate> {
+        crate::calendar::next_results(self, symbol, today).await
+    }
+    async fn india_10y(&self) -> Option<crate::gsec::YieldRow> {
+        live_india_10y().await
+    }
+}
+
+/// The 10-year benchmark from CCIL (RBI fallback), cached for hours; a
+/// short timeout so a slow site never holds up `markets`.
+async fn live_india_10y() -> Option<crate::gsec::YieldRow> {
+    let set = crate::gsec::yields(std::time::Duration::from_secs(6))
+        .await
+        .ok()?;
+    crate::gsec::ten_year(&set.rows).cloned()
 }
 
 /// A [`YahooClient`] opened on first use. Long-running modes (`tui`,
@@ -85,6 +116,13 @@ impl DataSource for LiveSource {
     }
     async fn search(&self, query: &str) -> Result<Vec<SearchResult>> {
         self.client().await?.search(query).await
+    }
+    async fn next_results(&self, symbol: &str, today: NaiveDate) -> Option<NaiveDate> {
+        let client = self.client().await.ok()?;
+        crate::calendar::next_results(client, symbol, today).await
+    }
+    async fn india_10y(&self) -> Option<crate::gsec::YieldRow> {
+        live_india_10y().await
     }
 }
 
@@ -185,6 +223,71 @@ pub fn section_spec(kind: Market) -> SectionSpec {
             title: t(Msg::SectionFx),
             items: owned(market::FX_MAJORS),
         },
+        Market::Commodity => SectionSpec {
+            region: "Commodities",
+            title: t(Msg::SectionCommodities),
+            items: owned(market::COMMODITY_UNIVERSE),
+        },
+        Market::Global(x) => {
+            let info = x.info();
+            SectionSpec {
+                region: info.country,
+                title: t(info.title),
+                items: owned(info.indices),
+            }
+        }
+    }
+}
+
+/// Symbol of the India 10-year G-sec yield row in `markets` (not a Yahoo
+/// symbol; its `price` is a yield in percent and it has no currency).
+pub const INDIA_10Y: &str = "IN10Y";
+
+/// The `markets` row for the India 10-year yield.
+pub fn india_10y_row(region: &str, y: &crate::gsec::YieldRow) -> IndexRow {
+    IndexRow {
+        region: region.to_string(),
+        symbol: INDIA_10Y.to_string(),
+        name: crate::i18n::t(crate::i18n::Msg::India10yName).to_string(),
+        price: y.ytm,
+        change: None,
+        change_percent: None,
+        currency: None,
+    }
+}
+
+/// `markets --global`: each exchange's main index, India and the US first.
+pub fn global_section_spec() -> SectionSpec {
+    use crate::i18n::{Msg, t};
+    let mut items = vec![
+        ("^NSEI".to_string(), "India — NIFTY 50".to_string()),
+        ("^GSPC".to_string(), "US — S&P 500".to_string()),
+    ];
+    items.extend(market::Exchange::ALL.iter().map(|x| {
+        let info = x.info();
+        let (symbol, name) = info.benchmark();
+        (
+            symbol.to_string(),
+            format!("{} — {}", info.code.to_uppercase(), name),
+        )
+    }));
+    SectionSpec {
+        region: "Global",
+        title: t(Msg::SectionGlobal),
+        items,
+    }
+}
+
+/// The market a `markets --global` row's index belongs to, for its
+/// open/closed column.
+pub fn benchmark_market(symbol: &str) -> Option<Market> {
+    match symbol {
+        "^NSEI" => Some(Market::In),
+        "^GSPC" => Some(Market::Us),
+        _ => market::Exchange::ALL
+            .into_iter()
+            .find(|x| x.info().benchmark().0.eq_ignore_ascii_case(symbol))
+            .map(Market::Global),
     }
 }
 
@@ -194,8 +297,9 @@ pub fn section_order(market: Market, crypto: bool, fx: bool) -> Vec<Market> {
     let mut order = match market {
         Market::Us => vec![Market::Us, Market::In],
         Market::In => vec![Market::In, Market::Us],
-        Market::Crypto => vec![Market::Crypto, Market::In, Market::Us],
-        Market::Fx => vec![Market::Fx, Market::In, Market::Us],
+        Market::Crypto | Market::Fx | Market::Commodity | Market::Global(_) => {
+            vec![market, Market::In, Market::Us]
+        }
     };
     for (wanted, kind) in [(crypto, Market::Crypto), (fx, Market::Fx)] {
         if wanted && !order.contains(&kind) {
@@ -245,18 +349,26 @@ pub async fn market_sections(
     market: Market,
     crypto: bool,
     fx: bool,
+    global: bool,
 ) -> Result<Vec<MarketSection>> {
     let mut out = Vec::new();
-    for spec in section_order(market, crypto, fx)
+    let specs = section_order(market, crypto, fx)
         .into_iter()
         .map(section_spec)
-    {
+        .chain(global.then(global_section_spec));
+    for spec in specs {
         let symbols: Vec<&str> = spec.items.iter().map(|(sym, _)| sym.as_str()).collect();
         let quotes = src.quotes(&symbols).await?;
+        let mut rows = index_rows(spec.region, &spec.items, &quotes);
+        if spec.region == "Indian Markets"
+            && let Some(y) = src.india_10y().await
+        {
+            rows.push(india_10y_row(spec.region, &y));
+        }
         out.push(MarketSection {
             region: spec.region,
             title: spec.title,
-            rows: index_rows(spec.region, &spec.items, &quotes),
+            rows,
         });
     }
     Ok(out)
@@ -268,8 +380,9 @@ pub async fn markets(
     market: Market,
     crypto: bool,
     fx: bool,
+    global: bool,
 ) -> Result<Vec<IndexRow>> {
-    Ok(market_sections(src, market, crypto, fx)
+    Ok(market_sections(src, market, crypto, fx, global)
         .await?
         .into_iter()
         .flat_map(|s| s.rows)
@@ -463,12 +576,75 @@ pub async fn watchlist(src: &impl DataSource) -> Result<Vec<WatchRow>> {
 }
 
 /// `alert check --json`: every alert with its live price and a `status` of
-/// `triggered`, `waiting` or `no_price`.
+/// `triggered`, `waiting`, `no_price` or `no_data`.
 pub async fn alerts(src: &impl DataSource) -> Result<Vec<AlertCheckRow>> {
     let store = local(src.alerts())?;
     let symbols = unique_symbols(store.alerts.iter().map(|a| a.symbol.as_str()));
     let quotes = quotes_for(src, &symbols).await?;
-    Ok(crate::commands::alert_check_rows(&store.alerts, &quotes))
+    Ok(alert_rows(src, &store.alerts, &quotes, Utc::now()).await)
+}
+
+/// Every alert evaluated: price alerts against `quotes`, technical ones
+/// against daily bars, `results-in` against the results calendar.
+pub async fn alert_rows(
+    src: &impl DataSource,
+    alerts: &[Alert],
+    quotes: &[Quote],
+    now: DateTime<Utc>,
+) -> Vec<AlertCheckRow> {
+    let data = alert_data(src, alerts, quotes, now).await;
+    crate::commands::alert_check_rows(alerts, &data)
+}
+
+/// What `alerts` need, by symbol: the quote; daily bars (one chart request
+/// per symbol, long enough for every alert on it and brought up to the live
+/// quote) for technical conditions; the next results date for `results-in`.
+/// A chart that fails leaves the symbol without bars, so its technical
+/// alerts read `no_data` rather than a guess.
+pub async fn alert_data(
+    src: &impl DataSource,
+    alerts: &[Alert],
+    quotes: &[Quote],
+    now: DateTime<Utc>,
+) -> HashMap<String, MarketData> {
+    let mut data = HashMap::new();
+    for alert in alerts {
+        if data.contains_key(&alert.symbol) {
+            continue;
+        }
+        let symbol = alert.symbol.as_str();
+        let on_symbol = || alerts.iter().filter(|a| a.symbol == symbol);
+        let quote = find_quote(quotes, symbol);
+        let today = crate::calendar::exchange_today(symbol, now);
+        let mut d = MarketData {
+            price: quote.and_then(|q| q.regular_market_price),
+            currency: quote.and_then(|q| q.currency.clone()),
+            change_percent: quote.and_then(|q| q.regular_market_change_percent),
+            today: Some(today),
+            ..Default::default()
+        };
+        let bars_needed = on_symbol().map(Alert::bars_needed).max().unwrap_or(0);
+        if bars_needed > 0
+            && let Ok(chart) = src
+                .chart(symbol, crate::alerts::chart_range(bars_needed), "1d")
+                .await
+        {
+            let mut bars = crate::backtest::Bars::from_chart(&chart);
+            if let Some(q) = quote {
+                let traded = q
+                    .regular_market_time
+                    .and_then(|t| DateTime::from_timestamp(t, 0))
+                    .map(|t| crate::calendar::exchange_today(symbol, t));
+                crate::alerts::patch_live_bar(&mut bars, q, today, traded);
+            }
+            d.bars = Some(bars);
+        }
+        if on_symbol().any(Alert::needs_results) {
+            d.next_results = src.next_results(symbol, today).await;
+        }
+        data.insert(alert.symbol.clone(), d);
+    }
+    data
 }
 
 // ── dashboard snapshot ──
@@ -522,7 +698,7 @@ pub async fn snapshot(src: &impl DataSource, market: Market) -> Result<Snapshot>
         indices,
         watchlist: crate::commands::watch_rows(&wl.symbols, &quotes),
         portfolio: portfolio_view(src, &p, &quotes, market).await,
-        alerts: crate::commands::alert_check_rows(&store.alerts, &quotes),
+        alerts: alert_rows(src, &store.alerts, &quotes, Utc::now()).await,
     })
 }
 
@@ -609,6 +785,8 @@ pub mod fixtures {
         pub quote_calls: AtomicUsize,
         /// When set, every network call fails with this message.
         pub fail: Mutex<Option<String>>,
+        /// The India 10Y benchmark `markets` adds, if any.
+        pub ten_year: Option<crate::gsec::YieldRow>,
     }
 
     impl Default for Fixture {
@@ -641,6 +819,7 @@ pub mod fixtures {
                 daemon: Vec::new(),
                 quote_calls: AtomicUsize::new(0),
                 fail: Mutex::new(None),
+                ten_year: None,
             }
         }
     }
@@ -694,6 +873,9 @@ pub mod fixtures {
                     exchange: Some("NSI".into()),
                 })
                 .collect())
+        }
+        async fn india_10y(&self) -> Option<crate::gsec::YieldRow> {
+            self.ten_year.clone()
         }
         fn portfolio(&self) -> Result<Portfolio> {
             Ok(Portfolio {
@@ -753,6 +935,47 @@ mod tests {
     }
 
     #[test]
+    fn technical_alerts_read_daily_bars() {
+        use crate::alerts::AlertCondition as C;
+        let mut f = Fixture::default();
+        f.alerts = AlertStore::default();
+        // The fixture's daily closes: 100, 102, 101, 105, 107.5 (highs +1).
+        f.alerts.add("TCS.NS", C::BreakoutHigh, 3.0);
+        f.alerts.add("TCS.NS", C::CrossAboveSma, 3.0);
+        f.alerts.add("TCS.NS", C::RsiBelow, 30.0);
+        f.alerts.add("TCS.NS", C::ChangeAbove, 1.0);
+        f.alerts.add("TCS.NS", C::ResultsIn, 7.0);
+        f.alerts.add("DELISTED.NS", C::CrossAboveEma, 2.0);
+        // Saturday: NSE closed, so the bars are used as they are.
+        let saturday = DateTime::parse_from_rfc3339("2026-10-24T05:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let quotes = block(f.quotes(&["TCS.NS"])).unwrap();
+        let rows = block(alert_rows(&f, &f.alerts.alerts, &quotes, saturday));
+        let status: Vec<&str> = rows.iter().map(|r| r.status).collect();
+        assert_eq!(
+            status,
+            [
+                // 107.5 closes above the previous 3 highs (max 106).
+                "triggered",
+                // Above its 3-day SMA, but it was already above yesterday.
+                "waiting",
+                // Five bars are too few for RSI(14).
+                "no_data",
+                // Quote: +1.5% today.
+                "triggered",
+                // No calendar in the fixture.
+                "no_data",
+                // No chart for an unknown symbol.
+                "no_data",
+            ]
+        );
+        assert_eq!(rows[0].value, Some(107.5));
+        assert_eq!(rows[0].reference, Some(106.0));
+        assert_eq!(rows[0].price, Some(4100.0));
+    }
+
+    #[test]
     fn quotes_reports_missing_symbols() {
         let f = Fixture::default();
         let set = block(quotes(&f, &["TCS.NS".into(), "NOPE.NS".into()])).unwrap();
@@ -761,8 +984,69 @@ mod tests {
     }
 
     #[test]
+    fn markets_add_the_india_10y_and_global_benchmarks() {
+        let mut quotes = Fixture::default().quotes;
+        quotes.push(quote("^FTSE", Some(10_690.0), -0.3, "GBP"));
+        quotes.push(quote("^N225", Some(62_693.0), -0.3, "JPY"));
+        let f = Fixture {
+            quotes,
+            ten_year: Some(crate::gsec::YieldRow {
+                date: NaiveDate::from_ymd_opt(2026, 10, 23),
+                tenor: "9Y-10Y".into(),
+                kind: crate::gsec::Kind::Gsec,
+                security: "6.94% GS 2036".into(),
+                ytm: Some(7.4713),
+                source: "CCIL",
+            }),
+            ..Default::default()
+        };
+        let rows = block(markets(&f, Market::In, false, false, true)).unwrap();
+        let ten = rows.iter().find(|r| r.symbol == INDIA_10Y).unwrap();
+        assert_eq!(ten.region, "Indian Markets");
+        assert_eq!(ten.price, Some(7.4713));
+        assert_eq!(ten.currency, None);
+        assert_eq!(ten.change, None);
+        let global: Vec<&IndexRow> = rows.iter().filter(|r| r.region == "Global").collect();
+        let names: Vec<&str> = global.iter().map(|r| r.name.as_str()).collect();
+        // Rows without a quote are dropped, as in every section.
+        assert_eq!(
+            names,
+            [
+                "India — NIFTY 50",
+                "US — S&P 500",
+                "UK — FTSE 100",
+                "JP — Nikkei 225"
+            ]
+        );
+        assert_eq!(
+            benchmark_market("^FTSE"),
+            Some(Market::Global(market::Exchange::Uk))
+        );
+        assert_eq!(benchmark_market("^NSEI"), Some(Market::In));
+        assert_eq!(benchmark_market("TCS.NS"), None);
+        // A global market leads its own section, then India and the US.
+        let uk = block(markets(
+            &f,
+            Market::Global(market::Exchange::Uk),
+            false,
+            false,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(uk[0].region, "United Kingdom");
+        assert_eq!(uk[0].symbol, "^FTSE");
+    }
+
+    #[test]
     fn markets_json_shape_is_pinned() {
-        let rows = block(markets(&Fixture::default(), Market::In, false, false)).unwrap();
+        let rows = block(markets(
+            &Fixture::default(),
+            Market::In,
+            false,
+            false,
+            false,
+        ))
+        .unwrap();
         let first = serde_json::to_string(&rows[0]).unwrap();
         assert_eq!(
             first,

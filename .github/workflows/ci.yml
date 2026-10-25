@@ -23,19 +23,26 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --all-targets --verbose
       - name: Test
         run: cargo test --verbose
+      # Colours switch on when output is a terminal (Nix builds run tests
+      # under a pty); make sure no test depends on plain output.
+      - name: Test with colours forced
+        if: runner.os == 'Linux'
+        env:
+          CLICOLOR_FORCE: "1"
+        run: cargo test
 
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -45,7 +52,7 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -55,17 +62,37 @@ jobs:
         run: cargo clippy --all-targets --no-default-features -- -D warnings
 
   msrv:
-    name: msrv (1.88)
+    name: msrv (1.97)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-targets
+
+  wasm-plugins:
+    name: wasm plugins (feature + example)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo +stable clippy --all-targets --features wasm-plugins -- -D warnings
+      - run: cargo +stable test --features wasm-plugins
+      - name: msrv (1.97) with the feature
+        run: cargo +1.97 check --all-targets --features wasm-plugins
+      - name: Build the example plugin
+        run: cargo +stable build --release --target wasm32-unknown-unknown --manifest-path examples/wasm-strategy-rsi/Cargo.toml
+      - name: Example plugin matches the built-in rsi
+        run: cargo +stable test --features wasm-plugins example_rsi_plugin -- --ignored
 
   installer:
     name: install.sh (shellcheck)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: shellcheck install.sh packaging/render.sh

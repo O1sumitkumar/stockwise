@@ -93,6 +93,9 @@ pub struct Lot {
     /// only splits after it can still apply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub units_as_of: Option<String>,
+    /// The broker order this lot was bought with (`trade sync`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<String>,
 }
 
 impl Lot {
@@ -105,6 +108,7 @@ impl Lot {
             date_estimated: false,
             adjustments: Vec::new(),
             units_as_of: None,
+            order_id: None,
         }
     }
 
@@ -186,6 +190,9 @@ pub struct Sale {
     /// `manual` for `portfolio sell`, `import:<broker>` for a tradebook import.
     #[serde(default)]
     pub source: String,
+    /// The broker sell order behind this sale (`trade sync`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<String>,
 }
 
 impl Sale {
@@ -199,6 +206,7 @@ impl Sale {
             sell_price: price,
             buy_date_estimated: lot.date_estimated,
             source: source.to_string(),
+            order_id: None,
         }
     }
 
@@ -309,7 +317,76 @@ pub struct ImportOptions<'a> {
     pub splits: &'a [(String, Vec<Split>)],
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+/// One execution from a broker's trade book, ready for
+/// [`Portfolio::apply_broker_fills`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct BrokerFill {
+    /// `--broker` id, e.g. `zerodha`.
+    pub broker: String,
+    pub order_id: String,
+    /// The broker's trade id, or a stand-in built from the order id,
+    /// quantity, price and time when it has none.
+    pub fill_id: String,
+    /// Portfolio symbol, e.g. `INFY.NS`.
+    pub symbol: String,
+    pub sell: bool,
+    pub qty: f64,
+    pub price: f64,
+    /// `YYYY-MM-DD`.
+    pub date: String,
+    /// `HH:MM:SS`, when the broker gives one; orders the fills of a day.
+    pub time: Option<String>,
+}
+
+/// A broker fill `trade sync` already applied. Kept even after its lot is
+/// sold or reduced, so running a sync twice never counts a fill twice.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncedFill {
+    pub broker: String,
+    pub order_id: String,
+    pub fill_id: String,
+    pub date: String,
+}
+
+/// What one broker order's new fills did to the portfolio.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum FillEffect {
+    /// A buy: one new lot.
+    Lot,
+    /// A sell: shares taken FIFO, one sale per lot touched.
+    Sold { sales: Vec<Sale> },
+    /// A sell larger than the shares held on that date: left out (and not
+    /// marked as synced) until the missing lots are added.
+    Unmatched { held: f64 },
+}
+
+/// One broker order (its fills not yet synced, merged) and its effect.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct OrderFill {
+    pub symbol: String,
+    pub order_id: String,
+    pub side: &'static str,
+    pub date: String,
+    pub time: Option<String>,
+    /// Total quantity of the new fills.
+    pub qty: f64,
+    /// Volume-weighted average price of the new fills.
+    pub price: f64,
+    /// How many fills were merged (more than one = a partial fill).
+    pub fills: usize,
+    #[serde(flatten)]
+    pub effect: FillEffect,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct FillSummary {
+    pub orders: Vec<OrderFill>,
+    /// Fills skipped because an earlier sync applied them.
+    pub already_synced: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Portfolio {
     #[serde(default)]
     pub version: u32,
@@ -319,6 +396,9 @@ pub struct Portfolio {
     pub realized: Vec<Sale>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dividends: Vec<DividendReceived>,
+    /// Broker fills applied by `trade sync`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub broker_fills: Vec<SyncedFill>,
 }
 
 impl Default for Portfolio {
@@ -328,6 +408,7 @@ impl Default for Portfolio {
             holdings: Vec::new(),
             realized: Vec::new(),
             dividends: Vec::new(),
+            broker_fills: Vec::new(),
         }
     }
 }
@@ -707,6 +788,115 @@ impl Portfolio {
         out
     }
 
+    /// Apply fills from a broker's trade book. Fills already synced (by
+    /// broker, order id and fill id) are skipped. The new fills of one order on one
+    /// day are merged at their average price; orders are applied in time
+    /// order: a buy becomes a lot (dated, `broker:<id>`, with its order id),
+    /// a sell comes out of the oldest lots held on that date and is
+    /// recorded as realized. A sell larger than the shares held then is
+    /// left out and not marked as synced, so a later run can apply it once
+    /// the missing lots are added. Running this twice changes nothing.
+    pub fn apply_broker_fills(&mut self, fills: &[BrokerFill]) -> FillSummary {
+        let mut summary = FillSummary::default();
+        // A fill is known by broker, order and fill id: exchange trade ids
+        // alone can repeat across days.
+        let mut seen: Vec<(&str, &str, &str)> = Vec::new();
+        // The fills of each order and day, in first-seen order.
+        let mut groups: Vec<Vec<&BrokerFill>> = Vec::new();
+        for f in fills {
+            let key = (f.broker.as_str(), f.order_id.as_str(), f.fill_id.as_str());
+            let synced = self.broker_fills.iter().any(|s| {
+                s.broker == f.broker && s.order_id == f.order_id && s.fill_id == f.fill_id
+            });
+            if synced || seen.contains(&key) {
+                summary.already_synced += usize::from(synced);
+                continue;
+            }
+            seen.push(key);
+            let same = |g: &Vec<&BrokerFill>| {
+                let h = g[0];
+                h.broker == f.broker
+                    && h.order_id == f.order_id
+                    && h.date == f.date
+                    && h.sell == f.sell
+                    && h.symbol.eq_ignore_ascii_case(&f.symbol)
+            };
+            match groups.iter_mut().find(|g| same(g)) {
+                Some(g) => g.push(f),
+                None => groups.push(vec![f]),
+            }
+        }
+        let first_time = |g: &[&BrokerFill]| {
+            g.iter()
+                .filter_map(|f| f.time.clone())
+                .min()
+                .unwrap_or_default()
+        };
+        groups.sort_by(|a, b| {
+            (a[0].date.as_str(), first_time(a), a[0].sell).cmp(&(
+                b[0].date.as_str(),
+                first_time(b),
+                b[0].sell,
+            ))
+        });
+
+        for g in groups {
+            let head = g[0];
+            let qty: f64 = g.iter().map(|f| f.qty).sum();
+            let price = g.iter().map(|f| f.qty * f.price).sum::<f64>() / qty;
+            // Round the average to the paisa / cent it can't be finer than.
+            let price = (price * 10_000.0).round() / 10_000.0;
+            let source = format!("broker:{}", head.broker);
+            let effect = if head.sell {
+                let held: f64 = self.holding(&head.symbol).map_or(0.0, |h| {
+                    h.lots
+                        .iter()
+                        .filter(|l| l.date.as_str() <= head.date.as_str())
+                        .map(|l| l.qty)
+                        .sum()
+                });
+                let sold = (qty <= held + EPS)
+                    .then(|| self.sell_fifo(&head.symbol, qty, price, &head.date, &source))
+                    .and_then(Result::ok);
+                match sold {
+                    Some(mut sales) => {
+                        let start = self.realized.len() - sales.len();
+                        for s in self.realized[start..].iter_mut().chain(sales.iter_mut()) {
+                            s.order_id = Some(head.order_id.clone());
+                        }
+                        FillEffect::Sold { sales }
+                    }
+                    None => FillEffect::Unmatched { held },
+                }
+            } else {
+                let mut lot = Lot::new(qty, price, head.date.clone(), &source);
+                lot.order_id = Some(head.order_id.clone());
+                self.add_lot(&head.symbol, lot);
+                FillEffect::Lot
+            };
+            if !matches!(effect, FillEffect::Unmatched { .. }) {
+                self.broker_fills.extend(g.iter().map(|f| SyncedFill {
+                    broker: f.broker.clone(),
+                    order_id: f.order_id.clone(),
+                    fill_id: f.fill_id.clone(),
+                    date: f.date.clone(),
+                }));
+            }
+            summary.orders.push(OrderFill {
+                symbol: head.symbol.to_uppercase(),
+                order_id: head.order_id.clone(),
+                side: if head.sell { "SELL" } else { "BUY" },
+                date: head.date.clone(),
+                time: g.iter().filter_map(|f| f.time.clone()).min(),
+                qty,
+                price,
+                fills: g.len(),
+                effect,
+            });
+        }
+        summary
+    }
+
     /// Apply a split or bonus to the lots bought before it: quantity × ratio,
     /// price ÷ ratio, so cost and purchase date are unchanged. Lots already
     /// adjusted for it are skipped. Returns how many lots changed.
@@ -862,6 +1052,10 @@ pub fn symbol_currency(symbol: &str) -> Option<&'static str> {
         Some("INR")
     } else if s.ends_with(".L") {
         Some("GBp")
+    } else if let Some(x) = crate::market::exchange_of(&s) {
+        // Other global exchanges: their market-table currency.
+        let info = x.info();
+        Some(info.quote_unit.unwrap_or(info.currency))
     } else if s.ends_with("-USD") {
         Some("USD")
     } else if s.contains('.') || s.contains('=') || s.starts_with('^') {
@@ -1614,7 +1808,11 @@ mod tests {
         assert_eq!(symbol_currency("AAPL"), Some("USD"));
         assert_eq!(symbol_currency("BTC-USD"), Some("USD"));
         assert_eq!(symbol_currency("VOD.L"), Some("GBp"));
-        assert_eq!(symbol_currency("SAP.DE"), None);
+        assert_eq!(symbol_currency("SAP.DE"), Some("EUR"));
+        assert_eq!(symbol_currency("7203.T"), Some("JPY"));
+        assert_eq!(symbol_currency("0005.HK"), Some("HKD"));
+        assert_eq!(symbol_currency("BHP.AX"), Some("AUD"));
+        assert_eq!(symbol_currency("MC.PA"), None); // Paris is not in the market table
         assert_eq!(symbol_currency("MF:118834"), Some("INR"));
     }
 
@@ -1656,5 +1854,170 @@ mod tests {
         p.add("AAPL", 1.0, 200.0);
         p.save_to(&path).unwrap();
         assert!(dir.join("portfolios/us.json").exists());
+    }
+
+    fn fill(order: &str, id: &str, sell: bool, qty: f64, price: f64, at: &str) -> BrokerFill {
+        let (date, time) = at.split_once(' ').unwrap_or((at, ""));
+        BrokerFill {
+            broker: "zerodha".into(),
+            order_id: order.into(),
+            fill_id: id.into(),
+            symbol: "INFY.NS".into(),
+            sell,
+            qty,
+            price,
+            date: date.into(),
+            time: (!time.is_empty()).then(|| time.to_string()),
+        }
+    }
+
+    #[test]
+    fn broker_fills_become_dated_lots_once() {
+        let mut p = Portfolio::default();
+        let fills = vec![fill("O1", "T1", false, 10.0, 1500.0, "2026-10-20 09:30:00")];
+        let s = p.apply_broker_fills(&fills);
+        assert_eq!(s.orders.len(), 1);
+        assert_eq!(s.orders[0].effect, FillEffect::Lot);
+        let h = p.holding("INFY.NS").unwrap();
+        assert_eq!(h.shares, 10.0);
+        let l = &h.lots[0];
+        assert_eq!(
+            (l.date.as_str(), l.price, l.source.as_str()),
+            ("2026-10-20", 1500.0, "broker:zerodha")
+        );
+        assert_eq!(l.order_id.as_deref(), Some("O1"));
+        assert!(!l.date_estimated);
+
+        // A second run with the same trade book changes nothing.
+        let again = p.apply_broker_fills(&fills);
+        assert!(again.orders.is_empty());
+        assert_eq!(again.already_synced, 1);
+        assert_eq!(p.holding("INFY.NS").unwrap().shares, 10.0);
+        // The same trade id on another order (another day) is a new fill.
+        let other = fill("O2", "T1", false, 2.0, 1510.0, "2026-10-21 09:30:00");
+        assert_eq!(p.apply_broker_fills(&[other]).orders.len(), 1);
+        assert_eq!(p.holding("INFY.NS").unwrap().shares, 12.0);
+        let again = p.apply_broker_fills(&fills);
+        assert!(again.orders.is_empty());
+        assert_eq!(p.holding("INFY.NS").unwrap().shares, 12.0);
+        assert_eq!(p.broker_fills.len(), 2);
+    }
+
+    #[test]
+    fn partial_fills_merge_per_order_and_later_parts_add_on() {
+        let mut p = Portfolio::default();
+        let mut fills = vec![
+            fill("O1", "T1", false, 4.0, 100.0, "2026-10-20 09:30:00"),
+            fill("O1", "T2", false, 6.0, 110.0, "2026-10-20 09:31:00"),
+        ];
+        let s = p.apply_broker_fills(&fills);
+        assert_eq!(s.orders.len(), 1);
+        assert_eq!((s.orders[0].qty, s.orders[0].fills), (10.0, 2));
+        assert!((s.orders[0].price - 106.0).abs() < 1e-9);
+        assert_eq!(p.holding("INFY.NS").unwrap().lots.len(), 1);
+
+        // The rest of the order fills later the same day.
+        fills.push(fill("O1", "T3", false, 3.0, 120.0, "2026-10-20 10:05:00"));
+        let s = p.apply_broker_fills(&fills);
+        assert_eq!(s.already_synced, 2);
+        assert_eq!(s.orders.len(), 1);
+        assert_eq!((s.orders[0].qty, s.orders[0].price), (3.0, 120.0));
+        let h = p.holding("INFY.NS").unwrap();
+        assert_eq!(h.shares, 13.0);
+        assert!(h.lots.iter().all(|l| l.order_id.as_deref() == Some("O1")));
+    }
+
+    #[test]
+    fn broker_sells_consume_lots_fifo_and_keep_the_order_id() {
+        let mut p = Portfolio::default();
+        p.add_lot("INFY.NS", lot(10.0, 1000.0, "2024-01-10"));
+        p.add_lot("INFY.NS", lot(5.0, 1200.0, "2025-06-01"));
+        let fills = vec![fill("S9", "T9", true, 12.0, 1500.0, "2026-10-20 11:00:00")];
+        let s = p.apply_broker_fills(&fills);
+        let FillEffect::Sold { sales } = &s.orders[0].effect else {
+            panic!("expected a sale: {:?}", s.orders[0].effect);
+        };
+        assert_eq!(sales.len(), 2);
+        assert_eq!((sales[0].qty, sales[0].buy_price), (10.0, 1000.0));
+        assert_eq!((sales[1].qty, sales[1].buy_price), (2.0, 1200.0));
+        assert!(
+            p.realized
+                .iter()
+                .all(|s| s.order_id.as_deref() == Some("S9") && s.source == "broker:zerodha")
+        );
+        let h = p.holding("INFY.NS").unwrap();
+        assert_eq!((h.shares, h.lots[0].price), (3.0, 1200.0));
+
+        assert!(p.apply_broker_fills(&fills).orders.is_empty());
+        assert_eq!(p.realized.len(), 2);
+    }
+
+    #[test]
+    fn same_day_fills_apply_in_time_order() {
+        let mut p = Portfolio::default();
+        // Listed sell first, but the buy came earlier in the day.
+        let fills = vec![
+            fill("S1", "T2", true, 5.0, 1510.0, "2026-10-20 10:00:00"),
+            fill("B1", "T1", false, 5.0, 1500.0, "2026-10-20 09:30:00"),
+        ];
+        let s = p.apply_broker_fills(&fills);
+        assert_eq!(s.orders[0].side, "BUY");
+        assert!(matches!(s.orders[1].effect, FillEffect::Sold { .. }));
+        assert!(p.holding("INFY.NS").is_none());
+        assert_eq!(p.realized.len(), 1);
+        assert!((p.realized[0].gain() - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_sell_without_enough_shares_is_left_unsynced() {
+        let mut p = Portfolio::default();
+        p.add_lot("INFY.NS", lot(3.0, 1000.0, "2024-01-10"));
+        let fills = vec![fill("S1", "T1", true, 5.0, 1500.0, "2026-10-20")];
+        let s = p.apply_broker_fills(&fills);
+        assert_eq!(s.orders[0].effect, FillEffect::Unmatched { held: 3.0 });
+        assert_eq!(p.holding("INFY.NS").unwrap().shares, 3.0);
+        assert!(p.realized.is_empty() && p.broker_fills.is_empty());
+
+        // Once the missing lot is recorded, the same sell applies.
+        p.add_lot("INFY.NS", lot(2.0, 1100.0, "2025-01-10"));
+        let s = p.apply_broker_fills(&fills);
+        assert!(matches!(s.orders[0].effect, FillEffect::Sold { .. }));
+        assert!(p.holding("INFY.NS").is_none());
+    }
+
+    #[test]
+    fn order_fill_json_names_its_effect() {
+        let mut p = Portfolio::default();
+        p.add_lot("INFY.NS", lot(1.0, 1000.0, "2024-01-10"));
+        let s = p.apply_broker_fills(&[
+            fill("B1", "T1", false, 1.0, 10.0, "2026-10-20 09:00:00"),
+            fill("S1", "T2", true, 1.0, 1500.0, "2026-10-20 10:00:00"),
+            fill("S2", "T3", true, 9.0, 1500.0, "2026-10-20 11:00:00"),
+        ]);
+        let v = serde_json::to_value(&s.orders).unwrap();
+        assert_eq!(v[0]["result"], "lot");
+        assert_eq!(v[1]["result"], "sold");
+        assert_eq!(v[1]["sales"][0]["order_id"], "S1");
+        assert_eq!(v[2]["result"], "unmatched");
+        assert_eq!(v[2]["held"], 1.0);
+        assert_eq!(v[0]["side"], "BUY");
+    }
+
+    #[test]
+    fn synced_fills_round_trip_and_old_files_still_load() {
+        let mut p = Portfolio::default();
+        p.apply_broker_fills(&[fill("O1", "T1", false, 1.0, 10.0, "2026-10-20")]);
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Portfolio = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.broker_fills, p.broker_fills);
+        assert_eq!(back.holdings[0].lots[0].order_id.as_deref(), Some("O1"));
+        let old: Portfolio = serde_json::from_str(
+            r#"{"version":2,"holdings":[{"symbol":"TCS.NS","shares":1,"avg_cost":5,"lots":[{"qty":1,"price":5,"date":"2024-01-01","source":"manual"}]}]}"#,
+        )
+        .unwrap();
+        assert!(old.broker_fills.is_empty());
+        assert_eq!(old.holdings[0].lots[0].order_id, None);
+        // Manual lots don't grow an order_id key on save.
+        assert!(!serde_json::to_string(&old).unwrap().contains("order_id"));
     }
 }

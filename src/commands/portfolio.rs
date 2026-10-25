@@ -12,8 +12,9 @@ use crate::tax;
 /// The market's own currency, used for totals when holdings are mixed.
 pub(crate) fn market_currency(market: Market) -> &'static str {
     match market {
-        Market::In => "INR",
+        Market::In | Market::Commodity => "INR",
         Market::Us | Market::Crypto | Market::Fx => "USD",
+        Market::Global(x) => x.info().currency,
     }
 }
 
@@ -138,7 +139,7 @@ impl Valuation {
 
 /// Yahoo FX symbol giving the rate from `currency` to `base`, and whether to
 /// invert it. USD↔INR always comes from USDINR=X.
-fn fx_pair(currency: &str, base: &str) -> (String, bool) {
+pub(super) fn fx_pair(currency: &str, base: &str) -> (String, bool) {
     if currency == "INR" && base == "USD" {
         ("USDINR=X".into(), true)
     } else {

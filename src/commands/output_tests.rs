@@ -156,16 +156,29 @@ fn alert_check_never_triggers_without_a_price() {
     store.add("TCS.NS", AlertCondition::Above, 3000.0);
     store.add("INFY.NS", AlertCondition::Below, 1000.0);
     store.add("GONE.NS", AlertCondition::Below, 1e9);
-    let rows = alert_check_rows(
-        &store.alerts,
-        &[
-            quote("TCS.NS", Some(3100.0), None),
-            quote("INFY.NS", Some(1500.0), None),
-        ],
-    );
+    store.add("TCS.NS", AlertCondition::RsiBelow, 30.0);
+    let data: std::collections::HashMap<String, crate::alerts::MarketData> = [
+        quote("TCS.NS", Some(3100.0), None),
+        quote("INFY.NS", Some(1500.0), None),
+    ]
+    .iter()
+    .map(|q| {
+        let d = crate::alerts::MarketData {
+            price: q.regular_market_price,
+            currency: q.currency.clone(),
+            ..Default::default()
+        };
+        (q.symbol.clone().unwrap(), d)
+    })
+    .collect();
+    let rows = alert_check_rows(&store.alerts, &data);
     let status: Vec<&str> = rows.iter().map(|r| r.status).collect();
-    assert_eq!(status, ["triggered", "waiting", "no_price"]);
+    // A technical alert without bars has no data rather than a reading.
+    assert_eq!(status, ["triggered", "waiting", "no_price", "no_data"]);
     assert_eq!(rows[2].index, 2);
+    assert_eq!(rows[0].value, Some(3100.0));
+    assert_eq!(rows[3].period, Some(14));
+    assert_eq!(rows[3].description, "RSI(14) below 30");
     assert_columns(&rows[0]);
 }
 
@@ -366,7 +379,7 @@ fn backtest_json_and_trade_rows() {
         .collect();
     let bars = Bars::from_closes(&closes);
     let def = rules::load("rsi").unwrap();
-    let signals = def.compile().unwrap().signals(&bars);
+    let signals = def.compile().unwrap().signals(&bars).unwrap();
     let costs = CostModel::in_delivery();
     let cfg = SimConfig::single(100_000.0, Fill::NextOpen, costs.clone());
     let asset = engine::Asset {
@@ -510,6 +523,8 @@ fn inline_rows_match_their_columns() {
         symbol: "TCS.NS".into(),
         condition: "above".into(),
         target: 1.0,
+        period: None,
+        description: "above 1.00".into(),
         created_at: "2026-01-01 09:15".into(),
     });
     assert_columns(&crate::views::Bar {
@@ -521,4 +536,234 @@ fn inline_rows_match_their_columns() {
         volume: None,
         ts: 0,
     });
+}
+
+#[test]
+fn benchmark_json_and_csv_shapes() {
+    use super::planning::{BenchmarkRow, Flagged, benchmark_json};
+    use crate::benchmark::{HoldingDays, analyze};
+    let row = BenchmarkRow {
+        symbol: "TCS.NS".into(),
+        sector: "Technology".into(),
+        avg_weight: 100.0,
+        end_weight: 100.0,
+        return_pct: 2.0,
+        contribution: 2.0,
+        active_contribution: 1.0,
+        days_held: 2,
+        days_unpriced: 0,
+        flag: None,
+    };
+    assert_columns(&row);
+    let calendar: Vec<chrono::NaiveDate> = (0..3)
+        .map(|i| day("2026-01-01") + chrono::Days::new(i))
+        .collect();
+    let holdings = vec![HoldingDays {
+        symbol: "TCS.NS".into(),
+        sector: "Technology".into(),
+        qty: vec![10.0; 3],
+        price: vec![Some(100.0), Some(101.0), Some(102.0)],
+    }];
+    let a = analyze(&calendar, &[Some(1.0), Some(1.0), Some(1.01)], &holdings).unwrap();
+    let flagged = [Flagged {
+        symbol: "X.NS".into(),
+        reason: "no price history — left out".into(),
+    }];
+    let v = benchmark_json(
+        Some(&a),
+        ("^NSEI", "NIFTY 50", Some("INR")),
+        "INR",
+        "1y",
+        &[row],
+        &flagged,
+    );
+    assert_eq!(
+        keys(&v),
+        [
+            "benchmark",
+            "base_currency",
+            "period",
+            "start",
+            "end",
+            "trading_days",
+            "portfolio_return",
+            "benchmark_return",
+            "excess_return",
+            "portfolio_annualized",
+            "benchmark_annualized",
+            "metrics",
+            "holdings",
+            "sectors",
+            "flagged",
+            "series"
+        ]
+    );
+    assert_eq!(
+        keys(&v["benchmark"]),
+        ["symbol", "name", "currency", "converted_to_base"]
+    );
+    assert_eq!(
+        keys(&v["metrics"]),
+        [
+            "observations",
+            "alpha",
+            "beta",
+            "tracking_error",
+            "information_ratio",
+            "correlation"
+        ]
+    );
+    assert_eq!(
+        keys(&v["sectors"][0]),
+        [
+            "sector",
+            "holdings",
+            "avg_weight",
+            "end_weight",
+            "return_pct",
+            "contribution",
+            "active_contribution"
+        ]
+    );
+    assert_eq!(keys(&v["series"][0]), ["date", "portfolio", "benchmark"]);
+    assert_eq!(v["portfolio_return"], 2.0);
+    assert_eq!(v["benchmark_return"], 1.0);
+    assert_eq!(keys(&v["flagged"][0]), ["symbol", "reason"]);
+    // Nothing held: the same keys with nulls and empty lists.
+    let empty = benchmark_json(None, ("^NSEI", "NIFTY 50", None), "INR", "1y", &[], &[]);
+    assert_eq!(keys(&empty), keys(&v));
+    assert!(empty["portfolio_return"].is_null());
+}
+
+#[test]
+fn goal_and_tax_export_json_shapes() {
+    let plan = serde_json::to_value(crate::goals::plan_sip(1e7, 2, 12.0, 10.0, 0.0)).unwrap();
+    assert_eq!(
+        keys(&plan),
+        [
+            "target",
+            "years",
+            "annual_return_pct",
+            "step_up_pct",
+            "savings",
+            "savings_future_value",
+            "monthly_sip",
+            "final_monthly_sip",
+            "total_invested",
+            "gains",
+            "lump_sum_today",
+            "schedule"
+        ]
+    );
+    assert_eq!(
+        keys(&plan["schedule"][0]),
+        ["year", "monthly_sip", "invested", "value"]
+    );
+    let retire = serde_json::to_value(crate::goals::plan_retirement(
+        80_000.0, 20, 30, 6.0, 12.0, 7.0, 0.0, 0.0,
+    ))
+    .unwrap();
+    assert_eq!(
+        keys(&retire),
+        [
+            "monthly_expense_today",
+            "years_to_retire",
+            "years_in_retirement",
+            "inflation_pct",
+            "return_pre_pct",
+            "return_post_pct",
+            "monthly_expense_at_retirement",
+            "corpus",
+            "sip"
+        ]
+    );
+    let edu =
+        serde_json::to_value(crate::goals::plan_education(25e5, 10, 8.0, 12.0, 0.0, 0.0)).unwrap();
+    assert_eq!(
+        keys(&edu),
+        ["cost_today", "years", "inflation_pct", "future_cost", "sip"]
+    );
+
+    let sale = crate::portfolio::Sale {
+        symbol: "TCS.NS".into(),
+        qty: 1.0,
+        buy_date: "2024-01-10".into(),
+        buy_price: 3500.0,
+        sell_date: "2025-06-02".into(),
+        sell_price: 4100.0,
+        buy_date_estimated: false,
+        source: "manual".into(),
+        order_id: None,
+    };
+    let india = serde_json::to_value(crate::tax_export::india_schedule(
+        std::slice::from_ref(&sale),
+        day("2025-04-01"),
+        |_| None,
+    ))
+    .unwrap();
+    let schedule_keys = [
+        "country",
+        "tax_year",
+        "period_start",
+        "period_end",
+        "currency",
+        "disclaimer",
+        "sales",
+        "summary",
+        "other_currency",
+        "virtual_digital_assets",
+        "notes",
+    ];
+    assert_eq!(keys(&india), schedule_keys);
+    assert_eq!(
+        keys(&india["sales"][0]),
+        [
+            "section",
+            "term",
+            "isin",
+            "scrip",
+            "symbol",
+            "quantity",
+            "sale_date",
+            "sale_price",
+            "sale_value",
+            "purchase_date",
+            "purchase_price",
+            "cost",
+            "holding_days",
+            "gain",
+            "grandfathered",
+            "purchase_date_estimated"
+        ]
+    );
+    let us_sale = crate::portfolio::Sale {
+        symbol: "AAPL".into(),
+        ..sale
+    };
+    let us = serde_json::to_value(crate::tax_export::us_schedule(
+        &[us_sale],
+        day("2025-01-01"),
+    ))
+    .unwrap();
+    let us_keys: Vec<&str> = schedule_keys
+        .iter()
+        .copied()
+        .filter(|k| *k != "virtual_digital_assets")
+        .collect();
+    assert_eq!(keys(&us), us_keys);
+    assert_eq!(
+        keys(&us["sales"][0]),
+        [
+            "part",
+            "description",
+            "symbol",
+            "quantity",
+            "date_acquired",
+            "date_sold",
+            "proceeds",
+            "cost_basis",
+            "gain_or_loss",
+            "date_acquired_estimated"
+        ]
+    );
 }

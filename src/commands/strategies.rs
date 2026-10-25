@@ -281,7 +281,7 @@ pub async fn cmd_intraday(
     market: Market,
 ) -> Result<()> {
     // The bot plans around exchange sessions (entries, square-off times).
-    market.require_stocks("intraday")?;
+    market.require_bot_support("intraday")?;
     // Load the optional rule first so a bad file fails before any scanning.
     let rule = match strategy {
         Some(s) => Some(backtest::rules::load(s)?.compile()?),
@@ -554,7 +554,7 @@ pub async fn cmd_intraday(
 // ── AI-Powered Reports ──
 
 pub async fn cmd_longterm(amount: Option<f64>, market: Market) -> Result<()> {
-    market.require_stocks("longterm")?;
+    market.require_bot_support("longterm")?;
     let client = YahooClient::new().await?;
     let symbols = market.universe();
     let sym_refs: Vec<&str> = symbols.iter().map(String::as_str).collect();
@@ -797,7 +797,7 @@ pub async fn cmd_report(what: &str, market: Market) -> Result<()> {
 
     match what {
         "intraday" => {
-            market.require_stocks("report intraday")?;
+            market.require_bot_support("report intraday")?;
             println!("  {} Generating intraday report with AI...\n", "⟳".yellow());
             let signals = intraday::scan_intraday(&client, market).await?;
             // Build summary for AI
@@ -823,7 +823,7 @@ pub async fn cmd_report(what: &str, market: Market) -> Result<()> {
                 "  {} Generating long-term investment memo...\n",
                 "⟳".yellow()
             );
-            market.require_stocks("report longterm")?;
+            market.require_bot_support("report longterm")?;
             let symbols = market.universe();
             let sym_refs: Vec<&str> = symbols.iter().map(String::as_str).collect();
             let quotes = client.get_quote(&sym_refs).await?;

@@ -1,11 +1,13 @@
 //! `stockwise serve`: a read-only JSON API over the same views the CLI
-//! prints, plus Prometheus metrics. There are no trading or broker
-//! endpoints, and broker credentials are never read.
+//! prints, a web dashboard on top of it (`web.rs`), and Prometheus metrics.
+//! There are no trading or broker endpoints, and broker credentials are
+//! never read.
 //!
 //! Listens on loopback by default. A non-loopback bind needs
 //! `--allow-remote` and a bearer token in `STOCKWISE_API_TOKEN`.
 
 mod metrics;
+mod web;
 
 use crate::market::{self, Market};
 use crate::views::{self, DataSource};
@@ -19,7 +21,7 @@ use axum::routing::get;
 use clap::ValueEnum;
 use colored::Colorize;
 use serde::Deserialize;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -119,6 +121,9 @@ struct MarketsParams {
     /// Add the currency section (`markets --fx`).
     #[serde(default)]
     fx: bool,
+    /// Add each exchange's main index (`markets --global`).
+    #[serde(default)]
+    global: bool,
 }
 
 impl<D> AppState<D> {
@@ -223,11 +228,11 @@ async fn history<D: DataSource>(
     json(hist)
 }
 
-/// `GET /api/markets?crypto=true&fx=true` — the `markets --json` array.
+/// `GET /api/markets?crypto=true&fx=true&global=true` — the `markets --json` array.
 async fn markets<D: DataSource>(State(st): Shared<D>, Query(p): Query<MarketsParams>) -> ApiResult {
     let market = st.market_for(p.market.as_deref())?;
     json(
-        views::markets(&st.source, market, p.crypto, p.fx)
+        views::markets(&st.source, market, p.crypto, p.fx, p.global)
             .await
             .map_err(ApiError::from_data)?,
     )
@@ -404,7 +409,8 @@ fn method_label(m: &axum::http::Method) -> &'static str {
     }
 }
 
-/// Count and time every request; mark responses private and uncacheable.
+/// Count and time every request; mark responses private, uncacheable and
+/// not embeddable.
 async fn track<D: DataSource>(State(st): Shared<D>, req: Request, next: Next) -> Response {
     let route = req
         .extensions()
@@ -422,6 +428,7 @@ async fn track<D: DataSource>(State(st): Shared<D>, req: Request, next: Next) ->
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    web::secure(headers);
     resp
 }
 
@@ -438,9 +445,11 @@ pub fn router<D: DataSource + 'static>(state: Arc<AppState<D>>) -> Router {
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_token::<D>,
-        ));
+        ))
+        .route_layer(middleware::from_fn(web::same_origin));
     Router::new()
         .route("/healthz", get(healthz))
+        .merge(web::routes())
         .merge(protected)
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(
@@ -494,7 +503,53 @@ pub fn check_bind(addrs: &[SocketAddr], allow_remote: bool, token: Option<&str>)
     Ok(())
 }
 
-pub async fn run(bind: &str, allow_remote: bool, market: Market) -> Result<()> {
+/// Where a browser on this machine finds the dashboard: a wildcard bind
+/// (0.0.0.0, [::]) is reached through loopback.
+fn dashboard_url(local: SocketAddr) -> String {
+    let ip = match local.ip() {
+        IpAddr::V4(v4) if v4.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(v6) if v6.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ip => ip,
+    };
+    format!("http://{}/", SocketAddr::new(ip, local.port()))
+}
+
+/// Open `url` in the default browser. A failure is reported, not fatal: the
+/// URL is in the startup log.
+fn open_browser(url: &str) {
+    use crate::i18n::{Msg, tf};
+    use std::process::{Command, Stdio};
+    let mut cmd = if cfg!(target_os = "macos") {
+        Command::new("open")
+    } else if cfg!(windows) {
+        let mut c = Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    } else {
+        Command::new("xdg-open")
+    };
+    cmd.arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let url = url.to_string();
+    let warn = move |why: String| {
+        eprintln!("  {}", tf(Msg::ServeOpenFailed, &[&why, &url]).yellow());
+    };
+    match cmd.spawn() {
+        // Reap the launcher without holding up the server.
+        Ok(mut child) => {
+            std::thread::spawn(move || match child.wait() {
+                Ok(status) if !status.success() => warn(status.to_string()),
+                Err(e) => warn(e.to_string()),
+                Ok(_) => {}
+            });
+        }
+        Err(e) => warn(e.to_string()),
+    }
+}
+
+pub async fn run(bind: &str, allow_remote: bool, market: Market, open: bool) -> Result<()> {
     let token = std::env::var("STOCKWISE_API_TOKEN")
         .ok()
         .map(|t| t.trim().to_string())
@@ -513,8 +568,13 @@ pub async fn run(bind: &str, allow_remote: bool, market: Market) -> Result<()> {
         .await
         .with_context(|| format!("Cannot listen on {}", bind))?;
     let local = listener.local_addr()?;
+    let url = dashboard_url(local);
 
-    crate::display::print_header("StockWise API — read-only");
+    crate::display::print_header("StockWise dashboard and API — read-only");
+    crate::display::print_kv(
+        crate::i18n::t(crate::i18n::Msg::ServeDashboard),
+        &url.cyan().to_string(),
+    );
     crate::display::print_kv(
         "Listening on",
         &format!("http://{}", local).cyan().to_string(),
@@ -526,6 +586,12 @@ pub async fn run(bind: &str, allow_remote: bool, market: Market) -> Result<()> {
             Market::Us => "us (override with ?market=in)",
             Market::Crypto => "crypto (bare tickers are coins; override with ?market=in)",
             Market::Fx => "fx (bare tickers are currency pairs; override with ?market=in)",
+            Market::Commodity => {
+                "commodity (gold/silver → COMEX futures, other bare tickers → NSE)"
+            }
+            Market::Global(_) => {
+                "a global exchange (bare tickers get its suffix; override with ?market=in)"
+            }
         },
     );
     crate::display::print_kv(
@@ -542,6 +608,9 @@ pub async fn run(bind: &str, allow_remote: bool, market: Market) -> Result<()> {
         "/api/portfolio  /api/watchlist  /api/alerts  /healthz  /metrics".dimmed(),
         "No trading endpoints. Press Ctrl+C to stop.".dimmed()
     );
+    if open {
+        open_browser(&url);
+    }
 
     let state = Arc::new(AppState {
         source: views::LiveSource::new(),
@@ -959,5 +1028,225 @@ mod tests {
         assert!(constant_time_eq(b"abc", b"abc"));
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"abcd"));
+    }
+
+    /// GET `uri` with extra request headers.
+    async fn get_headers(app: &Router, uri: &str, headers: &[(&str, &str)]) -> Response {
+        let mut req = Request::builder()
+            .uri(uri)
+            .header(header::HOST, "127.0.0.1:8787");
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        app.clone()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    fn assert_hardened(resp: &Response, what: &str) {
+        let h = resp.headers();
+        assert_eq!(h[header::CONTENT_SECURITY_POLICY], web::CSP, "{what}");
+        assert_eq!(h[header::X_FRAME_OPTIONS], "DENY", "{what}");
+        assert_eq!(h[header::X_CONTENT_TYPE_OPTIONS], "nosniff", "{what}");
+        assert_eq!(h[header::REFERRER_POLICY], "no-referrer", "{what}");
+        assert_eq!(h["cross-origin-resource-policy"], "same-origin", "{what}");
+        assert_eq!(h["cross-origin-opener-policy"], "same-origin", "{what}");
+        assert_eq!(h[header::CACHE_CONTROL], "no-store", "{what}");
+        assert!(
+            !h.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            "{what}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_is_html_with_a_strict_csp() {
+        let (status, resp) = get_with(&app(), "/", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            resp.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+        assert_hardened(&resp, "/");
+        let html = body(resp).await;
+        assert!(html.starts_with("<!doctype html>"));
+        assert!(html.contains(r#"<script src="/assets/app.js" defer></script>"#));
+        assert!(html.contains(r#"<link rel="stylesheet" href="/assets/app.css">"#));
+    }
+
+    #[tokio::test]
+    async fn dashboard_assets_have_their_content_types() {
+        let app = app();
+        for (uri, ty) in [
+            ("/assets/app.js", "text/javascript; charset=utf-8"),
+            ("/assets/app.css", "text/css; charset=utf-8"),
+            ("/assets/favicon.svg", "image/svg+xml"),
+        ] {
+            let (status, resp) = get_with(&app, uri, None).await;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+            assert_eq!(resp.headers()[header::CONTENT_TYPE], ty, "{uri}");
+            assert_hardened(&resp, uri);
+            assert!(!body(resp).await.is_empty(), "{uri}");
+        }
+        assert_eq!(
+            get_with(&app, "/assets/nope.js", None).await.0,
+            StatusCode::NOT_FOUND
+        );
+        // HEAD works for every asset (link checkers, `curl -I`).
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("HEAD")
+                    .uri("/")
+                    .header(header::HOST, "localhost:8787")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn api_responses_carry_the_same_hardening() {
+        let (status, resp) = get_with(&app(), "/api/portfolio", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_hardened(&resp, "/api/portfolio");
+        let (status, resp) = get_with(&app(), "/nope", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_hardened(&resp, "/nope");
+    }
+
+    #[tokio::test]
+    async fn dashboard_page_needs_no_token_but_its_data_does() {
+        let token = "0123456789abcdef0123";
+        let app = app_with(Fixture::default(), Some(token));
+        for uri in ["/", "/assets/app.js", "/assets/app.css"] {
+            assert_eq!(get_with(&app, uri, None).await.0, StatusCode::OK, "{uri}");
+        }
+        assert_eq!(
+            get_with(&app, "/api/watchlist", None).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        // Without a token the page, too, only answers to localhost names.
+        let resp = app_with(Fixture::default(), None)
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(header::HOST, "evil.example:8787")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn data_is_only_for_same_origin_pages() {
+        let app = app();
+        for site in ["cross-site", "same-site"] {
+            for uri in ["/api/portfolio", "/api/quote?symbols=TCS", "/metrics"] {
+                let resp = get_headers(
+                    &app,
+                    uri,
+                    &[
+                        ("sec-fetch-site", site),
+                        ("origin", "http://localhost:3000"),
+                    ],
+                )
+                .await;
+                assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{site} {uri}");
+                assert_hardened(&resp, uri);
+            }
+        }
+        // The dashboard's own fetches, typed URLs and non-browser clients.
+        for headers in [
+            &[("sec-fetch-site", "same-origin")][..],
+            &[("sec-fetch-site", "none")][..],
+            &[][..],
+        ] {
+            let resp = get_headers(&app, "/api/portfolio", headers).await;
+            assert_eq!(resp.status(), StatusCode::OK, "{headers:?}");
+        }
+        // A link from another site may open the page; it holds no data.
+        let resp = get_headers(
+            &app,
+            "/",
+            &[
+                ("sec-fetch-site", "cross-site"),
+                ("sec-fetch-mode", "navigate"),
+            ],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        // /healthz stays open to monitors in browsers too.
+        let resp = get_headers(&app, "/healthz", &[("sec-fetch-site", "cross-site")]).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn no_cors_preflight_or_allow_origin() {
+        let app = app();
+        let resp = get_headers(
+            &app,
+            "/api/watchlist",
+            &[("origin", "https://evil.example")],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            !resp
+                .headers()
+                .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        );
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/watchlist")
+                    .header(header::HOST, "localhost:8787")
+                    .header("origin", "https://evil.example")
+                    .header("access-control-request-method", "GET")
+                    .header("access-control-request-headers", "authorization")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+        for h in [
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+        ] {
+            assert!(!resp.headers().contains_key(&h), "{h}");
+        }
+    }
+
+    #[tokio::test]
+    async fn dashboard_routes_have_fixed_metric_labels() {
+        let app = app();
+        get_with(&app, "/", None).await;
+        get_with(&app, "/assets/app.js", None).await;
+        let text = body(get_with(&app, "/metrics", None).await.1).await;
+        assert!(
+            text.contains(
+                "stockwise_http_requests_total{method=\"GET\",route=\"/\",status=\"200\"} 1"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("route=\"/assets/app.js\",status=\"200\"} 1"));
+    }
+
+    #[test]
+    fn dashboard_url_reaches_wildcard_binds_through_loopback() {
+        let url = |s: &str| dashboard_url(s.parse().unwrap());
+        assert_eq!(url("127.0.0.1:8787"), "http://127.0.0.1:8787/");
+        assert_eq!(url("0.0.0.0:9000"), "http://127.0.0.1:9000/");
+        assert_eq!(url("[::]:8787"), "http://[::1]:8787/");
+        assert_eq!(url("[::1]:8787"), "http://[::1]:8787/");
+        assert_eq!(url("192.168.1.5:8787"), "http://192.168.1.5:8787/");
     }
 }

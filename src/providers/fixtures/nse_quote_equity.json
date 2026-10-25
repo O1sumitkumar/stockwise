@@ -1,0 +1,84 @@
+{
+  "info": {
+    "symbol": "RELIANCE",
+    "companyName": "Reliance Industries Limited",
+    "industry": "Refineries & Marketing",
+    "activeSeries": ["EQ"],
+    "debtSeries": [],
+    "isFNOSec": true,
+    "isCASec": false,
+    "isSLBSec": true,
+    "isDebtSec": false,
+    "isSuspended": false,
+    "tempSuspendedSeries": [],
+    "isETFSec": false,
+    "isDelisted": false,
+    "isin": "INE002A01018",
+    "listingDate": "29-Nov-1995",
+    "isMunicipalBond": false,
+    "identifier": "RELIANCEEQN"
+  },
+  "metadata": {
+    "series": "EQ",
+    "symbol": "RELIANCE",
+    "isin": "INE002A01018",
+    "status": "Listed",
+    "listingDate": "29-Nov-1995",
+    "industry": "Refineries & Marketing",
+    "lastUpdateTime": "24-Oct-2025 16:00:00",
+    "pdSectorPe": 19.33,
+    "pdSymbolPe": 24.12,
+    "pdSectorInd": "NIFTY OIL & GAS                                   "
+  },
+  "securityInfo": {
+    "boardStatus": "Main",
+    "tradingStatus": "Active",
+    "tradingSegment": "Normal Market",
+    "sessionNo": "-",
+    "slb": "Yes",
+    "classOfShare": "Equity",
+    "derivatives": "Yes",
+    "faceValue": 10,
+    "issuedSize": 13532472634
+  },
+  "priceInfo": {
+    "lastPrice": 1451.6,
+    "change": -0.8,
+    "pChange": -0.055,
+    "previousClose": 1452.4,
+    "open": 1455,
+    "close": 1451.8,
+    "vwap": 1452.6,
+    "stockIndClosePrice": 0,
+    "lowerCP": "1307.20",
+    "upperCP": "1597.60",
+    "pPriceBand": "No Band",
+    "basePrice": 1452.4,
+    "intraDayHighLow": { "min": 1443.1, "max": 1460, "value": 1451.6 },
+    "weekHighLow": {
+      "min": 1114.85,
+      "minDate": "07-Apr-2025",
+      "max": 1551,
+      "maxDate": "30-Sep-2025",
+      "value": 1451.6
+    },
+    "iNavValue": null,
+    "checkINAV": false,
+    "tickSize": 0.1
+  },
+  "industryInfo": {
+    "macro": "Energy",
+    "sector": "Oil Gas & Consumable Fuels",
+    "industry": "Petroleum Products",
+    "basicIndustry": "Refineries & Marketing"
+  },
+  "preOpenMarket": {
+    "preopen": [{ "price": 1455, "buyQty": 0, "sellQty": 1200 }],
+    "ato": { "buy": 0, "sell": 0 },
+    "IEP": 1455,
+    "totalTradedVolume": 52310,
+    "finalPrice": 1455,
+    "finalQuantity": 52310,
+    "lastUpdateTime": "24-Oct-2025 09:07:29"
+  }
+}

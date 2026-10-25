@@ -10,7 +10,7 @@ use std::time::Duration;
 
 pub async fn cmd_daemon(mode: &str, amount: Option<f64>, market: Market) -> Result<()> {
     // Both loops follow exchange sessions; crypto and FX have none.
-    market.require_stocks("daemon")?;
+    market.require_bot_support("daemon")?;
     let csym = market.currency_symbol();
 
     match mode {
@@ -113,31 +113,25 @@ pub async fn cmd_daemon(mode: &str, amount: Option<f64>, market: Market) -> Resu
                 unique.sort();
                 unique.dedup();
                 let a_quotes = client.get_quote(&unique).await?;
+                let rows =
+                    views::alert_rows(&client, &store.alerts, &a_quotes, chrono::Utc::now()).await;
                 let mut triggered = 0;
-                for alert in &store.alerts {
-                    let Some(price) = a_quotes
-                        .iter()
-                        .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()))
-                        .and_then(|q| q.regular_market_price)
-                    else {
+                for (row, alert) in rows.iter().zip(&store.alerts) {
+                    if row.status != "triggered" {
                         continue;
-                    };
-                    let hit = match alert.condition {
-                        crate::alerts::AlertCondition::Above => price >= alert.target,
-                        crate::alerts::AlertCondition::Below => price <= alert.target,
-                    };
-                    if hit {
-                        triggered += 1;
-                        println!(
-                            "    {} {} {} {:.2} — TRIGGERED (now {}{:.2})",
-                            "⚠".yellow(),
-                            alert.symbol,
-                            alert.condition,
-                            alert.target,
-                            csym,
-                            price
-                        );
                     }
+                    triggered += 1;
+                    let now = row
+                        .price
+                        .map(|p| format!(" (now {}{:.2})", csym, p))
+                        .unwrap_or_default();
+                    println!(
+                        "    {} {} {} — TRIGGERED{}",
+                        "⚠".yellow(),
+                        alert.symbol,
+                        alert.describe(crate::i18n::Lang::En),
+                        now
+                    );
                 }
                 if triggered == 0 {
                     println!("    No alerts triggered.");
@@ -239,19 +233,11 @@ const DEFAULT_CAPITAL: f64 = 25000.0;
 const TARGET_PCT: f64 = 2.0;
 
 fn currency(market: Market) -> &'static str {
-    match market {
-        Market::In => "₹",
-        Market::Us | Market::Crypto | Market::Fx => "$",
-    }
+    market.currency_symbol()
 }
 
 fn market_code(market: Market) -> &'static str {
-    match market {
-        Market::In => "IN",
-        Market::Us => "US",
-        Market::Crypto => "CRYPTO",
-        Market::Fx => "FX",
-    }
+    market.id()
 }
 
 /// Exchange-local wall-clock time for log lines.

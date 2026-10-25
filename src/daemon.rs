@@ -383,13 +383,20 @@ impl Event {
 }
 
 /// File the intraday worker saves its day's state to after every tick:
-/// `daemon_state.json` for NSE, `daemon_state_us.json` for NYSE, so a daemon
-/// per market can run side by side.
+/// `daemon_state.json` for NSE, `daemon_state_us.json` for NYSE and
+/// `daemon_state_<code>.json` for a global exchange, so a daemon per market
+/// can run side by side.
 pub fn state_file(market: &str) -> &'static str {
-    if market.eq_ignore_ascii_case("US") {
-        "daemon_state_us.json"
-    } else {
-        "daemon_state.json"
+    match market.to_ascii_uppercase().as_str() {
+        "US" => "daemon_state_us.json",
+        "UK" => "daemon_state_uk.json",
+        "DE" => "daemon_state_de.json",
+        "JP" => "daemon_state_jp.json",
+        "HK" => "daemon_state_hk.json",
+        "SG" => "daemon_state_sg.json",
+        "CA" => "daemon_state_ca.json",
+        "AU" => "daemon_state_au.json",
+        _ => "daemon_state.json",
     }
 }
 
@@ -1062,6 +1069,14 @@ mod tests {
     fn each_market_has_its_own_state_file() {
         assert_eq!(state_file("IN"), "daemon_state.json");
         assert_eq!(state_file("US"), "daemon_state_us.json");
+        // Every global exchange gets its own file.
+        for x in crate::market::Exchange::ALL {
+            let id = crate::market::Market::Global(x).id();
+            assert_eq!(
+                state_file(id),
+                format!("daemon_state_{}.json", id.to_ascii_lowercase())
+            );
+        }
     }
 
     #[test]

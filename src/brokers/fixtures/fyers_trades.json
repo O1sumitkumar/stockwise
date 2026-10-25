@@ -1,0 +1,19 @@
+{
+  "s": "ok",
+  "code": 200,
+  "message": "",
+  "tradeBook": [
+    {
+      "clientId": "XX00042", "orderDateTime": "20-Oct-2026 12:44:45", "orderNumber": "26102000000001",
+      "exchangeOrderNo": "1100000000000001", "exchange": 10, "side": 1, "segment": 10, "orderType": 2,
+      "fyToken": "10100000003045", "productType": "CNC", "tradedQty": 3, "tradePrice": 540.6,
+      "tradeValue": 1621.8, "tradeNumber": "1000001", "row": 1641, "symbol": "NSE:SBIN-EQ", "orderTag": "1:stockwise"
+    },
+    {
+      "clientId": "XX00042", "orderDateTime": "20-Oct-2026 13:01:00", "orderNumber": "26102000000002",
+      "exchangeOrderNo": "1100000000000002", "exchange": 10, "side": -1, "segment": 11, "orderType": 2,
+      "fyToken": "101126102952175", "productType": "MARGIN", "tradedQty": 75, "tradePrice": 120.0,
+      "tradeValue": 9000.0, "tradeNumber": "1000002", "row": 1642, "symbol": "NSE:NIFTY26OCT25000CE", "orderTag": ""
+    }
+  ]
+}

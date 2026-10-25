@@ -19,7 +19,7 @@ cargo build
 cargo test
 ```
 
-Requires Rust **1.88+** (edition 2024 + let-chains). Optional at runtime: a local
+Requires Rust **1.97+** (edition 2024). We support the latest stable release and the two before it. Optional at runtime: a local
 [Ollama](https://ollama.com) server for AI features and Redis for caching — both
 degrade gracefully when absent.
 
@@ -49,7 +49,9 @@ Run the same checks CI does — all of them must pass:
 cargo fmt --all            # format
 cargo clippy --all-targets -- -D warnings   # lint (must be clean)
 cargo clippy --all-targets --no-default-features -- -D warnings   # minimal build (no tui/serve)
+cargo clippy --all-targets --features wasm-plugins -- -D warnings  # WASM strategy plugins
 cargo test                 # all tests green
+cargo test --features wasm-plugins
 ```
 
 - Keep PRs focused; one logical change per PR.
@@ -84,7 +86,11 @@ integrations implement the `Broker` trait in `src/brokers/` — see `zerodha.rs`
 for a compact example. Keep secrets in `secrets::Secret` fields (stored in the OS
 keyring via `src/brokers/secrets.rs`), never in source, logs or error messages.
 Test against `brokers::mock::MockServer` with fixtures from the broker's docs, and
-label anything not yet run against a live account "experimental".
+label anything not yet run against a live account "experimental". Give each read
+endpoint a `Shape` (the fields the parser reads and the documented ones) and check
+your fixtures with `mock::assert_fixture_shapes`, so `trade selftest` can tell
+testers when a live response differs. Anything that only reads from a real account
+(`trade selftest`, `trade sync`) must run on a `brokers::readonly::ReadOnly` session.
 
 ## Commit messages
 

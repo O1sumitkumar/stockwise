@@ -1,0 +1,15 @@
+{
+  "status": "success",
+  "data": {
+    "email": "tester@example.com",
+    "exchanges": ["NSE", "NFO", "BSE", "CDS", "BFO", "BCD"],
+    "products": ["D", "CO", "I"],
+    "broker": "UPSTOX",
+    "user_id": "TEST42",
+    "user_name": "Test User",
+    "order_types": ["MARKET", "LIMIT", "SL", "SL-M"],
+    "user_type": "individual",
+    "poa": false,
+    "is_active": true
+  }
+}

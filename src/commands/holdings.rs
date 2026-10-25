@@ -155,60 +155,64 @@ pub async fn cmd_watchlist_show(fmt: Format) -> Result<()> {
 
 // ── Movers ──
 
-pub async fn cmd_alert(
-    action: &str,
-    symbol: Option<&str>,
-    condition: Option<&str>,
-    target: Option<f64>,
+/// `alert add`: a price level or a technical condition. `target` is the
+/// condition's number; `period` the RSI or volume-average length.
+pub async fn cmd_alert_add(
+    symbol: &str,
+    condition: &str,
+    target: f64,
+    period: Option<usize>,
     market: Market,
 ) -> Result<()> {
+    let resolved = market::resolve_symbol(symbol, market);
+    let Some(cond) = AlertCondition::parse(condition) else {
+        bail!(
+            "Unknown alert condition '{}'. Use one of: {}",
+            condition,
+            AlertCondition::ALL.map(|c| c.name()).join(", ")
+        );
+    };
+    let (target, period) = crate::alerts::validate(cond, target, period)?;
     let mut store = AlertStore::load()?;
-    match action {
-        "add" => {
-            let sym = symbol.context("Symbol is required")?;
-            let resolved = market::resolve_symbol(sym, market);
-            let cond_str = condition.context("Condition required (above/below)")?;
-            let cond = match cond_str {
-                "above" | ">" => AlertCondition::Above,
-                "below" | "<" => AlertCondition::Below,
-                _ => {
-                    println!("  Condition must be 'above' or 'below'");
-                    return Ok(());
-                }
-            };
-            let tgt = target.context("Target price is required")?;
-            store.add(&resolved, cond.clone(), tgt);
-            store.save()?;
-            println!(
-                "  {} Alert: {} {} {:.2}",
-                "✓".green(),
-                resolved.cyan(),
-                cond,
-                tgt
-            );
-        }
-        "remove" | "rm" => {
-            let idx_str = symbol.context("Alert index required (see 'alert list')")?;
-            let idx: usize = idx_str.parse().context("Invalid index")?;
-            if store.remove_by_index(idx) {
-                store.save()?;
-                println!("  {} Removed alert #{}", "✓".green(), idx);
-            } else {
-                bail!("No alert #{} — see `stockwise alert list`", idx);
-            }
-        }
-        "check" => return cmd_alert_check(Format::Table).await,
-        "list" | "show" | "" => return cmd_alert_list(Format::Table),
-        _ => bail!(
-            "Unknown alert action '{}'. Use add, remove, check, or list",
-            action
-        ),
+    store.add_with_period(&resolved, cond, target, period);
+    store.save()?;
+    let alert = store.alerts.last().expect("alert was just added");
+    println!(
+        "  {} Alert #{}: {} {}",
+        "✓".green(),
+        store.alerts.len() - 1,
+        resolved.cyan(),
+        alert.describe(crate::i18n::lang())
+    );
+    if cond == AlertCondition::ResultsIn {
+        println!(
+            "  {} Uses the results dates from `stockwise calendar`.",
+            "→".dimmed()
+        );
+    } else if !cond.is_price() {
+        println!(
+            "  {} Checked on daily bars by `stockwise alert check` and `alert watch`.",
+            "→".dimmed()
+        );
     }
     Ok(())
 }
 
+/// `alert remove N`.
+pub fn cmd_alert_remove(index: usize) -> Result<()> {
+    let mut store = AlertStore::load()?;
+    if store.remove_by_index(index) {
+        store.save()?;
+        println!("  {} Removed alert #{}", "✓".green(), index);
+        Ok(())
+    } else {
+        bail!("No alert #{} — see `stockwise alert list`", index);
+    }
+}
+
 /// One alert as `alert list --json/--csv` prints it. `index` is the number
-/// `alert remove` takes.
+/// `alert remove` takes; `condition` the CLI name (`above`, `rsi-below`,
+/// ...), `target` its number and `period` the RSI or volume-average length.
 #[derive(Debug, Serialize)]
 pub(crate) struct AlertRow {
     pub(crate) index: usize,
@@ -216,14 +220,23 @@ pub(crate) struct AlertRow {
     pub(crate) condition: String,
     pub(crate) target: f64,
     pub(crate) created_at: String,
+    pub(crate) period: Option<usize>,
+    pub(crate) description: String,
 }
 
 impl CsvRow for AlertRow {
-    const COLUMNS: &'static [&'static str] =
-        &["index", "symbol", "condition", "target", "created_at"];
+    const COLUMNS: &'static [&'static str] = &[
+        "index",
+        "symbol",
+        "condition",
+        "target",
+        "created_at",
+        "period",
+        "description",
+    ];
 }
 
-fn alert_rows(store: &AlertStore) -> Vec<AlertRow> {
+pub(crate) fn alert_rows(store: &AlertStore) -> Vec<AlertRow> {
     store
         .alerts
         .iter()
@@ -233,6 +246,8 @@ fn alert_rows(store: &AlertStore) -> Vec<AlertRow> {
             symbol: a.symbol.clone(),
             condition: a.condition.to_string(),
             target: a.target,
+            period: a.period(),
+            description: a.describe(crate::i18n::Lang::En),
             created_at: a.created_at.clone(),
         })
         .collect()
@@ -248,29 +263,33 @@ pub fn cmd_alert_list(fmt: Format) -> Result<()> {
         Format::Table => {}
     }
     if rows.is_empty() {
-        println!(
-            "\n  {}",
-            "No alerts. Use 'stockwise alert add <SYMBOL> above/below <PRICE>'.".dimmed()
-        );
+        println!("\n  {}", NO_ALERTS.dimmed());
         return Ok(());
     }
-    print_header("Price Alerts");
-    for a in &rows {
+    print_header(t(Msg::AlertsTitle));
+    for (a, alert) in rows.iter().zip(&store.alerts) {
         println!(
-            "  #{} {} {} {:.2}  (set {})",
+            "  #{} {} {}  {}",
             a.index,
             a.symbol.cyan(),
-            a.condition,
-            a.target,
-            a.created_at.dimmed()
+            alert.describe(crate::i18n::lang()),
+            format!("(set {})", a.created_at).dimmed()
         );
     }
     println!();
     Ok(())
 }
 
-/// One alert checked against its live price, as `alert check --json/--csv`
-/// prints it. `status` is `triggered`, `waiting`, or `no_price`.
+pub(crate) const NO_ALERTS: &str = "No alerts. Use 'stockwise alert add <SYMBOL> above/below <PRICE>' \
+     or a technical condition such as 'rsi-below 30' (see 'stockwise alert add --help').";
+
+/// One alert checked against live data, as `alert check --json/--csv`
+/// prints it. `status` is `triggered`, `waiting`, `no_price` (no live price
+/// for a price alert) or `no_data` (too little history, or no results
+/// date). `value` is what the condition compared — the price, RSI, day
+/// change %, volume multiple or days to results; for crosses and breakouts
+/// the close — and `reference` the moving average, previous high/low or
+/// average volume it was compared with.
 #[derive(Debug, Serialize)]
 pub(crate) struct AlertCheckRow {
     pub(crate) index: usize,
@@ -280,6 +299,10 @@ pub(crate) struct AlertCheckRow {
     pub(crate) price: Option<f64>,
     pub(crate) currency: Option<String>,
     pub(crate) status: &'static str,
+    pub(crate) period: Option<usize>,
+    pub(crate) description: String,
+    pub(crate) value: Option<f64>,
+    pub(crate) reference: Option<f64>,
 }
 
 impl CsvRow for AlertCheckRow {
@@ -291,61 +314,64 @@ impl CsvRow for AlertCheckRow {
         "price",
         "currency",
         "status",
+        "period",
+        "description",
+        "value",
+        "reference",
     ];
 }
 
+/// Each alert evaluated against its symbol's market data (see
+/// [`views::alert_data`]). Missing data never reads as triggered.
 pub(crate) fn alert_check_rows(
     alerts: &[crate::alerts::Alert],
-    quotes: &[crate::api::Quote],
+    data: &std::collections::HashMap<String, crate::alerts::MarketData>,
 ) -> Vec<AlertCheckRow> {
+    let empty = crate::alerts::MarketData::default();
     alerts
         .iter()
         .enumerate()
         .map(|(i, alert)| {
-            let quote = quotes
-                .iter()
-                .find(|q| q.symbol.as_deref() == Some(alert.symbol.as_str()));
-            let price = quote.and_then(|q| q.regular_market_price);
-            // No live price: never report it as triggered.
-            let status = match price {
-                None => "no_price",
-                Some(p) => {
-                    let hit = match alert.condition {
-                        AlertCondition::Above => p >= alert.target,
-                        AlertCondition::Below => p <= alert.target,
-                    };
-                    if hit { "triggered" } else { "waiting" }
-                }
+            let d = data.get(&alert.symbol).unwrap_or(&empty);
+            let reading = alert.evaluate(d);
+            let status = match reading {
+                Some(r) if r.hit => "triggered",
+                Some(_) => "waiting",
+                None if alert.condition.is_price() => "no_price",
+                None => "no_data",
             };
             AlertCheckRow {
                 index: i,
                 symbol: alert.symbol.clone(),
                 condition: alert.condition.to_string(),
                 target: alert.target,
-                price,
-                currency: quote.and_then(|q| q.currency.clone()),
+                period: alert.period(),
+                description: alert.describe(crate::i18n::Lang::En),
+                price: d.price,
+                currency: d.currency.clone(),
+                value: reading.map(|r| output::round(r.value, 4)),
+                reference: reading
+                    .and_then(|r| r.reference)
+                    .map(|v| output::round(v, 4)),
                 status,
             }
         })
         .collect()
 }
 
-/// `alert check`: every alert against its live price.
+/// `alert check`: every alert against live prices, daily bars and the
+/// results calendar.
 pub async fn cmd_alert_check(fmt: Format) -> Result<()> {
     let store = AlertStore::load()?;
     if store.alerts.is_empty() && fmt.is_table() {
         println!("  {}", "No alerts configured.".dimmed());
         return Ok(());
     }
-    let quotes = if store.alerts.is_empty() {
+    let rows = if store.alerts.is_empty() {
         Vec::new()
     } else {
-        let mut unique: Vec<&str> = store.alerts.iter().map(|a| a.symbol.as_str()).collect();
-        unique.sort();
-        unique.dedup();
-        YahooClient::new().await?.get_quote(&unique).await?
+        views::alerts(&YahooClient::new().await?).await?
     };
-    let rows = alert_check_rows(&store.alerts, &quotes);
     match fmt {
         Format::Json => return output::print_json(&rows),
         Format::Csv => return output::print_csv(&rows),
@@ -353,26 +379,38 @@ pub async fn cmd_alert_check(fmt: Format) -> Result<()> {
     }
 
     print_header("Alert Check");
-    for row in &rows {
-        let Some(price) = row.price else {
-            println!(
-                "  {} {} — no live price, skipped",
-                "?".yellow(),
-                row.symbol.cyan()
-            );
-            continue;
-        };
-        let status = if row.status == "triggered" {
-            "TRIGGERED".red().bold().to_string()
-        } else {
-            "waiting".dimmed().to_string()
+    for (row, alert) in rows.iter().zip(&store.alerts) {
+        let words = alert.describe(crate::i18n::lang());
+        let now = row
+            .price
+            .map(|p| format_price(p, row.currency.as_deref()))
+            .unwrap_or_else(|| "N/A".to_string());
+        let reading = row
+            .value
+            .and_then(|value| {
+                alert.reading_text(&crate::alerts::Reading {
+                    hit: false,
+                    value,
+                    reference: row.reference,
+                })
+            })
+            .map(|r| format!(" | {r}"))
+            .unwrap_or_default();
+        let status = match row.status {
+            "triggered" => "TRIGGERED".red().bold().to_string(),
+            "waiting" => "waiting".dimmed().to_string(),
+            "no_price" => "no live price, skipped".yellow().to_string(),
+            _ if alert.condition == AlertCondition::ResultsIn => {
+                "no upcoming results date".yellow().to_string()
+            }
+            _ => "not enough data, skipped".yellow().to_string(),
         };
         println!(
-            "  {} {} {:.2} | Now: {} | {}",
+            "  {} {} | Now: {}{} | {}",
             row.symbol.cyan(),
-            row.condition,
-            row.target,
-            format_price(price, row.currency.as_deref()),
+            words,
+            now,
+            reading,
             status
         );
     }
@@ -1672,6 +1710,22 @@ pub async fn cmd_tax(country: &str, _market: Market, fmt: Format) -> Result<()> 
             country.tax_currency(),
             other_currency.join(", ")
         );
+        // Global exchanges whose own rules StockWise does not have.
+        let mut unsupported: Vec<&str> = other_currency
+            .iter()
+            .filter_map(|s| market::exchange_of(s))
+            .filter(|x| x.info().tax.is_none())
+            .map(|x| x.info().country)
+            .collect();
+        unsupported.sort_unstable();
+        unsupported.dedup();
+        if !unsupported.is_empty() {
+            println!(
+                "  {} StockWise has no capital-gains rules for {} listings (only India, the US and the UK).",
+                "!".yellow(),
+                unsupported.join(", ")
+            );
+        }
     }
     if !unpriced.is_empty() {
         println!(
