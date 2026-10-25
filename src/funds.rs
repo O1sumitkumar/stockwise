@@ -1084,14 +1084,14 @@ async fn get_bytes(client: &reqwest::Client, url: &str, source: &str) -> Result<
         .to_vec())
 }
 
-fn cache_path(name: &str) -> Result<PathBuf> {
+pub(crate) fn cache_path(name: &str) -> Result<PathBuf> {
     let dir = store::data_dir()?.join("cache");
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("Cannot create cache directory {}", dir.display()))?;
     Ok(dir.join(name))
 }
 
-fn is_fresh(path: &Path, max_age: Duration) -> bool {
+pub(crate) fn is_fresh(path: &Path, max_age: Duration) -> bool {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
@@ -1100,7 +1100,7 @@ fn is_fresh(path: &Path, max_age: Duration) -> bool {
 }
 
 /// Write via a temp file and rename, so a crash never leaves half a cache.
-fn write_atomic(path: &Path, data: &str) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, data: &str) -> Result<()> {
     let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
     std::fs::write(&tmp, data).with_context(|| format!("Cannot write {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("Cannot replace {}", path.display()))

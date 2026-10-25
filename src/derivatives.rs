@@ -1,11 +1,14 @@
-//! Option chains: the data model, parsers for Yahoo Finance (US) and NSE
-//! (India) responses, and the chain-wide numbers traders read — put/call
+//! Option chains: the data model, parsers for Yahoo Finance (US), NSE and
+//! BSE (India) responses, and the chain-wide numbers traders read — put/call
 //! ratio, max pain, open-interest walls — plus per-contract IV and greeks
 //! from `greeks.rs`.
 //!
 //! NSE's option-chain API serves browser sessions: `NseClient` loads the
 //! public option-chain page once for cookies, then makes at most two API
 //! calls, spaced out, and gives up with a clear error instead of retrying.
+//! BSE's derivatives API (behind bseindia.com's option-chain page) is
+//! called the same way by `BseClient`: one session, calls spaced out,
+//! answers cached for a minute, a clear error when BSE refuses.
 
 use crate::api::{YahooClient, build_url};
 use crate::greeks::{self, BsInput, Greeks, OptionKind};
@@ -19,10 +22,14 @@ use std::time::Duration;
 /// NSE index option underlyings (everything else is a stock).
 pub const NSE_INDICES: &[&str] = &["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"];
 
+/// BSE index option underlyings and BSE's scrip codes for them.
+pub const BSE_INDICES: &[(&str, u32)] = &[("SENSEX", 1), ("BANKEX", 12), ("SENSEX50", 47)];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChainSource {
     Nse,
+    Bse,
     Yahoo,
 }
 
@@ -68,6 +75,10 @@ pub struct OptionChain {
     /// When the source priced the chain (NSE's timestamp, Yahoo's quote time).
     pub as_of: Option<DateTime<Utc>>,
     pub rows: Vec<ChainRow>,
+    /// Units of the underlying per contract: from the order-book quantities
+    /// on NSE/BSE (always whole lots), 100 for standard US contracts.
+    /// `None` when the chain does not show it.
+    pub lot_size: Option<u32>,
 }
 
 impl OptionChain {
@@ -81,8 +92,17 @@ impl OptionChain {
 
 /// NSE's `19-Oct-2026 15:40:00` timestamps (IST) in UTC.
 pub fn parse_nse_timestamp(s: &str) -> Option<DateTime<Utc>> {
+    parse_ist(s, "%d-%b-%Y %H:%M:%S")
+}
+
+/// BSE's `23 Oct 2026 | 19:42` timestamps (IST) in UTC.
+pub fn parse_bse_timestamp(s: &str) -> Option<DateTime<Utc>> {
+    parse_ist(s, "%d %b %Y | %H:%M")
+}
+
+fn parse_ist(s: &str, format: &str) -> Option<DateTime<Utc>> {
     let ist = chrono::FixedOffset::east_opt(5 * 3600 + 1800)?;
-    chrono::NaiveDateTime::parse_from_str(s.trim(), "%d-%b-%Y %H:%M:%S")
+    chrono::NaiveDateTime::parse_from_str(s.trim(), format)
         .ok()?
         .and_local_timezone(ist)
         .single()
@@ -94,16 +114,46 @@ pub fn parse_nse_timestamp(s: &str) -> Option<DateTime<Utc>> {
 pub enum Route {
     /// NSE symbol (`NIFTY`, `RELIANCE`) and whether it is an index.
     Nse { symbol: String, index: bool },
+    /// BSE index (`SENSEX`, with its scrip code) or stock (`RELIANCE` from
+    /// `RELIANCE.BO`, scrip code looked up from BSE's list).
+    Bse {
+        symbol: String,
+        scrip_cd: Option<u32>,
+    },
     /// Yahoo Finance symbol (`AAPL`, `SPY`).
     Yahoo(String),
 }
 
-/// Indian market → NSE (`RELIANCE`, `RELIANCE.NS`, `^NSEI` → `NIFTY`);
-/// US market or a non-NSE suffix → Yahoo.
+/// SENSEX / BANKEX / SENSEX50 under the names people and Yahoo use.
+fn bse_index(upper: &str) -> Option<(&'static str, u32)> {
+    let name = match upper {
+        "SENSEX" | "^BSESN" | "BSESN" | "BSE SENSEX" => "SENSEX",
+        "BANKEX" | "BSE-BANK" | "BSE-BANK.BO" | "BSEBANKEX" | "BSE BANKEX" => "BANKEX",
+        "SENSEX50" | "SENSEX 50" | "SX50" | "BSE SENSEX 50" => "SENSEX50",
+        _ => return None,
+    };
+    BSE_INDICES.iter().copied().find(|(n, _)| *n == name)
+}
+
+/// Indian market → NSE (`RELIANCE`, `RELIANCE.NS`, `^NSEI` → `NIFTY`), except
+/// BSE's indices (`SENSEX`, `BANKEX`) and `.BO` stocks → BSE; US market or
+/// another suffix → Yahoo.
 pub fn route(symbol: &str, market: Market) -> Route {
     let upper = symbol.trim().to_uppercase();
     if market == Market::Us {
         return Route::Yahoo(market::resolve_symbol(&upper, market));
+    }
+    if let Some((name, code)) = bse_index(&upper) {
+        return Route::Bse {
+            symbol: name.to_string(),
+            scrip_cd: Some(code),
+        };
+    }
+    if let Some(stock) = upper.strip_suffix(".BO").filter(|s| !s.is_empty()) {
+        return Route::Bse {
+            symbol: stock.to_string(),
+            scrip_cd: stock.parse().ok(),
+        };
     }
     let nse = match upper.as_str() {
         "^NSEI" | "NIFTY50" | "NIFTY 50" => "NIFTY".to_string(),
@@ -116,19 +166,20 @@ pub fn route(symbol: &str, market: Market) -> Route {
     Route::Nse { symbol: nse, index }
 }
 
-/// Parse `2026-10-27` or NSE's `27-Oct-2026`.
+/// Parse `2026-10-27`, NSE's `27-Oct-2026` or BSE's `27 Oct 2026`.
 pub fn parse_expiry(s: &str) -> Option<NaiveDate> {
     let s = s.trim();
     NaiveDate::parse_from_str(s, "%Y-%m-%d")
         .or_else(|_| NaiveDate::parse_from_str(s, "%d-%b-%Y"))
+        .or_else(|_| NaiveDate::parse_from_str(s, "%d %b %Y"))
         .ok()
 }
 
-/// When an expiry stops trading, in UTC: 15:30 IST on NSE, 16:00 New York
-/// (taken as 20:00 UTC) for US listings.
+/// When an expiry stops trading, in UTC: 15:30 IST on NSE and BSE, 16:00
+/// New York (taken as 20:00 UTC) for US listings.
 pub fn expiry_close(expiry: NaiveDate, source: ChainSource) -> DateTime<Utc> {
     let hour = match source {
-        ChainSource::Nse => 10,
+        ChainSource::Nse | ChainSource::Bse => 10,
         ChainSource::Yahoo => 20,
     };
     expiry
@@ -229,6 +280,22 @@ fn merge_rows(calls: Vec<(f64, Contract)>, puts: Vec<(f64, Contract)>) -> Vec<Ch
     rows
 }
 
+fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// Lot size from order-book quantities: every bid/offer on NSE and BSE is a
+/// whole number of lots, so across a chain their greatest common divisor is
+/// the lot. Needs a handful of quotes to be trusted.
+pub fn lot_size_from_quantities(quantities: impl IntoIterator<Item = u64>) -> Option<u32> {
+    let (mut g, mut n) = (0u64, 0usize);
+    for q in quantities.into_iter().filter(|q| *q > 0) {
+        g = gcd(g, q);
+        n += 1;
+    }
+    (n >= 5).then_some(g).and_then(|g| u32::try_from(g).ok())
+}
+
 fn ts_to_date(ts: i64) -> Option<NaiveDate> {
     DateTime::from_timestamp(ts, 0).map(|d| d.date_naive())
 }
@@ -283,6 +350,17 @@ pub fn parse_yahoo_chain(v: &Value) -> Result<OptionChain> {
         .and_then(|q| q.get("regularMarketTime"))
         .and_then(Value::as_i64)
         .and_then(|t| DateTime::from_timestamp(t, 0));
+    // US listed equity options are 100 shares ("REGULAR"); mini or adjusted
+    // contracts say otherwise, and then the size is unknown here.
+    let regular = ["calls", "puts"].iter().all(|k| {
+        opts.get(*k).and_then(Value::as_array).is_none_or(|a| {
+            a.iter().all(|c| {
+                c.get("contractSize")
+                    .and_then(Value::as_str)
+                    .is_none_or(|s| s.eq_ignore_ascii_case("REGULAR"))
+            })
+        })
+    });
 
     Ok(OptionChain {
         symbol,
@@ -293,6 +371,7 @@ pub fn parse_yahoo_chain(v: &Value) -> Result<OptionChain> {
         expiries,
         as_of,
         rows: merge_rows(side("calls"), side("puts")),
+        lot_size: regular.then_some(100),
     })
 }
 
@@ -334,6 +413,7 @@ pub fn parse_nse_chain(v: &Value, symbol: &str, expiry: NaiveDate) -> Result<Opt
         .context("NSE returned no option rows")?;
     let mut calls = Vec::new();
     let mut puts = Vec::new();
+    let mut quantities = Vec::new();
     for row in data {
         let row_expiry = row
             .get("expiryDates")
@@ -346,11 +426,20 @@ pub fn parse_nse_chain(v: &Value, symbol: &str, expiry: NaiveDate) -> Result<Opt
         let Some(strike) = f(row, "strikePrice") else {
             continue;
         };
-        if let Some(ce) = row.get("CE").filter(|c| c.is_object()) {
-            calls.push((strike, nse_contract(ce)));
-        }
-        if let Some(pe) = row.get("PE").filter(|c| c.is_object()) {
-            puts.push((strike, nse_contract(pe)));
+        for (side, out) in [("CE", &mut calls), ("PE", &mut puts)] {
+            if let Some(c) = row.get(side).filter(|c| c.is_object()) {
+                out.push((strike, nse_contract(c)));
+                quantities.extend(
+                    [
+                        "buyQuantity1",
+                        "sellQuantity1",
+                        "totalBuyQuantity",
+                        "totalSellQuantity",
+                    ]
+                    .iter()
+                    .filter_map(|k| count(c, k)),
+                );
+            }
         }
     }
     let rows = merge_rows(calls, puts);
@@ -380,6 +469,124 @@ pub fn parse_nse_chain(v: &Value, symbol: &str, expiry: NaiveDate) -> Result<Opt
             .and_then(Value::as_str)
             .and_then(parse_nse_timestamp),
         rows,
+        lot_size: lot_size_from_quantities(quantities),
+    })
+}
+
+/// A BSE number: text with Indian digit grouping (`5,24,022.00`), blank
+/// when there is none. Plain JSON numbers are accepted too.
+fn bse_num(v: &Value, key: &str) -> Option<f64> {
+    match v.get(key)? {
+        Value::String(s) => s.trim().replace(',', "").parse::<f64>().ok(),
+        other => other.as_f64(),
+    }
+    .filter(|x| x.is_finite())
+}
+
+/// One side of a BSE chain row: call fields are `C_`-prefixed, put fields
+/// are not. Blank prices mean "no trade", like NSE's zeros.
+fn bse_contract(row: &Value, prefix: &str) -> Contract {
+    let num = |key: &str| bse_num(row, &format!("{prefix}{key}"));
+    let positive = |key: &str| num(key).filter(|x| *x > 0.0);
+    Contract {
+        last: positive("Last_Trd_Price"),
+        bid: positive("BidPrice"),
+        ask: positive("OfferPrice"),
+        volume: num("Vol_Traded").map(|x| x.max(0.0) as u64),
+        open_interest: num("Open_Interest").map(|x| x.max(0.0) as u64),
+        oi_change: num("Absolute_Change_OI").map(|x| x as i64),
+        source_iv: positive("IV").map(|iv| iv / 100.0),
+    }
+}
+
+/// Expiry dates and the underlying's value from BSE's `ddlExpiry_IV`
+/// response (`Table1` lists expiries, `Table2` the underlying).
+pub fn parse_bse_expiries(v: &Value) -> (Vec<NaiveDate>, Option<f64>) {
+    let mut out: Vec<NaiveDate> = v
+        .get("Table1")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e.get("ExpiryDate")?.as_str())
+                .filter_map(parse_expiry)
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort();
+    out.dedup();
+    let spot = v
+        .pointer("/Table2/0")
+        .and_then(|t| bse_num(t, "UlaValue"))
+        .filter(|x| *x > 0.0);
+    (out, spot)
+}
+
+/// BSE scrip code of a stock with options, from `ddlUnderlyingAsset`
+/// (`ProductType=SO`).
+pub fn parse_bse_underlyings(v: &Value, symbol: &str) -> Option<u32> {
+    v.get("Table")?.as_array()?.iter().find_map(|r| {
+        let code = r.get("UlaCODE")?.as_str()?.trim();
+        if !code.eq_ignore_ascii_case(symbol) {
+            return None;
+        }
+        r.get("scrip_cd")
+            .and_then(|c| c.as_u64().or_else(|| c.as_str()?.trim().parse().ok()))
+            .and_then(|c| u32::try_from(c).ok())
+    })
+}
+
+/// Parse BSE's `DerivOptionChain_IV` response, keeping rows for `expiry`.
+/// The caller fills in the full expiry list.
+pub fn parse_bse_chain(v: &Value, symbol: &str, expiry: NaiveDate) -> Result<OptionChain> {
+    let data = v
+        .get("Table")
+        .and_then(Value::as_array)
+        .context("BSE returned no option rows")?;
+    let mut calls = Vec::new();
+    let mut puts = Vec::new();
+    let mut quantities = Vec::new();
+    for row in data {
+        let row_expiry = row
+            .get("End_TimeStamp")
+            .and_then(Value::as_str)
+            .and_then(parse_expiry);
+        if row_expiry.is_some_and(|d| d != expiry) {
+            continue;
+        }
+        let Some(strike) = bse_num(row, "Strike_Price1").or_else(|| bse_num(row, "Strike_Price"))
+        else {
+            continue;
+        };
+        calls.push((strike, bse_contract(row, "C_")));
+        puts.push((strike, bse_contract(row, "")));
+        quantities.extend(
+            ["C_BIdQty", "C_OfferQty", "BIdQty", "OfferQty"]
+                .iter()
+                .filter_map(|k| bse_num(row, k))
+                .filter(|q| *q > 0.0)
+                .map(|q| q as u64),
+        );
+    }
+    let rows = merge_rows(calls, puts);
+    if rows.is_empty() {
+        bail!("BSE returned no {symbol} options for {expiry}");
+    }
+    Ok(OptionChain {
+        symbol: symbol.to_string(),
+        source: ChainSource::Bse,
+        underlying: data
+            .iter()
+            .find_map(|r| bse_num(r, "UlaValue"))
+            .filter(|x| *x > 0.0),
+        currency: Some("INR".into()),
+        expiry,
+        expiries: vec![expiry],
+        as_of: v
+            .pointer("/ASON/DT_TM")
+            .and_then(Value::as_str)
+            .and_then(parse_bse_timestamp),
+        rows,
+        lot_size: lot_size_from_quantities(quantities),
     })
 }
 
@@ -674,6 +881,171 @@ impl NseClient {
     }
 }
 
+const BSE_API: &str = "https://api.bseindia.com/BseIndiaAPI/api";
+const BSE_SITE: &str = "https://www.bseindia.com";
+/// Chains and expiry lists are re-fetched after a minute; the list of
+/// stocks with options after a day.
+const BSE_CACHE_SHORT: Duration = Duration::from_secs(60);
+const BSE_CACHE_LONG: Duration = Duration::from_secs(24 * 3600);
+
+fn bse_refused(status: reqwest::StatusCode) -> anyhow::Error {
+    anyhow::anyhow!(
+        "BSE refused the option-chain request (HTTP {status}). BSE's API serves its own website \
+         and sometimes blocks scripts — wait a minute and retry, or open \
+         bseindia.com/markets/Derivatives/DeriReports/DeriOptionchain.html. NSE options \
+         (NIFTY, BANKNIFTY, F&O stocks) come from NSE instead."
+    )
+}
+
+/// Minimal BSE session: JSON API calls spaced 400 ms apart, each answer
+/// cached on disk briefly so repeated commands don't hit BSE again. No
+/// retry loops.
+pub struct BseClient {
+    client: reqwest::Client,
+    base: String,
+    cache: bool,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl BseClient {
+    pub fn new() -> Result<Self> {
+        Self::build(BSE_API, true)
+    }
+
+    fn build(base: &str, cache: bool) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .user_agent(NSE_UA)
+            .cookie_store(true)
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(20))
+            .build()
+            .context("Failed to build HTTP client")?;
+        Ok(Self {
+            client,
+            base: base.trim_end_matches('/').to_string(),
+            cache,
+            calls: Default::default(),
+        })
+    }
+
+    async fn get_json(&self, path: &str) -> Result<Value> {
+        if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        }
+        let resp = self
+            .client
+            .get(format!("{}/{path}", self.base))
+            .header(reqwest::header::ACCEPT, "application/json, text/plain, */*")
+            .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+            .header(reqwest::header::REFERER, format!("{BSE_SITE}/"))
+            .header(reqwest::header::ORIGIN, BSE_SITE)
+            .send()
+            .await
+            .context("Cannot reach api.bseindia.com. Check your internet connection")?;
+        if !resp.status().is_success() {
+            return Err(bse_refused(resp.status()));
+        }
+        let body = resp.text().await.context("Failed to read BSE response")?;
+        serde_json::from_str(&body).map_err(|_| bse_refused(reqwest::StatusCode::OK))
+    }
+
+    /// `get_json` through a short-lived file cache in the data directory.
+    async fn get_cached(&self, path: &str, max_age: Duration) -> Result<Value> {
+        let name: String = path
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let file = self
+            .cache
+            .then(|| crate::funds::cache_path(&format!("bse_{name}.json")).ok())
+            .flatten();
+        if let Some(f) = &file
+            && crate::funds::is_fresh(f, max_age)
+            && let Ok(text) = std::fs::read_to_string(f)
+            && let Ok(v) = serde_json::from_str(&text)
+        {
+            return Ok(v);
+        }
+        let v = self.get_json(path).await?;
+        if let Some(f) = &file {
+            let _ = crate::funds::write_atomic(f, &v.to_string());
+        }
+        Ok(v)
+    }
+
+    /// Scrip code of a BSE stock that has options.
+    pub async fn stock_scrip(&self, symbol: &str) -> Result<u32> {
+        let v = self
+            .get_cached(
+                "ddlUnderlyingAsset/w?ProductType=SO&scrip_cd=0",
+                BSE_CACHE_LONG,
+            )
+            .await?;
+        parse_bse_underlyings(&v, symbol).with_context(|| {
+            format!(
+                "BSE lists no stock options on {symbol}. BSE index options: {}; NSE stocks \
+                 without the .BO suffix use NSE's chain",
+                BSE_INDICES
+                    .iter()
+                    .map(|(n, _)| *n)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+    }
+
+    /// Listed expiries and the underlying's value. `index` picks BSE's
+    /// index-option (`IO`) or stock-option (`SO`) product.
+    pub async fn expiries(
+        &self,
+        scrip_cd: u32,
+        index: bool,
+    ) -> Result<(Vec<NaiveDate>, Option<f64>)> {
+        let product = if index { "IO" } else { "SO" };
+        let v = self
+            .get_cached(
+                &format!("ddlExpiry_IV/w?ProductType={product}&scrip_cd={scrip_cd}"),
+                BSE_CACHE_SHORT,
+            )
+            .await?;
+        Ok(parse_bse_expiries(&v))
+    }
+
+    pub async fn chain(&self, scrip_cd: u32, expiry: NaiveDate) -> Result<Value> {
+        let expiry = expiry.format("%d+%b+%Y").to_string();
+        self.get_cached(
+            &format!("DerivOptionChain_IV/w?Expiry={expiry}&scrip_cd={scrip_cd}&strprice=0"),
+            BSE_CACHE_SHORT,
+        )
+        .await
+    }
+}
+
+/// BSE chain for an index (`scrip_cd` known) or a `.BO` stock.
+async fn fetch_bse_chain(
+    bse: &BseClient,
+    symbol: &str,
+    scrip_cd: Option<u32>,
+    expiry: Option<NaiveDate>,
+    now: DateTime<Utc>,
+) -> Result<OptionChain> {
+    let index = scrip_cd.is_some_and(|c| BSE_INDICES.iter().any(|(_, code)| *code == c));
+    let scrip = match scrip_cd {
+        Some(c) => c,
+        None => bse.stock_scrip(symbol).await?,
+    };
+    let (expiries, spot) = bse.expiries(scrip, index).await?;
+    if expiries.is_empty() {
+        bail!("BSE lists no option expiries for {symbol}");
+    }
+    let expiry = pick_expiry(&expiries, expiry, ChainSource::Bse, now)?;
+    let raw = bse.chain(scrip, expiry).await?;
+    let mut chain = parse_bse_chain(&raw, symbol, expiry)?;
+    chain.expiries = expiries;
+    chain.underlying = chain.underlying.or(spot);
+    Ok(chain)
+}
+
 /// Option chain for `symbol` at `expiry` (default: nearest live expiry).
 pub async fn fetch_chain(
     symbol: &str,
@@ -688,13 +1060,17 @@ pub async fn fetch_chain(
             if expiries.is_empty() {
                 bail!(
                     "NSE lists no options for {symbol}. Only F&O stocks and the indices {} \
-                     have options on NSE; for US options add `-m us`",
+                     have options on NSE; BSE's are SENSEX, BANKEX, SENSEX50 and `SYMBOL.BO` \
+                     stocks; for US options add `-m us`",
                     NSE_INDICES.join(", ")
                 );
             }
             let expiry = pick_expiry(&expiries, expiry, ChainSource::Nse, now)?;
             let raw = nse.chain(&symbol, index, expiry).await?;
             parse_nse_chain(&raw, &symbol, expiry)
+        }
+        Route::Bse { symbol, scrip_cd } => {
+            fetch_bse_chain(&BseClient::new()?, &symbol, scrip_cd, expiry, now).await
         }
         Route::Yahoo(sym) => {
             let client = YahooClient::new().await?;
@@ -802,6 +1178,173 @@ mod tests {
         assert_eq!(route("M&M", Market::In), nse("M&M", false));
         assert_eq!(route("AAPL", Market::Us), Route::Yahoo("AAPL".into()));
         assert_eq!(route("VOD.L", Market::In), Route::Yahoo("VOD.L".into()));
+
+        let bse = |s: &str, scrip_cd| Route::Bse {
+            symbol: s.into(),
+            scrip_cd,
+        };
+        assert_eq!(route("sensex", Market::In), bse("SENSEX", Some(1)));
+        assert_eq!(route("^BSESN", Market::In), bse("SENSEX", Some(1)));
+        assert_eq!(route("BANKEX", Market::In), bse("BANKEX", Some(12)));
+        assert_eq!(route("BSE-BANK.BO", Market::In), bse("BANKEX", Some(12)));
+        assert_eq!(route("sx50", Market::In), bse("SENSEX50", Some(47)));
+        assert_eq!(route("RELIANCE.BO", Market::In), bse("RELIANCE", None));
+        assert_eq!(route("500325.BO", Market::In), bse("500325", Some(500325)));
+        // The NSE indices stay on NSE; `-m us` always means Yahoo.
+        for idx in ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"] {
+            assert_eq!(route(idx, Market::In), nse(idx, true));
+        }
+        assert_eq!(route("SENSEX", Market::Us), Route::Yahoo("SENSEX".into()));
+    }
+
+    fn bse_fixture(name: &str) -> Value {
+        let text = match name {
+            "chain" => include_str!("fixtures/bse_sensex_chain.json"),
+            "expiries" => include_str!("fixtures/bse_sensex_expiries.json"),
+            _ => include_str!("fixtures/bse_stock_underlyings.json"),
+        };
+        serde_json::from_str(text).unwrap()
+    }
+
+    #[test]
+    fn parses_bse_fixtures() {
+        // Captured from bseindia.com's option-chain page (SENSEX, 23 Oct
+        // 2026 after the close): no bid/offer, blank fields for no trade.
+        let d = |s| parse_expiry(s).unwrap();
+        let (expiries, spot) = parse_bse_expiries(&bse_fixture("expiries"));
+        assert_eq!(expiries.len(), 4);
+        assert_eq!(expiries[0], d("29 Oct 2026"));
+        assert_eq!(spot, Some(73123.83));
+
+        let chain = parse_bse_chain(&bse_fixture("chain"), "SENSEX", d("2026-10-29")).unwrap();
+        assert_eq!(chain.source, ChainSource::Bse);
+        assert_eq!(chain.underlying, Some(73123.83));
+        assert_eq!(chain.rows.len(), 8);
+        assert_eq!(chain.rows[0].strike, 64600.0);
+        // Deep ITM call never traded: present, but with no prices.
+        let c = chain.rows[0].call.as_ref().unwrap();
+        assert_eq!((c.last, c.open_interest, c.source_iv), (None, None, None));
+        let p = chain.rows[0].put.as_ref().unwrap();
+        assert_eq!(p.last, Some(6.0));
+        assert_eq!(p.open_interest, Some(9928));
+        assert_eq!(p.volume, Some(44551));
+        assert!((p.source_iv.unwrap() - 0.387_481_976).abs() < 1e-6);
+        let atm = &chain.rows[2];
+        assert_eq!(atm.strike, 73000.0);
+        let call = atm.call.as_ref().unwrap();
+        assert_eq!(
+            call.market_price(),
+            Some(723.10),
+            "no bid/offer: last price"
+        );
+        assert_eq!(call.oi_change, Some(0));
+        // After the close BSE shows no order book, so no lot size.
+        assert_eq!(chain.lot_size, None);
+        assert_eq!(
+            chain.as_of.unwrap().to_rfc3339(),
+            "2026-10-23T14:12:00+00:00"
+        );
+        let err = parse_bse_chain(&bse_fixture("chain"), "SENSEX", d("2026-11-05"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no SENSEX options"), "{err}");
+
+        let list = bse_fixture("underlyings");
+        assert_eq!(parse_bse_underlyings(&list, "reliance"), Some(500325));
+        assert_eq!(parse_bse_underlyings(&list, "M&M"), Some(500520));
+        assert_eq!(parse_bse_underlyings(&list, "TCS"), None);
+        assert_eq!(bse_num(&json!({"x": "5,24,022.00"}), "x"), Some(524022.0));
+        assert_eq!(bse_num(&json!({"x": ""}), "x"), None);
+        assert_eq!(parse_expiry("05 Nov 2026"), Some(d("2026-11-05")));
+    }
+
+    #[test]
+    fn lot_size_is_the_gcd_of_order_quantities() {
+        assert_eq!(
+            lot_size_from_quantities([260, 325, 65, 1040, 96460, 0]),
+            Some(65)
+        );
+        assert_eq!(lot_size_from_quantities([20, 40, 60, 100, 2000]), Some(20));
+        // Too few quotes to trust.
+        assert_eq!(lot_size_from_quantities([130, 260]), None);
+        assert_eq!(lot_size_from_quantities([]), None);
+
+        let v = json!({"records": {"underlyingValue": 22600.0, "data": [
+            {"strikePrice": 22600, "expiryDates": "27-Oct-2026",
+             "CE": {"lastPrice": 100.0, "buyQuantity1": 260, "sellQuantity1": 325,
+                    "totalBuyQuantity": 96460, "totalSellQuantity": 81510},
+             "PE": {"lastPrice": 90.0, "buyQuantity1": 65, "sellQuantity1": 1040}}
+        ]}});
+        let chain = parse_nse_chain(&v, "NIFTY", parse_expiry("2026-10-27").unwrap()).unwrap();
+        assert_eq!(chain.lot_size, Some(65));
+    }
+
+    #[tokio::test]
+    async fn bse_client_fetches_expiries_then_the_chain() {
+        let server = crate::testutil::MockServer::start(vec![
+            (
+                200,
+                include_str!("fixtures/bse_sensex_expiries.json").to_string(),
+            ),
+            (
+                200,
+                include_str!("fixtures/bse_sensex_chain.json").to_string(),
+            ),
+        ])
+        .await;
+        let bse = BseClient::build(&server.url, false).unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-10-25T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let chain = fetch_bse_chain(&bse, "SENSEX", Some(1), None, now)
+            .await
+            .unwrap();
+        assert_eq!(chain.expiries.len(), 4, "full expiry list from BSE");
+        assert_eq!(chain.expiry, parse_expiry("2026-10-29").unwrap());
+        let reqs = server.requests();
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].target, "/ddlExpiry_IV/w?ProductType=IO&scrip_cd=1");
+        assert_eq!(
+            reqs[1].target,
+            "/DerivOptionChain_IV/w?Expiry=29+Oct+2026&scrip_cd=1&strprice=0"
+        );
+        assert_eq!(reqs[1].header("referer"), Some("https://www.bseindia.com/"));
+
+        // A stock looks its scrip code up first, with the stock-option product.
+        let server = crate::testutil::MockServer::start(vec![
+            (
+                200,
+                include_str!("fixtures/bse_stock_underlyings.json").to_string(),
+            ),
+            (200, r#"{"Table":[],"Table1":[],"Table2":[]}"#.to_string()),
+        ])
+        .await;
+        let bse = BseClient::build(&server.url, false).unwrap();
+        let err = fetch_bse_chain(&bse, "RELIANCE", None, None, now)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no option expiries"), "{err}");
+        assert_eq!(
+            server.requests()[1].target,
+            "/ddlExpiry_IV/w?ProductType=SO&scrip_cd=500325"
+        );
+    }
+
+    #[tokio::test]
+    async fn bse_refusals_are_clear_errors() {
+        let server = crate::testutil::MockServer::start(vec![(403, "Access Denied".into())]).await;
+        let bse = BseClient::build(&server.url, false).unwrap();
+        let err = bse.expiries(1, true).await.unwrap_err().to_string();
+        assert!(err.contains("BSE refused") && err.contains("403"), "{err}");
+        assert_eq!(server.requests().len(), 1, "no retries");
+
+        let server = crate::testutil::MockServer::start(vec![(200, "<html>".into())]).await;
+        let bse = BseClient::build(&server.url, false).unwrap();
+        let err = bse
+            .chain(1, NaiveDate::from_ymd_opt(2026, 10, 29).unwrap())
+            .await;
+        assert!(err.unwrap_err().to_string().contains("BSE refused"));
     }
 
     #[test]
@@ -900,6 +1443,7 @@ mod tests {
         }]}});
         let chain = parse_yahoo_chain(&v).unwrap();
         assert_eq!(chain.symbol, "AAPL");
+        assert_eq!(chain.lot_size, Some(100));
         assert_eq!(chain.expiry, parse_expiry("2026-10-21").unwrap());
         assert_eq!(chain.expiries.len(), 2);
         assert_eq!(chain.rows.len(), 2);

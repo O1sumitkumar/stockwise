@@ -1,6 +1,8 @@
-//! F&O: option chains with IV and greeks, put/call ratio, and max pain.
-//! NSE for Indian symbols, Yahoo Finance for US ones (see `derivatives.rs`).
-//! The expected-moves view (`options moves`) lives in `risk.rs`.
+//! F&O: option chains with IV and greeks, put/call ratio, max pain, and
+//! payoff analysis of multi-leg strategies. NSE for Indian symbols, BSE for
+//! SENSEX/BANKEX and `.BO` stocks, Yahoo Finance for US ones (see
+//! `derivatives.rs`). The expected-moves view (`options moves`) lives in
+//! `risk.rs`.
 
 use super::*;
 use crate::derivatives::{self, Assumptions, ChainSource, ContractView, OptionChain};
@@ -14,7 +16,16 @@ const DEFAULT_RATE_US: f64 = 4.0;
 fn source_label(chain: &OptionChain) -> &'static str {
     match chain.source {
         ChainSource::Nse => "NSE",
+        ChainSource::Bse => "BSE",
         ChainSource::Yahoo => "Yahoo Finance",
+    }
+}
+
+/// `--rate` default for the chain's market, in percent.
+fn default_rate_pct(chain: &OptionChain) -> f64 {
+    match chain.source {
+        ChainSource::Nse | ChainSource::Bse => DEFAULT_RATE_IN,
+        ChainSource::Yahoo => DEFAULT_RATE_US,
     }
 }
 
@@ -90,14 +101,19 @@ fn opt_count(v: Option<u64>, width: usize) -> String {
     }
 }
 
-fn print_side(title: &str, rows: &[(f64, Option<&ContractView>)], atm: Option<f64>, nse: bool) {
+fn print_side(
+    title: &str,
+    rows: &[(f64, Option<&ContractView>)],
+    atm: Option<f64>,
+    oi_change: bool,
+) {
     print_section(title);
     println!(
         "  {:>10} {:>9} {:>8} {:>8} {:>8} {:>7} {:>7} {:>8} {:>8} {:>7} {:>7}",
         "Strike".bold(),
         "LTP".bold(),
         "OI".bold(),
-        if nse { "ΔOI" } else { "" }.bold(),
+        if oi_change { "ΔOI" } else { "" }.bold(),
         "Volume".bold(),
         "IV".bold(),
         "Delta".bold(),
@@ -121,7 +137,7 @@ fn print_side(title: &str, rows: &[(f64, Option<&ContractView>)], atm: Option<f6
         let c = &v.contract;
         let g = v.greeks;
         let oi_change = match c.oi_change {
-            Some(x) if nse => {
+            Some(x) if oi_change => {
                 let s = format!("{:>8}", format!("{:+}", x));
                 if x >= 0 {
                     s.green().to_string()
@@ -162,11 +178,7 @@ pub async fn cmd_options_chain(
     json: bool,
 ) -> Result<()> {
     let chain = derivatives::fetch_chain(symbol, market, expiry).await?;
-    let default_rate = match chain.source {
-        ChainSource::Nse => DEFAULT_RATE_IN,
-        ChainSource::Yahoo => DEFAULT_RATE_US,
-    };
-    let rate = rate_pct.unwrap_or(default_rate) / 100.0;
+    let rate = rate_pct.unwrap_or(default_rate_pct(&chain)) / 100.0;
     let years = chain.years_to_expiry(chrono::Utc::now());
     // Greeks need a live spot and time left; without them the chain still prints.
     let assumptions = chain
@@ -199,6 +211,7 @@ pub async fn cmd_options_chain(
             "as_of": chain.as_of,
             "expiry": chain.expiry,
             "expiries": chain.expiries,
+            "lot_size": chain.lot_size,
             "days_to_expiry": years * 365.0,
             "rate": rate,
             "div_yield": div_yield_pct / 100.0,
@@ -223,6 +236,9 @@ pub async fn cmd_options_chain(
         ),
     );
     print_kv("Upcoming expiries", &expiries_line(&chain));
+    if let Some(lot) = chain.lot_size {
+        print_kv("Lot size", &lot.to_string());
+    }
     if assumptions.is_none() {
         println!(
             "\n  {}",
@@ -235,13 +251,14 @@ pub async fn cmd_options_chain(
         .underlying
         .and_then(|s| derivatives::atm_index(rows, s))
         .map(|i| rows[i].strike);
-    let nse = chain.source == ChainSource::Nse;
+    // NSE and BSE report the day's change in open interest; Yahoo does not.
+    let oi_change = chain.source != ChainSource::Yahoo;
     let calls: Vec<(f64, Option<&ContractView>)> =
         views.iter().map(|r| (r.strike, r.call.as_ref())).collect();
     let puts: Vec<(f64, Option<&ContractView>)> =
         views.iter().map(|r| (r.strike, r.put.as_ref())).collect();
-    print_side("Calls", &calls, atm, nse);
-    print_side("Puts", &puts, atm, nse);
+    print_side("Calls", &calls, atm, oi_change);
+    print_side("Puts", &puts, atm, oi_change);
 
     if rows.len() < chain.rows.len() {
         println!(
