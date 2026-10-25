@@ -1,0 +1,66 @@
+{
+  "data": [
+    {
+      "_id": "68fb0a1c0000000000000001",
+      "CH_SYMBOL": "RELIANCE",
+      "CH_SERIES": "EQ",
+      "CH_MARKET_TYPE": "N",
+      "CH_TRADE_HIGH_PRICE": 1462.5,
+      "CH_TRADE_LOW_PRICE": 1440.0,
+      "CH_OPENING_PRICE": 1445.0,
+      "CH_CLOSING_PRICE": 1452.4,
+      "CH_LAST_TRADED_PRICE": 1452.0,
+      "CH_PREVIOUS_CLS_PRICE": 1441.1,
+      "CH_TOT_TRADED_QTY": 7234111,
+      "CH_TOT_TRADED_VAL": 10500000000.5,
+      "CH_52WEEK_HIGH_PRICE": 1551,
+      "CH_52WEEK_LOW_PRICE": 1114.85,
+      "CH_TOTAL_TRADES": 201345,
+      "CH_ISIN": "INE002A01018",
+      "CH_TIMESTAMP": "2025-10-23",
+      "TIMESTAMP": "2025-10-22T18:30:00.000Z",
+      "VWAP": 1450.9,
+      "mTIMESTAMP": "23-Oct-2025"
+    },
+    {
+      "_id": "68fb0a1c0000000000000002",
+      "CH_SYMBOL": "RELIANCE",
+      "CH_SERIES": "EQ",
+      "CH_MARKET_TYPE": "N",
+      "CH_TRADE_HIGH_PRICE": 1460,
+      "CH_TRADE_LOW_PRICE": 1443.1,
+      "CH_OPENING_PRICE": 1455,
+      "CH_CLOSING_PRICE": 1451.8,
+      "CH_LAST_TRADED_PRICE": 1451.6,
+      "CH_PREVIOUS_CLS_PRICE": 1452.4,
+      "CH_TOT_TRADED_QTY": 8532123,
+      "CH_TOT_TRADED_VAL": 12396812345.5,
+      "CH_52WEEK_HIGH_PRICE": 1551,
+      "CH_52WEEK_LOW_PRICE": 1114.85,
+      "CH_TOTAL_TRADES": 234567,
+      "CH_ISIN": "INE002A01018",
+      "CH_TIMESTAMP": "2025-10-24",
+      "TIMESTAMP": "2025-10-23T18:30:00.000Z",
+      "VWAP": 1452.6,
+      "mTIMESTAMP": "24-Oct-2025"
+    },
+    {
+      "_id": "68fb0a1c0000000000000003",
+      "CH_SYMBOL": "RELIANCE",
+      "CH_SERIES": "BL",
+      "CH_TRADE_HIGH_PRICE": 1450,
+      "CH_TRADE_LOW_PRICE": 1450,
+      "CH_OPENING_PRICE": 1450,
+      "CH_CLOSING_PRICE": 1450,
+      "CH_TOT_TRADED_QTY": 500000,
+      "CH_TIMESTAMP": "2025-10-24",
+      "mTIMESTAMP": "24-Oct-2025"
+    }
+  ],
+  "meta": {
+    "series": ["EQ", "BE"],
+    "fromDate": "23-10-2025",
+    "toDate": "24-10-2025",
+    "symbols": ["RELIANCE"]
+  }
+}

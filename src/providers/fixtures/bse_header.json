@@ -1,0 +1,21 @@
+{
+  "Cmpname": {
+    "FullN": "Reliance Industries Ltd",
+    "ShortN": "RELIANCE",
+    "SeriesCode": null,
+    "SeriesN": "",
+    "EXCHNAME": "BSE"
+  },
+  "CurrRate": { "LTP": "1,451.65", "Chg": "-0.75", "PcChg": "-0.05" },
+  "Header": {
+    "PrevClose": "1452.40",
+    "Open": "1455.00",
+    "High": "1460.00",
+    "Low": "1443.15",
+    "LTP": "1451.65",
+    "Ason": "24 Oct 25 | 04:00 PM",
+    "RecordDt": ""
+  },
+  "CompResult": null,
+  "BseNseCompare": null
+}

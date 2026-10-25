@@ -38,6 +38,8 @@ src/
   tax.rs             Capital-gains rules: holding periods, tax years, set-off (India/US/UK)
   api.rs             Yahoo Finance client (session, quotes, charts, search, cache, retries); routes to a provider
   providers/         MarketData trait + opt-in Alpha Vantage, Massive (Polygon), Twelve Data; Yahoo fills gaps
+    nse.rs, bse.rs   NSE / BSE website JSON (quotes, intraday + daily bars, search, NIFTY index members)
+    session.rs       Polite exchange HTTP: one cookie session per site, ≤3 req/s with jitter, retries, refusal = stop
   i18n.rs            Typed English/Hindi message catalog, --lang / STOCKWISE_LANG / locale detection
   brokers/           Broker trait + clients: angel (SmartAPI, TOTP), zerodha, upstox, dhan, fyers
                      (experimental), secrets.rs (OS keyring / owner-only file), mock.rs (test HTTP server)
@@ -89,7 +91,7 @@ User Input → clap CLI → commands/* → views.rs → api.rs → Yahoo Finance
               tui/, server/ ───────────↗
                                    → funds.rs → AMFI NAVAll.txt, api.mfapi.in
                                    → derivatives.rs → NSE option chain (India), Yahoo (US)
-                                            → providers/* → Alpha Vantage / Massive / Twelve Data (opt-in)
+                                            → providers/* → Alpha Vantage / Massive / Twelve Data / NSE / BSE (opt-in)
                                    → brokers/* → Angel One, Kite, Upstox, Dhan, Fyers
                                    → ai.rs → Local Ollama (or opt-in OpenAI / Anthropic / Gemini)
                                    → technical.rs (indicators)

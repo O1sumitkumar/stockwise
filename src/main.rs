@@ -324,6 +324,9 @@ enum Commands {
     // ── Market ──
     /// Top gainers and losers today
     Movers {
+        /// Scan an NSE index's members instead of the built-in large caps
+        #[arg(long, value_enum, ignore_case = true)]
+        universe: Option<market::Universe>,
         #[command(flatten)]
         out: TableOutput,
     },
@@ -333,7 +336,11 @@ enum Commands {
         out: TableOutput,
     },
     /// Market heatmap
-    Heatmap,
+    Heatmap {
+        /// Scan an NSE index's members instead of the built-in large caps
+        #[arg(long, value_enum, ignore_case = true)]
+        universe: Option<market::Universe>,
+    },
     /// Fear & Greed style sentiment gauge
     Sentiment,
     /// Recent news headlines for a stock
@@ -360,6 +367,9 @@ enum Commands {
     Screen {
         #[arg(value_enum, ignore_case = true)]
         category: ScreenCategory,
+        /// Scan an NSE index's members instead of the built-in large caps
+        #[arg(long, value_enum, ignore_case = true)]
+        universe: Option<market::Universe>,
         #[command(flatten)]
         out: TableOutput,
     },
@@ -1747,9 +1757,9 @@ async fn main() {
             period,
         } => commands::cmd_forecast(&symbol, days, &period, m).await,
 
-        Commands::Movers { out } => commands::cmd_movers(m, out.into()).await,
+        Commands::Movers { universe, out } => commands::cmd_movers(m, universe, out.into()).await,
         Commands::Sectors { out } => commands::cmd_sectors(m, out.into()).await,
-        Commands::Heatmap => commands::cmd_heatmap(m).await,
+        Commands::Heatmap { universe } => commands::cmd_heatmap(m, universe).await,
         Commands::Sentiment => commands::cmd_sentiment().await,
         Commands::News { symbol } => commands::cmd_news(&symbol, m).await,
         Commands::Rotation => commands::cmd_rotation(m).await,
@@ -1763,9 +1773,11 @@ async fn main() {
         Commands::Surprise => commands::cmd_surprise(m).await,
         Commands::Matrix => commands::cmd_matrix(m).await,
         Commands::Picks => commands::cmd_picks(m).await,
-        Commands::Screen { category, out } => {
-            commands::cmd_screen(&value_name(category), m, out.into()).await
-        }
+        Commands::Screen {
+            category,
+            universe,
+            out,
+        } => commands::cmd_screen(&value_name(category), m, universe, out.into()).await,
         Commands::Dividends { symbol, out } => {
             commands::cmd_dividends(&symbol, m, out.into()).await
         }
@@ -2494,6 +2506,37 @@ mod tests {
 
     fn parses(args: &[&str]) -> bool {
         Cli::try_parse_from(args).is_ok()
+    }
+
+    #[test]
+    fn scans_take_an_nse_universe() {
+        for args in [
+            vec!["stockwise", "movers", "--universe", "nifty50"],
+            vec!["stockwise", "movers", "--universe", "NIFTY100", "--json"],
+            vec!["stockwise", "heatmap", "--universe", "banknifty"],
+            vec!["stockwise", "heatmap"],
+            vec!["stockwise", "screen", "momentum", "--universe", "next50"],
+            vec![
+                "stockwise",
+                "screen",
+                "bluechip",
+                "--universe",
+                "niftyit",
+                "--csv",
+            ],
+        ] {
+            assert!(parses(&args), "{:?}", args);
+        }
+        assert!(!parses(&["stockwise", "movers", "--universe", "sensex"]));
+        match Cli::try_parse_from(["stockwise", "movers", "--universe", "banknifty"])
+            .unwrap()
+            .command
+        {
+            Commands::Movers { universe, .. } => {
+                assert_eq!(universe, Some(market::Universe::BankNifty))
+            }
+            _ => panic!("expected movers"),
+        }
     }
 
     #[test]

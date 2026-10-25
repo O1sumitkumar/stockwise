@@ -305,6 +305,17 @@ pub struct Quote {
     /// (`STOCKWISE_DATA_PROVIDER`); omitted from JSON otherwise.
     #[serde(rename = "dataSource", skip_serializing_if = "Option::is_none")]
     pub data_source: Option<String>,
+    /// NSE: share of the day's traded quantity marked for delivery, in
+    /// percent. Only the NSE provider fills it; omitted from JSON otherwise.
+    #[serde(rename = "deliveryPercent", skip_serializing_if = "Option::is_none")]
+    pub delivery_percent: Option<f64>,
+    /// The exchange's price band for the day (upper circuit limit); NSE
+    /// provider only.
+    #[serde(rename = "upperCircuit", skip_serializing_if = "Option::is_none")]
+    pub upper_circuit: Option<f64>,
+    /// Lower circuit limit; NSE provider only.
+    #[serde(rename = "lowerCircuit", skip_serializing_if = "Option::is_none")]
+    pub lower_circuit: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -424,6 +435,8 @@ pub struct YahooClient {
     /// Opt-in alternative provider (`STOCKWISE_DATA_PROVIDER`). Quotes,
     /// charts and search go there first; Yahoo fills the gaps.
     provider: Option<providers::Provider>,
+    /// NSE, for index members when the provider isn't NSE-backed.
+    nse: std::sync::OnceLock<providers::nse::Nse>,
 }
 
 impl YahooClient {
@@ -527,7 +540,7 @@ impl YahooClient {
             }
             providers::Selection::Unknown(name) => {
                 eprintln!(
-                    "  \u{24d8} Unknown STOCKWISE_DATA_PROVIDER '{}' (alphavantage, massive, twelvedata); using Yahoo Finance",
+                    "  \u{24d8} Unknown STOCKWISE_DATA_PROVIDER '{}' (alphavantage, massive, twelvedata, nse, bse, exchange); using Yahoo Finance",
                     name
                 );
                 None
@@ -541,6 +554,7 @@ impl YahooClient {
             last_request: Mutex::new(Instant::now() - Duration::from_secs(1)),
             cache,
             provider,
+            nse: std::sync::OnceLock::new(),
         })
     }
 
@@ -668,7 +682,7 @@ impl YahooClient {
             .collect();
         // Bulk scans (movers, screeners) stay on Yahoo when the free tier
         // can't price them all: one table never mixes sources or freshness.
-        if covered.is_empty() || covered.len() as u32 > provider.remaining() {
+        if covered.is_empty() || !provider.can_serve(&covered) {
             return self.yahoo_quote(symbols).await;
         }
         let from_provider = provider.quotes(&covered).await.unwrap_or_default();
@@ -820,6 +834,23 @@ impl YahooClient {
     /// Fetch raw text (for RSS/XML endpoints)
     pub async fn raw_get_text(&self, url: &str) -> Result<String> {
         self.fetch(url, Duration::from_secs(300)).await
+    }
+
+    /// Yahoo symbols of an NSE index's members (`NIFTY 50` →
+    /// `RELIANCE.NS`, ...), from NSE whichever provider is configured. With
+    /// an NSE-backed provider the members' quotes come along, so quoting
+    /// them right after costs no further NSE requests. Errors are not
+    /// announced: the caller decides what to fall back to.
+    pub async fn index_constituents(&self, index: &str) -> Result<Vec<String>> {
+        let nse = match self.provider.as_ref().and_then(|p| p.nse()) {
+            Some(nse) => nse,
+            None => self.nse.get_or_init(|| {
+                let nse = providers::nse::Nse::new(providers::nse::shared_session());
+                nse.session().set_cache(self.cache.clone());
+                nse
+            }),
+        };
+        nse.constituents(index).await
     }
 
     /// Symbol search: the data provider's matches when it has any, else

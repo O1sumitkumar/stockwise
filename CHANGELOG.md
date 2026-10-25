@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Data providers that read the exchanges' own websites, no API key needed:
+  `STOCKWISE_DATA_PROVIDER=nse` (or `data_provider = "nse"`), `bse`, and
+  `exchange` (NSE for `.NS` and NSE indices, BSE for `.BO`, Yahoo for the
+  rest). NSE serves quotes with circuit limits and delivery %, NSE index
+  quotes, today's intraday bars, up to five years of daily bars and search;
+  BSE serves quotes, intraday and daily bars and search by scrip id, code or
+  name. These are unofficial website endpoints: StockWise keeps one session per
+  site, at most three requests a second with jitter, retries timeouts and 5xx
+  with backoff, caches answers, and stops asking (with one notice) as soon as a
+  site refuses — Yahoo answers instead. See
+  [docs/data-providers.md](docs/data-providers.md#nse-and-bse) and
+  [docs/exchange-responses.md](docs/exchange-responses.md).
+- `quote` shows **Circuit Limits** and **Delivery** when NSE answered;
+  `--json` adds `deliveryPercent`, `lowerCircuit`, `upperCircuit`, `--csv`
+  adds `delivery_percent`, `lower_circuit`, `upper_circuit` (empty otherwise).
+- `movers`, `heatmap` and `screen` take `--universe nifty50|niftynext50|nifty100|banknifty|niftyit`
+  to scan an NSE index's current members (from NSE, whichever provider is set)
+  instead of the built-in 30 large caps, which stay as the offline fallback.
+- `doctor` checks NSE and BSE separately in `exchange` mode.
+
+### Changed
+- In the Indian market a bare BSE scrip code resolves to BSE: `quote 500325`
+  is `500325.BO` (it used to become the invalid `500325.NS`).
+
 ## [0.4.0] - 2026-10-21
 
 Everything on the 0.3 roadmap: new markets and asset classes, a lot-based
