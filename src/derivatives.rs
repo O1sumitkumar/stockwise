@@ -293,7 +293,11 @@ pub fn lot_size_from_quantities(quantities: impl IntoIterator<Item = u64>) -> Op
         g = gcd(g, q);
         n += 1;
     }
-    (n >= 5).then_some(g).and_then(|g| u32::try_from(g).ok())
+    // A GCD of 1 means the quantities are not in units (no Indian contract
+    // has a lot of 1), so the lot is unknown rather than 1.
+    (n >= 5 && g >= 2)
+        .then_some(g)
+        .and_then(|g| u32::try_from(g).ok())
 }
 
 fn ts_to_date(ts: i64) -> Option<NaiveDate> {
@@ -1267,6 +1271,8 @@ mod tests {
         assert_eq!(lot_size_from_quantities([20, 40, 60, 100, 2000]), Some(20));
         // Too few quotes to trust.
         assert_eq!(lot_size_from_quantities([130, 260]), None);
+        // Quantities counted in lots, not units: no usable lot size.
+        assert_eq!(lot_size_from_quantities([1, 3, 7, 2, 5]), None);
         assert_eq!(lot_size_from_quantities([]), None);
 
         let v = json!({"records": {"underlyingValue": 22600.0, "data": [

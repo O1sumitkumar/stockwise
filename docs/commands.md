@@ -112,7 +112,7 @@ network, invalid config file), `2` invalid arguments.
 | `mf nav <CODES...> [--json]` | Latest NAV and date, fund house, category, ISINs, and the plan's expense ratio (TER) with the other plan's for comparison |
 | `mf history <CODE> [-p PERIOD] [--json]` | NAV chart for the period (default `1y`), expense ratio (TER), trailing 1M–10Y returns (annualized from 1Y), since-inception CAGR, max drawdown. `--json` includes every NAV in the period |
 | `mf sip <CODE> <AMOUNT> [-p PERIOD] [--json]` | Monthly SIP from NAV history (default `5y`): value-vs-invested chart, gain, units, and XIRR on the actual purchase dates |
-| `mf screen [CATEGORY...] [--plan direct\|regular\|all] [-s 1y\|3y\|5y\|ter] [--max-ter PERCENT] [-n N] [--max N] [--json]` | Bare: list categories with their active scheme counts. With words (`flexi cap`, `elss`, `liquid`, `equity etf`): rank the category's growth-option schemes by return (default 3Y CAGR, direct plans) or by expense ratio (`-s ter`, lowest first), with a TER column. `--max-ter 1.0` keeps only funds whose disclosed TER is at most 1% |
+| `mf screen [CATEGORY...] [--plan direct\|regular\|all] [-s 1y\|3y\|5y\|ter] [--max-ter PERCENT] [-n N] [--max N] [--json]` | Bare: list categories with their active scheme counts. With words (`flexi cap`, `elss`, `liquid`, `equity etf`): rank the category's growth-option schemes by return (default 3Y CAGR, direct plans) or by expense ratio (`-s ter`, lowest first — with more matches than `--max`, the cheapest are screened), with a TER column. `--max-ter 1.0` keeps only funds whose disclosed TER is at most 1% |
 | `mf overlap <A> <B> [--json]` | Shared top holdings, holdings and sector overlap, and expense ratios of two funds or ETFs, e.g. `mf overlap SPY QQQ -m us` |
 | `options chain <SYMBOL> [-e DATE] [-n STRIKES] [--rate %] [--div-yield %] [--json]` | Calls and puts around the money: last price, open interest (and change on NSE/BSE), volume, IV, delta, gamma, theta, vega, rho, and the lot size. Default: nearest expiry, 10 strikes each side (`-n 0` for all) |
 | `options pcr <SYMBOL> [-e DATE] [--json]` | Put/call ratio by open interest and by volume, and the three strikes with the most call and put open interest |
@@ -194,7 +194,7 @@ MF periods (`-p`) are `<n>mo`, `<n>y` or `max`, e.g. `6mo`, `3y`, `10y`. Expirie
   `-m us`, Yahoo Finance (delayed quotes) for US stocks and ETFs.
 - **Lot sizes**: NSE and BSE quote order-book quantities in whole lots, so the
   lot is their greatest common divisor across the chain (with at least five
-  quotes); US contracts are 100 shares. `options chain` shows it and `--json`
+  quotes; a divisor of 1 counts as unknown); US contracts are 100 shares. `options chain` shows it and `--json`
   has `lot_size` (`null` when unknown).
 - **IV and greeks**: Black-Scholes-Merton. IV is solved from the bid/ask mid
   (else the last trade) at the data timestamp; when that fails, the source's IV

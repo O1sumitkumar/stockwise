@@ -1015,7 +1015,7 @@ covered-call  buy the underlying at spot, sell call ATM+W"
         #[arg(short, long, default_value_t = 1)]
         lots: u32,
         /// Units per lot, when the chain does not show it (e.g. BSE after hours)
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
         lot_size: Option<u32>,
         /// Risk-free rate in percent (default 6.5 India, 4.0 US)
         #[arg(long)]
@@ -2936,6 +2936,16 @@ mod tests {
                 "condor",
             ],
             vec!["stockwise", "options", "payoff", "NIFTY", "-e", "27/10"],
+            vec![
+                "stockwise",
+                "options",
+                "payoff",
+                "NIFTY",
+                "-s",
+                "straddle",
+                "--lot-size",
+                "0",
+            ],
         ] {
             assert!(Cli::try_parse_from(&bad).is_err(), "{bad:?}");
         }

@@ -600,11 +600,30 @@ pub async fn cmd_mf_screen(
         }
     }
     candidates.sort_by_key(|s| s.full_name());
+    if sort == ScreenSort::Ter {
+        // Cheapest first before --max cuts the list, so the cap keeps the
+        // funds the ranking is about. Schemes without a TER go last.
+        candidates.sort_by(|a, b| {
+            let (ta, tb) = (ter_of(a), ter_of(b));
+            match (ta.map(|t| t.costs.total), tb.map(|t| t.costs.total)) {
+                (Some(x), Some(y)) => x.total_cmp(&y),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+    }
     let total = candidates.len();
     if total > max_funds {
         eprintln!(
-            "  {} funds match; screening the first {} by name. Narrow the category or raise --max.",
-            total, max_funds
+            "  {} funds match; screening the first {} {}. Narrow the category or raise --max.",
+            total,
+            max_funds,
+            if sort == ScreenSort::Ter {
+                "by expense ratio"
+            } else {
+                "by name"
+            }
         );
         candidates.truncate(max_funds);
     }
