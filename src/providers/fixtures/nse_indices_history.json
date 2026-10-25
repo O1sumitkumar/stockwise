@@ -1,0 +1,35 @@
+{
+  "data": {
+    "indexCloseOnlineRecords": [
+      {
+        "_id": "68fb0b2d0000000000000001",
+        "EOD_INDEX_NAME": "NIFTY 50",
+        "EOD_OPEN_INDEX_VAL": 25950.3,
+        "EOD_HIGH_INDEX_VAL": 26010.0,
+        "EOD_CLOSE_INDEX_VAL": 25891.4,
+        "EOD_LOW_INDEX_VAL": 25850.75,
+        "EOD_TIMESTAMP": "23-OCT-2025",
+        "TIMESTAMP": "2025-10-22T18:30:00.000Z"
+      },
+      {
+        "_id": "68fb0b2d0000000000000002",
+        "EOD_INDEX_NAME": "NIFTY 50",
+        "EOD_OPEN_INDEX_VAL": 25900.1,
+        "EOD_HIGH_INDEX_VAL": 26000.5,
+        "EOD_CLOSE_INDEX_VAL": 25795.15,
+        "EOD_LOW_INDEX_VAL": 25718.2,
+        "EOD_TIMESTAMP": "24-OCT-2025",
+        "TIMESTAMP": "2025-10-23T18:30:00.000Z"
+      }
+    ],
+    "indexTurnoverRecords": [
+      {
+        "_id": "68fb0b2d0000000000000003",
+        "HIT_INDEX_NAME_UPPER": "NIFTY 50",
+        "HIT_TIMESTAMP": "24-OCT-2025",
+        "HIT_TRADED_QTY": 312345678,
+        "HIT_TURN_OVER": 312345678901.23
+      }
+    ]
+  }
+}

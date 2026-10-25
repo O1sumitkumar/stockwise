@@ -39,6 +39,18 @@ pub struct MockServer {
 impl MockServer {
     /// Serve `(status, body)` pairs in order; the last one repeats.
     pub async fn start(responses: Vec<(u16, String)>) -> Self {
+        Self::start_with_headers(
+            responses
+                .into_iter()
+                .map(|(status, body)| (status, Vec::new(), body))
+                .collect(),
+        )
+        .await
+    }
+
+    /// Like [`MockServer::start`], with extra response headers (such as
+    /// `set-cookie`) per response.
+    pub async fn start_with_headers(responses: Vec<(u16, Vec<(String, String)>, String)>) -> Self {
         assert!(!responses.is_empty());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -51,11 +63,16 @@ impl MockServer {
                     continue;
                 };
                 log.lock().unwrap().push(req);
-                let (status, body) = &responses[served.min(responses.len() - 1)];
+                let (status, headers, body) = &responses[served.min(responses.len() - 1)];
                 served += 1;
+                let extra: String = headers
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}\r\n", k, v))
+                    .collect();
                 let reply = format!(
-                    "HTTP/1.1 {} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    "HTTP/1.1 {} X\r\ncontent-type: application/json\r\n{}content-length: {}\r\nconnection: close\r\n\r\n{}",
                     status,
+                    extra,
                     body.len(),
                     body
                 );

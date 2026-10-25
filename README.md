@@ -135,7 +135,7 @@ Homebrew, AUR and Nix install the man pages and completions for you.
 | **Market** | `movers`, `sectors`, `heatmap`, `sentiment`, `news`, `rotation`, `sectorcmp`, `peers`, `insider`, `ipo`, `earnings`, `surprise`, `matrix`, `picks`, `screen`, `dividends` |
 | **Funds & F&O** | `mf` (search, nav, history, sip, screen, overlap), `options` (chain, pcr, maxpain, moves) |
 | **Strategies & bots** | `backtest`, `sip`, `whatif`, `intraday`, `longterm`, `daemon`, `sim`, `report` |
-| **Portfolio** | `portfolio`, `watch`, `alert`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
+| **Portfolio** | `portfolio`, `watch`, `alert`, `calendar`, `import`, `export`, `wealth`, `rebalance`, `harvest`, `tax`, `divcal`, `pcorr` |
 | **Interfaces** | `tui`, `serve` |
 | **Live trading** | `trade` (Angel One; Zerodha, Upstox, Dhan, Fyers experimental) |
 
@@ -274,6 +274,9 @@ only; see [docs/simulator.md](docs/simulator.md).
 
 ```bash
 stockwise alert add TCS above 4200
+stockwise alert add INFY rsi-below 30         # also: SMA/EMA crosses, breakouts, volume spikes
+stockwise alert add TCS results-in 7          # results due within a week
+stockwise calendar                  # results, ex-dividend dates and splits for your holdings
 export STOCKWISE_TELEGRAM_TOKEN=... STOCKWISE_TELEGRAM_CHAT_ID=...
 stockwise notify test               # Telegram, Slack, Discord, email or desktop
 stockwise alert watch               # checks during market hours, notifies once per trigger
@@ -345,7 +348,7 @@ Precedence: **flag > environment variable > config file > built-in default.**
 | `lang` | `STOCKWISE_LANG` | `--lang` | Output language: `en` or `hi` (Hindi). Default: your locale (`LANG=hi_IN…` picks Hindi) |
 | `home` | `STOCKWISE_HOME` | | Where portfolio, watchlist, alerts and history are stored |
 | `portfolio` | `STOCKWISE_PORTFOLIO` | `--portfolio` | Named portfolio to use |
-| `data_provider` | `STOCKWISE_DATA_PROVIDER` | | Opt-in data provider: `alphavantage`, `massive` (Polygon) or `twelvedata`, with its API key in the environment — see [docs/data-providers.md](docs/data-providers.md) |
+| `data_provider` | `STOCKWISE_DATA_PROVIDER` | | Opt-in data provider: `alphavantage`, `massive` (Polygon) or `twelvedata` with its API key in the environment, or the exchanges' own websites — `nse`, `bse` or `exchange` (no key) — see [docs/data-providers.md](docs/data-providers.md) |
 | `ai` | `STOCKWISE_AI` | `--ai` / `--no-ai` | Add AI sections by default |
 | `ai_provider` | `STOCKWISE_AI_PROVIDER` | | `ollama` (default, local), or opt-in cloud: `openai`, `anthropic`, `gemini` with `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` in the environment — see [docs/ai.md](docs/ai.md) |
 | `model` | `STOCKWISE_MODEL` | | AI model (Ollama default `qwen3:14b`) |
