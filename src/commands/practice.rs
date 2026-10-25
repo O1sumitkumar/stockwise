@@ -1262,9 +1262,11 @@ pub async fn cmd_challenge_status(fmt: Format) -> Result<()> {
     if let Some(r) = Replay::load()? {
         let Some(c) = &r.challenge else {
             if fmt == Format::Json {
-                return output::print_json(
-                    &json!({"challenge": null, "finished": r.finished_challenges}),
-                );
+                return output::print_json(&json!({
+                    "mode": "replay",
+                    "challenge": null,
+                    "finished": r.finished_challenges,
+                }));
             }
             println!(
                 "\n  {} No challenge in this replay. {}\n",
@@ -1277,7 +1279,11 @@ pub async fn cmd_challenge_status(fmt: Format) -> Result<()> {
             return Ok(());
         };
         if fmt == Format::Json {
-            return output::print_json(&challenge_json(c, r.day));
+            return output::print_json(&json!({
+                "mode": "replay",
+                "challenge": challenge_json(c, r.day),
+                "finished": r.finished_challenges,
+            }));
         }
         let tape = Tape::load()?;
         let lines = status_lines(&r, &tape);
@@ -1316,6 +1322,7 @@ pub async fn cmd_challenge_status(fmt: Format) -> Result<()> {
     let run = live.evaluate(&sessions, &bench);
     if fmt == Format::Json {
         return output::print_json(&json!({
+            "mode": "live",
             "challenge": challenge_json(&live.active, run.sessions),
             "sessions": run.sessions,
             "complete": live.is_complete(run.sessions),

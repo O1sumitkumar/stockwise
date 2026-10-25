@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+<style>text{font-family:'JetBrains Mono','SFMono-Regular',Menlo,Consolas,'DejaVu Sans Mono','Noto Sans Devanagari',monospace;font-size:13px}.b{font-weight:700}</style>
+<rect width="640" height="360" rx="16" fill="#282a36"/>
+<text x="28" y="38" fill="#8a8fa8" style="font-size:11px;letter-spacing:1px">STOCKWISE · PAPER TRADING REPLAY</text>
+<text x="28" y="68" fill="#f8f8f2" class="b" style="font-size:22px">The COVID crash</text>
+<text x="28" y="92" fill="#8a8fa8">2020-02-03 → 2020-06-30 · 98 trading days</text>
+<circle cx="560" cy="74" r="46" fill="none" stroke="#44475a" stroke-width="8"/>
+<circle cx="560" cy="74" r="46" fill="none" stroke="#8be9fd" stroke-width="8" stroke-linecap="round" stroke-dasharray="213.9 289.0" transform="rotate(-90 560 74)"/>
+<text x="560" y="80" fill="#f8f8f2" class="b" text-anchor="middle" style="font-size:30px">74</text>
+<text x="560" y="98" fill="#8be9fd" class="b" text-anchor="middle" style="font-size:12px">Grade B</text>
+<text x="196" y="140" fill="#8a8fa8" text-anchor="end">You</text><text x="300" y="140" fill="#8a8fa8" text-anchor="end">NIFTY 50</text>
+<text x="28" y="166" fill="#8a8fa8">Return</text><text x="196" y="166" fill="#50fa7b" class="b" text-anchor="end">-1.8%</text><text x="300" y="166" fill="#f8f8f2" text-anchor="end">-12.0%</text>
+<text x="28" y="192" fill="#8a8fa8">Max drawdown</text><text x="196" y="192" fill="#f8f8f2" class="b" text-anchor="end">13.4%</text><text x="300" y="192" fill="#f8f8f2" text-anchor="end">37.6%</text>
+<text x="28" y="218" fill="#8a8fa8">Sharpe</text><text x="196" y="218" fill="#f8f8f2" class="b" text-anchor="end">-0.16</text><text x="300" y="218" fill="#f8f8f2" text-anchor="end">-0.48</text>
+<text x="28" y="244" fill="#8a8fa8">Invested</text><text x="196" y="244" fill="#f8f8f2" class="b" text-anchor="end">59%</text><text x="300" y="244" fill="#f8f8f2" text-anchor="end"></text>
+<rect x="332" y="116" width="288" height="128" rx="8" fill="#21222c"/>
+<polyline fill="none" stroke="#6272a4" stroke-width="2" points="340.0,135.5 344.6,128.8 349.2,124.9 353.8,125.9 358.4,125.6 363.1,124.0 367.7,125.5 372.3,128.5 376.9,126.3 381.5,132.5 386.1,136.2 390.7,147.9 395.3,149.6 399.9,146.7 404.5,153.1 409.2,166.3 413.8,187.4 418.4,197.0 423.0,202.7 427.6,220.0 432.2,236.0 436.8,231.3 441.4,210.7 446.0,219.5 450.6,211.8 455.3,224.4 459.9,208.1 464.5,199.1 469.1,203.7 473.7,195.4 478.3,195.5 482.9,197.3 487.5,198.1 492.1,195.0 496.7,188.3 501.4,194.7 506.0,196.8 510.6,197.0 515.2,196.0 519.8,197.1 524.4,198.4 529.0,206.2 533.6,204.9 538.2,199.3 542.8,201.2 547.5,194.2 552.1,187.7 556.7,177.9 561.3,175.8 565.9,173.9 570.5,176.2 575.1,174.5 579.7,178.0 584.3,179.5 588.9,180.3 593.6,171.4 598.2,165.8 602.8,169.9 607.4,168.0 612.0,170.0"/>
+<polyline fill="none" stroke="#50fa7b" stroke-width="2.5" points="340.0,135.5 344.6,134.6 349.2,130.5 353.8,131.6 358.4,132.2 363.1,127.0 367.7,126.0 372.3,129.0 376.9,129.8 381.5,135.6 386.1,138.4 390.7,146.7 395.3,148.1 399.9,146.0 404.5,146.8 409.2,156.1 413.8,162.5 418.4,165.8 423.0,165.8 427.6,165.8 432.2,165.8 436.8,165.8 441.4,153.8 446.0,159.6 450.6,154.6 455.3,163.4 459.9,146.2 464.5,148.5 469.1,143.5 473.7,145.3 478.3,145.3 482.9,142.7 487.5,144.3 492.1,143.2 496.7,145.3 501.4,148.3 506.0,150.5 510.6,152.3 515.2,149.2 519.8,150.7 524.4,153.8 529.0,153.9 533.6,154.0 538.2,152.1 542.8,151.0 547.5,148.2 552.1,145.9 556.7,145.3 561.3,144.8 565.9,144.7 570.5,141.9 575.1,141.8 579.7,145.4 584.3,145.3 588.9,145.3 593.6,144.6 598.2,140.6 602.8,142.6 607.4,139.6 612.0,140.7"/>
+<text x="612" y="258" text-anchor="end" style="font-size:11px"><tspan fill="#50fa7b">— You</tspan><tspan fill="#6272a4">   — NIFTY 50</tspan></text>
+<rect x="28.0" y="269.0" width="145.8" height="22" rx="11" fill="#44475a"/><text x="38.0" y="284.0" fill="#f1fa8c" style="font-size:12px">★ Kept your stops</text>
+<rect x="181.8" y="269.0" width="242.0" height="22" rx="11" fill="#44475a"/><text x="191.8" y="284.0" fill="#f1fa8c" style="font-size:12px">★ Diversified across 5 sectors</text>
+<rect x="431.8" y="269.0" width="168.0" height="22" rx="11" fill="#44475a"/><text x="441.8" y="284.0" fill="#f1fa8c" style="font-size:12px">★ Survived the crash</text>
+<rect x="28.0" y="299.0" width="138.4" height="22" rx="11" fill="#44475a"/><text x="38.0" y="314.0" fill="#f1fa8c" style="font-size:12px">★ Beat the index</text>
+<rect x="174.4" y="299.0" width="168.0" height="22" rx="11" fill="#44475a"/><text x="184.4" y="314.0" fill="#f1fa8c" style="font-size:12px">★ Challenge complete</text>
+<rect x="350.4" y="299.0" width="160.6" height="22" rx="11" fill="#44475a"/><text x="360.4" y="314.0" fill="#f1fa8c" style="font-size:12px">★ Went the distance</text>
+<text x="612" y="314" fill="#8a8fa8" text-anchor="end" style="font-size:12px">+1</text>
+<text x="28" y="344" fill="#8a8fa8" style="font-size:11px">Paper trading — not financial advice.</text>
+</svg>

@@ -30,6 +30,10 @@ cargo run -- serve &
   --screenshot=assets/web-dashboard.png "http://127.0.0.1:8787/#symbol=RELIANCE.NS&period=6mo"
 ```
 
+`sim-card.svg` is the card `stockwise sim card --svg assets/sim-card.svg` wrote after
+playing `covid-crash-2020` with the `crash-survivor` challenge (a scratch
+`STOCKWISE_HOME`; see docs/simulator.md for the commands). Re-create it the same way.
+
 `history.svg`, `markets.svg`, `backtest.svg` and `tui.svg` are real StockWise output
 rendered to SVG by `ansi2svg.py` (no dependencies beyond Python 3). To
 regenerate one:
