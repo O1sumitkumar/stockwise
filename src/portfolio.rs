@@ -862,6 +862,10 @@ pub fn symbol_currency(symbol: &str) -> Option<&'static str> {
         Some("INR")
     } else if s.ends_with(".L") {
         Some("GBp")
+    } else if let Some(x) = crate::market::exchange_of(&s) {
+        // Other global exchanges: their market-table currency.
+        let info = x.info();
+        Some(info.quote_unit.unwrap_or(info.currency))
     } else if s.ends_with("-USD") {
         Some("USD")
     } else if s.contains('.') || s.contains('=') || s.starts_with('^') {
@@ -1614,7 +1618,11 @@ mod tests {
         assert_eq!(symbol_currency("AAPL"), Some("USD"));
         assert_eq!(symbol_currency("BTC-USD"), Some("USD"));
         assert_eq!(symbol_currency("VOD.L"), Some("GBp"));
-        assert_eq!(symbol_currency("SAP.DE"), None);
+        assert_eq!(symbol_currency("SAP.DE"), Some("EUR"));
+        assert_eq!(symbol_currency("7203.T"), Some("JPY"));
+        assert_eq!(symbol_currency("0005.HK"), Some("HKD"));
+        assert_eq!(symbol_currency("BHP.AX"), Some("AUD"));
+        assert_eq!(symbol_currency("MC.PA"), None); // Paris is not in the market table
         assert_eq!(symbol_currency("MF:118834"), Some("INR"));
     }
 

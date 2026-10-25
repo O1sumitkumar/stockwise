@@ -658,6 +658,27 @@ impl Market {
         )
     }
 
+    /// Like [`Market::require_stocks`], for commands built on sector
+    /// indices: some exchanges have no usable set on Yahoo.
+    pub fn require_sectors(self, command: &str) -> anyhow::Result<()> {
+        self.require_stocks(command)?;
+        if self.sectors().is_empty() {
+            let with: Vec<&str> = Exchange::ALL
+                .iter()
+                .filter(|x| !x.info().sectors.is_empty())
+                .map(|x| x.info().code)
+                .collect();
+            anyhow::bail!(
+                "`{}` needs sector indices or ETFs, and Yahoo Finance has no usable set for {} — \
+                 it works with -m in, -m us and -m {}",
+                command,
+                self.label(),
+                with.join(", -m ")
+            );
+        }
+        Ok(())
+    }
+
     /// Currency symbol for amounts the user types (capital, SIP budget).
     pub fn currency_symbol(self) -> &'static str {
         match self {
@@ -1192,6 +1213,20 @@ mod tests {
         assert_eq!(resolve_symbol("MGC=F", Market::Commodity), "MGC=F");
         assert!(Market::Commodity.require_stocks("sectors").is_err());
         assert!(Market::Commodity.sectors().is_empty());
+        let err = Market::Global(Exchange::Uk)
+            .require_sectors("sectors")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("United Kingdom") && err.contains("-m jp"),
+            "{err}"
+        );
+        assert!(
+            Market::Global(Exchange::Au)
+                .require_sectors("sectors")
+                .is_ok()
+        );
+        assert!(Market::In.require_sectors("rotation").is_ok());
     }
 
     #[test]

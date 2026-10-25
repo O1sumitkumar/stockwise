@@ -1710,6 +1710,22 @@ pub async fn cmd_tax(country: &str, _market: Market, fmt: Format) -> Result<()> 
             country.tax_currency(),
             other_currency.join(", ")
         );
+        // Global exchanges whose own rules StockWise does not have.
+        let mut unsupported: Vec<&str> = other_currency
+            .iter()
+            .filter_map(|s| market::exchange_of(s))
+            .filter(|x| x.info().tax.is_none())
+            .map(|x| x.info().country)
+            .collect();
+        unsupported.sort_unstable();
+        unsupported.dedup();
+        if !unsupported.is_empty() {
+            println!(
+                "  {} StockWise has no capital-gains rules for {} listings (only India, the US and the UK).",
+                "!".yellow(),
+                unsupported.join(", ")
+            );
+        }
     }
     if !unpriced.is_empty() {
         println!(
