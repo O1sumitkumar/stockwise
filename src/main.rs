@@ -14,6 +14,7 @@ mod ai;
 mod alerts;
 mod api;
 mod backtest;
+mod benchmark;
 mod brokers;
 mod charts;
 mod clock;
@@ -24,6 +25,7 @@ mod daemon_status;
 mod derivatives;
 mod display;
 mod funds;
+mod goals;
 mod greeks;
 mod i18n;
 mod insights;
@@ -39,6 +41,7 @@ mod server;
 mod simulator;
 mod store;
 mod tax;
+mod tax_export;
 mod technical;
 #[cfg(test)]
 mod testutil;
@@ -518,10 +521,20 @@ stockwise options TCS                     expected moves (same as `options moves
     Rebalance,
     /// Tax-loss harvesting opportunities
     Harvest,
-    /// Capital-gains tax estimate for your portfolio
+    /// Capital-gains tax estimate; `tax export` writes an ITR Schedule CG / Form 8949 CSV
+    #[command(
+        args_conflicts_with_subcommands = true,
+        subcommand_negates_reqs = true,
+        after_help = "Examples:\n  \
+stockwise tax in                                  this tax year's estimate\n  \
+stockwise tax export in --fy 2025-26 --out cg.csv ITR Schedule CG / 112A CSV\n  \
+stockwise tax export us --fy 2025 --json          Form 8949 rows as JSON"
+    )]
     Tax {
-        #[arg(value_enum, ignore_case = true)]
-        country: TaxCountry,
+        #[command(subcommand)]
+        action: Option<TaxCmd>,
+        #[arg(value_enum, ignore_case = true, required = true)]
+        country: Option<TaxCountry>,
         #[command(flatten)]
         out: TableOutput,
     },
@@ -529,6 +542,18 @@ stockwise options TCS                     expected moves (same as `options moves
     Divcal,
     /// Correlation between your holdings — find redundant positions
     Pcorr,
+
+    // ── Planning ──
+    /// Goal planner: SIP for a target corpus, retirement and education calculators
+    #[command(after_help = "Examples:\n  \
+stockwise goal sip --target 1cr --years 15 --step-up 10\n  \
+stockwise goal retire --monthly-expense 80000 --years-to-retire 20 --years-in-retirement 30\n  \
+stockwise goal education --cost 25L --years 10 --json\n\n\
+Amounts take Indian units: 50k, 25L (lakh), 1cr (crore).")]
+    Goal {
+        #[command(subcommand)]
+        action: GoalCmd,
+    },
 
     // ── Live trading ──
     /// Live orders: Angel One; Zerodha/Upstox/Dhan/Fyers experimental (real money — try `sim` first)
@@ -655,6 +680,155 @@ enum PortfolioCmd {
     },
     /// List your portfolios (see --portfolio)
     List,
+    /// Time-weighted return vs NIFTY 50 / S&P 500: alpha, beta, attribution by holding and sector
+    Benchmark {
+        /// NIFTY, SENSEX, BANKNIFTY, NIFTY500, SP500, NASDAQ, NASDAQ100, DOW, an index such as
+        /// ^NSEI, or a ticker [default: NIFTY; SP500 with -m us]
+        benchmark: Option<String>,
+        #[arg(short, long, default_value = "1y", value_parser = BENCHMARK_PERIODS)]
+        period: String,
+        #[command(flatten)]
+        out: TableOutput,
+    },
+}
+
+/// Periods `portfolio benchmark` accepts: long enough for daily returns.
+const BENCHMARK_PERIODS: [&str; 9] = ["1mo", "3mo", "6mo", "ytd", "1y", "2y", "5y", "10y", "max"];
+
+#[derive(Subcommand)]
+enum TaxCmd {
+    /// Capital-gains schedule of a tax year's sales: ITR Schedule CG / 112A (in) or Form 8949 (us)
+    #[command(
+        after_help = "An estimate from the sales StockWise recorded (`portfolio sell`, \
+tradebook and CAS imports) — verify it with your broker's tax P&L before filing."
+    )]
+    Export {
+        /// `in` (ITR Schedule CG / 112A) or `us` (Form 8949) [default: in; us with -m us]
+        #[arg(value_enum, ignore_case = true)]
+        country: Option<ExportCountry>,
+        /// Tax year: 2025-26 or AY2026-27 for India, 2025 for the US [default: the current one]
+        #[arg(long, value_name = "YEAR")]
+        fy: Option<String>,
+        /// Write the file here and print a summary, instead of printing it
+        #[arg(long, value_name = "FILE")]
+        out: Option<std::path::PathBuf>,
+        /// JSON instead of CSV
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ExportCountry {
+    /// India: ITR Schedule CG / Schedule 112A
+    #[value(alias = "india")]
+    In,
+    /// United States: Form 8949 and Schedule D totals
+    #[value(alias = "usa")]
+    Us,
+}
+
+#[derive(Subcommand)]
+enum GoalCmd {
+    /// Monthly SIP needed for a target corpus, with an optional yearly step-up
+    Sip {
+        /// Target corpus: 1cr, 50L, 2500000, ...
+        #[arg(long, value_parser = goal_amount)]
+        target: f64,
+        /// Years to the goal (1-60)
+        #[arg(long, value_parser = goal_years)]
+        years: u32,
+        /// Expected annual return, in percent
+        #[arg(long = "return", value_name = "PCT", default_value_t = 12.0, value_parser = return_pct)]
+        return_pct: f64,
+        #[command(flatten)]
+        sip: GoalSipFlags,
+    },
+    /// Retirement corpus for today's monthly expenses, and the SIP that builds it
+    Retire {
+        /// Monthly expenses in today's money: 80000, 80k, 1.2L, ...
+        #[arg(long, value_parser = goal_amount)]
+        monthly_expense: f64,
+        /// Years until you retire (1-60)
+        #[arg(long, value_parser = goal_years)]
+        years_to_retire: u32,
+        /// Years the corpus must last (1-60)
+        #[arg(long, value_parser = goal_years)]
+        years_in_retirement: u32,
+        /// Yearly inflation of your expenses, in percent
+        #[arg(long, value_name = "PCT", default_value_t = 6.0, value_parser = inflation_pct)]
+        inflation: f64,
+        /// Annual return until retirement, in percent
+        #[arg(long, value_name = "PCT", default_value_t = 12.0, value_parser = return_pct)]
+        return_pre: f64,
+        /// Annual return on the corpus during retirement, in percent
+        #[arg(long, value_name = "PCT", default_value_t = 7.0, value_parser = return_pct)]
+        return_post: f64,
+        #[command(flatten)]
+        sip: GoalSipFlags,
+    },
+    /// Education cost in N years, grown by education inflation, and the SIP that pays it
+    Education {
+        /// Cost in today's money: 25L, 40 lakh, 1.2cr, ...
+        #[arg(long, value_parser = goal_amount)]
+        cost: f64,
+        /// Years until it is needed (1-60)
+        #[arg(long, value_parser = goal_years)]
+        years: u32,
+        /// Yearly education inflation, in percent
+        #[arg(long, value_name = "PCT", default_value_t = 8.0, value_parser = inflation_pct)]
+        inflation: f64,
+        /// Expected annual return, in percent
+        #[arg(long = "return", value_name = "PCT", default_value_t = 12.0, value_parser = return_pct)]
+        return_pct: f64,
+        #[command(flatten)]
+        sip: GoalSipFlags,
+    },
+}
+
+/// SIP options shared by every goal.
+#[derive(Args, Clone, Copy)]
+struct GoalSipFlags {
+    /// Raise the SIP by this percent every year
+    #[arg(long, value_name = "PCT", default_value_t = 0.0, value_parser = step_up_pct)]
+    step_up: f64,
+    /// Money already invested towards the goal (grows at the same return)
+    #[arg(long, value_parser = goal_amount)]
+    savings: Option<f64>,
+    #[command(flatten)]
+    out: JsonOutput,
+}
+
+fn goal_amount(s: &str) -> Result<f64, String> {
+    goals::parse_amount(s)
+}
+
+fn goal_years(s: &str) -> Result<u32, String> {
+    match s.trim().parse::<u32>() {
+        Ok(y) if (1..=60).contains(&y) => Ok(y),
+        _ => Err(format!(
+            "`{s}` must be a whole number of years from 1 to 60"
+        )),
+    }
+}
+
+fn percent_between(s: &str, lo: f64, hi: f64) -> Result<f64, String> {
+    match s.trim().trim_end_matches('%').parse::<f64>() {
+        Ok(v) if (lo..=hi).contains(&v) => Ok(v),
+        _ => Err(format!("`{s}` must be a percentage from {lo} to {hi}")),
+    }
+}
+
+fn return_pct(s: &str) -> Result<f64, String> {
+    percent_between(s, 0.0, 50.0)
+}
+
+fn inflation_pct(s: &str) -> Result<f64, String> {
+    percent_between(s, 0.0, 30.0)
+}
+
+fn step_up_pct(s: &str) -> Result<f64, String> {
+    percent_between(s, 0.0, 50.0)
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -1453,6 +1627,7 @@ const GROUPS: &[(&str, &[&str])] = &[
             "pcorr",
         ],
     ),
+    ("Planning", &["goal"]),
     ("Interfaces", &["tui", "serve"]),
     ("Live trading", &["trade"]),
     ("Setup", &["notify", "config", "completions", "man", "help"]),
@@ -1472,6 +1647,7 @@ fn group_msg(english: &str) -> Option<i18n::Msg> {
         "Interfaces" => Msg::GroupInterfaces,
         "Live trading" => Msg::GroupLiveTrading,
         "Setup" => Msg::GroupSetup,
+        "Planning" => Msg::GroupPlanning,
         _ => return None,
     })
 }
@@ -1935,6 +2111,21 @@ async fn main() {
                 commands::cmd_portfolio_remove(&symbol, m).await
             }
             Some(PortfolioCmd::List) => commands::cmd_portfolio_list(),
+            Some(PortfolioCmd::Benchmark {
+                benchmark,
+                period,
+                out: bench,
+            }) => {
+                let base = base.map(|b| value_name(b).to_uppercase());
+                commands::cmd_portfolio_benchmark(
+                    benchmark.as_deref(),
+                    &period,
+                    m,
+                    base.as_deref(),
+                    bench.into(),
+                )
+                .await
+            }
             Some(PortfolioCmd::Show { out: show }) => {
                 let base = base.map(|b| value_name(b).to_uppercase());
                 commands::cmd_portfolio_show(m, base.as_deref(), out.or(show)).await
@@ -1981,9 +2172,81 @@ async fn main() {
         Commands::Wealth => commands::cmd_wealth(m).await,
         Commands::Rebalance => commands::cmd_rebalance(&[], m).await,
         Commands::Harvest => commands::cmd_harvest(m).await,
-        Commands::Tax { country, out } => {
-            commands::cmd_tax(&value_name(country), m, out.into()).await
-        }
+        Commands::Tax {
+            action,
+            country,
+            out,
+        } => match action {
+            Some(TaxCmd::Export {
+                country,
+                fy,
+                out,
+                json,
+            }) => {
+                let country = match country {
+                    Some(c) => value_name(c),
+                    None if m == Market::Us => "us".into(),
+                    None => "in".into(),
+                };
+                commands::cmd_tax_export(&country, fy.as_deref(), out.as_deref(), json).await
+            }
+            None => {
+                let country = country.expect("clap requires COUNTRY without a subcommand");
+                commands::cmd_tax(&value_name(country), m, out.into()).await
+            }
+        },
+        Commands::Goal { action } => match action {
+            GoalCmd::Sip {
+                target,
+                years,
+                return_pct,
+                sip,
+            } => commands::cmd_goal_sip(
+                target,
+                years,
+                return_pct,
+                sip.step_up,
+                sip.savings.unwrap_or(0.0),
+                m,
+                sip.out.json,
+            ),
+            GoalCmd::Retire {
+                monthly_expense,
+                years_to_retire,
+                years_in_retirement,
+                inflation,
+                return_pre,
+                return_post,
+                sip,
+            } => commands::cmd_goal_retire(
+                monthly_expense,
+                years_to_retire,
+                years_in_retirement,
+                inflation,
+                return_pre,
+                return_post,
+                sip.step_up,
+                sip.savings.unwrap_or(0.0),
+                m,
+                sip.out.json,
+            ),
+            GoalCmd::Education {
+                cost,
+                years,
+                inflation,
+                return_pct,
+                sip,
+            } => commands::cmd_goal_education(
+                cost,
+                years,
+                inflation,
+                return_pct,
+                sip.step_up,
+                sip.savings.unwrap_or(0.0),
+                m,
+                sip.out.json,
+            ),
+        },
         Commands::Divcal => commands::cmd_divcal(m).await,
         Commands::Pcorr => commands::cmd_pcorr(m).await,
 
@@ -2459,6 +2722,194 @@ mod tests {
         );
         assert!(Cli::try_parse_from(["stockwise", "portfolio", "--base", "eur"]).is_err());
         assert!(Cli::try_parse_from(["stockwise", "--portfolio", "../x", "portfolio"]).is_err());
+    }
+
+    #[test]
+    fn planning_commands_parse() {
+        for args in [
+            vec!["stockwise", "tax", "export"],
+            vec![
+                "stockwise",
+                "tax",
+                "export",
+                "in",
+                "--fy",
+                "2025-26",
+                "--out",
+                "cg.csv",
+            ],
+            vec!["stockwise", "tax", "export", "us", "--fy", "2025", "--json"],
+            vec![
+                "stockwise",
+                "tax",
+                "export",
+                "India",
+                "--portfolio",
+                "long-term",
+            ],
+            vec!["stockwise", "portfolio", "benchmark"],
+            vec![
+                "stockwise",
+                "portfolio",
+                "benchmark",
+                "SENSEX",
+                "-p",
+                "2y",
+                "--json",
+            ],
+            vec![
+                "stockwise",
+                "p",
+                "benchmark",
+                "SP500",
+                "--base",
+                "inr",
+                "--csv",
+            ],
+            vec![
+                "stockwise",
+                "goal",
+                "sip",
+                "--target",
+                "1cr",
+                "--years",
+                "15",
+            ],
+            vec![
+                "stockwise",
+                "goal",
+                "sip",
+                "--target",
+                "50L",
+                "--years",
+                "10",
+                "--return",
+                "11.5",
+                "--step-up",
+                "10",
+                "--savings",
+                "2L",
+                "--json",
+            ],
+            vec![
+                "stockwise",
+                "goal",
+                "retire",
+                "--monthly-expense",
+                "80000",
+                "--years-to-retire",
+                "20",
+                "--years-in-retirement",
+                "30",
+                "--inflation",
+                "6",
+                "--return-pre",
+                "12",
+                "--return-post",
+                "7",
+            ],
+            vec![
+                "stockwise",
+                "goal",
+                "education",
+                "--cost",
+                "25L",
+                "--years",
+                "10",
+                "--inflation",
+                "8",
+                "--json",
+            ],
+        ] {
+            assert!(parses(&args), "{args:?} should parse");
+        }
+        for args in [
+            vec!["stockwise", "tax"],
+            vec!["stockwise", "tax", "export", "uk"],
+            vec!["stockwise", "tax", "export", "in", "--csv"],
+            vec!["stockwise", "portfolio", "benchmark", "-p", "5d"],
+            vec!["stockwise", "portfolio", "--json", "benchmark"],
+            vec!["stockwise", "goal"],
+            vec!["stockwise", "goal", "sip", "--target", "1cr"],
+            vec![
+                "stockwise",
+                "goal",
+                "sip",
+                "--target",
+                "lots",
+                "--years",
+                "15",
+            ],
+            vec![
+                "stockwise",
+                "goal",
+                "sip",
+                "--target",
+                "1cr",
+                "--years",
+                "0",
+            ],
+            vec![
+                "stockwise",
+                "goal",
+                "sip",
+                "--target",
+                "1cr",
+                "--years",
+                "15",
+                "--return",
+                "80",
+            ],
+            vec![
+                "stockwise",
+                "goal",
+                "sip",
+                "--target",
+                "1cr",
+                "--years",
+                "15",
+                "--csv",
+            ],
+        ] {
+            assert!(!parses(&args), "{args:?} should be rejected");
+        }
+
+        let cli = Cli::try_parse_from([
+            "stockwise",
+            "goal",
+            "sip",
+            "--target",
+            "1cr",
+            "--years",
+            "15",
+        ])
+        .unwrap();
+        let Commands::Goal {
+            action:
+                GoalCmd::Sip {
+                    target,
+                    years,
+                    return_pct,
+                    sip,
+                },
+        } = cli.command
+        else {
+            panic!("expected goal sip");
+        };
+        assert_eq!((target, years, return_pct), (1e7, 15, 12.0));
+        assert_eq!(sip.step_up, 0.0);
+        assert!(sip.savings.is_none() && !sip.out.json);
+
+        let cli = Cli::try_parse_from(["stockwise", "tax", "export", "--fy", "2025-26"]).unwrap();
+        let Commands::Tax {
+            action: Some(TaxCmd::Export { country, fy, .. }),
+            ..
+        } = cli.command
+        else {
+            panic!("expected tax export");
+        };
+        assert!(country.is_none());
+        assert_eq!(fy.as_deref(), Some("2025-26"));
     }
 
     #[test]

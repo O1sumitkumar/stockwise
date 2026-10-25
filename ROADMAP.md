@@ -52,9 +52,11 @@ Legend: ✅ shipped · 🛠️ in progress · 📋 planned · 💡 exploring
 
 ## 📋 Next — planning and reporting (0.5)
 
-- 📋 Tax export: capital-gains schedule (ITR Schedule CG–ready CSV) from realized lots
-- 📋 Benchmark comparison and attribution — portfolio vs NIFTY 50 / S&P 500, by holding and sector
-- 📋 Goal planner — SIP needed for a target corpus, retirement and education calculators
+- ✅ Tax export: capital-gains schedule (ITR Schedule CG–ready CSV) from realized lots
+  (`tax export in`, Form 8949 with `tax export us`)
+- ✅ Benchmark comparison and attribution — portfolio vs NIFTY 50 / S&P 500, by holding and sector
+  (`portfolio benchmark`)
+- ✅ Goal planner — SIP needed for a target corpus, retirement and education calculators (`goal`)
 - 📋 Technical alerts — RSI, moving-average crosses and breakouts, not only price levels
 - 📋 Results and corporate-announcement calendar for holdings (NSE/BSE filings)
 - 📋 More Indian languages: Marathi, Tamil, Bengali
