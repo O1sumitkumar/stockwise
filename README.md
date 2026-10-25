@@ -12,9 +12,12 @@
 </p>
 
 <p align="center">
+  <a href="https://iamsaquib8.github.io/stockwise/"><b>Docs</b></a> ·
+  <a href="docs/cheatsheet.md">Cheatsheet</a> ·
   <a href="#install">Install</a> ·
   <a href="#tour">Tour</a> ·
   <a href="docs/commands.md">Commands</a> ·
+  <a href="docs/comparison.md">Compare</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="CONTRIBUTING.md">Contributing</a> ·
   <a href="ROADMAP.md">Roadmap</a>
@@ -410,6 +413,10 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 
 ## Docs
 
+The full documentation is at **[iamsaquib8.github.io/stockwise](https://iamsaquib8.github.io/stockwise/)**.
+
+- [Cheatsheet](docs/cheatsheet.md) — the commands people use most, on one page
+- [How StockWise compares](docs/comparison.md) with other tools
 - [Commands reference](docs/commands.md)
 - [Markets: global exchanges, commodities, bonds](docs/markets.md)
 - [Terminal dashboard](docs/tui.md) and [web dashboard, HTTP API & metrics](docs/server.md)
@@ -422,7 +429,7 @@ The same settings work as flags: `-m crypto`, `--quote-currency inr`,
 
 ## Roadmap & contributing
 
-Next up: mutual fund and SGB portfolio valuation, direct `.xlsx` imports, live-tested brokers, more global markets (`kr`, `tw`, `fr`, `nl`, `ch`, `cn`, `br`) and commodities, custom rebalancing, lot-level tax harvesting, and full net-worth tracking — see the
+Next up: an MCP server for AI assistants, `pipx`/`uvx` installs, published Homebrew/winget/Scoop/AUR packages, mutual funds in portfolio valuation, and tax-season tools — see the
 [ROADMAP](ROADMAP.md). Ideas and bug reports are
 welcome in [Discussions](https://github.com/iamsaquib8/stockwise/discussions) and
 [Issues](https://github.com/iamsaquib8/stockwise/issues); start with

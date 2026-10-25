@@ -1,0 +1,28 @@
+# Documentation site, built with mdBook by `python3 site/build.py` and
+# published to GitHub Pages by .github/workflows/docs.yml.
+#
+# The pages themselves live in docs/; build.py copies them (plus the
+# top-level CHANGELOG, ROADMAP, CONTRIBUTING and DISCLAIMER) into
+# target/site-src and fixes links that point outside docs/.
+
+[book]
+title = "StockWise"
+authors = ["iamsaquib8"]
+description = "Stock market toolkit for your terminal: NSE/BSE and US stocks, mutual funds, options, commodities, backtests, paper trading, portfolio and tax."
+language = "en"
+src = "../target/site-src"
+
+[build]
+build-dir = "../target/site"
+create-missing = false
+
+[output.html]
+site-url = "/stockwise/"
+git-repository-url = "https://github.com/iamsaquib8/stockwise"
+git-repository-icon = "fab-github"
+theme = "../target/site-theme"
+default-theme = "light"
+preferred-dark-theme = "navy"
+
+[output.html.search]
+enable = true
